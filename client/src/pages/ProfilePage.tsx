@@ -3,21 +3,9 @@ import { useParams } from "react-router-dom";
 import { ApiError, apiFetch } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { LoadingState, RequestErrorState } from "../components/AsyncState";
+import type { ProfileResponse, User } from "../../../shared";
 
-type Profile = {
-  id: string;
-  displayName: string;
-  bio: string;
-  info: { location?: string; website?: string };
-  avatarId?: string;
-  coverId?: string;
-  createdAt: string;
-};
-
-type ProfileResponse = {
-  user: Profile;
-  friendshipStatus: "self" | "none";
-};
+type Profile = User;
 
 type FormValues = {
   displayName: string;
@@ -43,6 +31,49 @@ function validateForm(values: FormValues): string | null {
   if (values.website && !/^https:\/\//i.test(values.website.trim())) return "Website must use HTTPS.";
   if (values.website.length > 2_048) return "Website must be 2,048 characters or fewer.";
   return null;
+}
+
+function ProfileAvatar({ imageUrl, displayName }: { imageUrl?: string; displayName: string }) {
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
+  const initial = displayName.trim().charAt(0).toUpperCase();
+
+  return (
+    <div className="profile-avatar" role="img" aria-label={`${displayName}'s profile photo`}>
+      {imageUrl && failedImageUrl !== imageUrl ? (
+        <img
+          className="profile-avatar-image"
+          src={imageUrl}
+          alt=""
+          onError={() => setFailedImageUrl(imageUrl)}
+        />
+      ) : (
+        <span aria-hidden="true">{initial}</span>
+      )}
+    </div>
+  );
+}
+
+function ProfileCover({ imageUrl, displayName }: { imageUrl?: string; displayName: string }) {
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
+
+  if (!imageUrl || failedImageUrl === imageUrl) return null;
+
+  return (
+    <img
+      className="profile-cover-image"
+      src={imageUrl}
+      alt={`${displayName}'s cover photo`}
+      onError={() => setFailedImageUrl(imageUrl)}
+    />
+  );
+}
+
+function friendshipLabel(status: ProfileResponse["friendshipStatus"]): string {
+  switch (status) {
+    case "self": return "This is you";
+    case "friends": return "Friends";
+    case "none": return "Not friends";
+  }
 }
 
 export function ProfilePage() {
@@ -131,7 +162,8 @@ export function ProfilePage() {
   return (
     <div className="space-y-5">
       <section className="profile-cover">
-        <div className="profile-avatar">{profile.user.displayName.trim().charAt(0).toUpperCase()}</div>
+        <ProfileCover imageUrl={profile.user.coverUrl} displayName={profile.user.displayName} />
+        <ProfileAvatar imageUrl={profile.user.avatarUrl} displayName={profile.user.displayName} />
       </section>
 
       <section className="surface-card -mt-12 p-6 pt-16 sm:p-8 sm:pt-16">
@@ -141,7 +173,9 @@ export function ProfilePage() {
             <h1 className="mt-3 text-3xl font-bold tracking-[-0.04em] text-ink">{profile.user.displayName}</h1>
             <p className="mt-2 text-sm text-muted">Member since {memberSince}</p>
           </div>
-          <span className="profile-status">{profile.friendshipStatus === "self" ? "This is you" : "Senderi member"}</span>
+          <span className="profile-status" aria-label={`Friendship status: ${friendshipLabel(profile.friendshipStatus)}`}>
+            {friendshipLabel(profile.friendshipStatus)}
+          </span>
         </div>
 
         <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.65fr)]">

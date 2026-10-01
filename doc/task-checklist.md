@@ -81,22 +81,22 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M2-L1 — Laica: Profile data and API
 
-- [ ] **M2-L1.1** Add display name, bio, location, website, avatar ID, and cover ID to the profile model and shared response type.
-- [ ] **M2-L1.2** Implement signed-in profile read and owner-only text edit routes.
-- [ ] **M2-L1.3** Validate field lengths and require an HTTPS URL for website.
-- [ ] **M2-L1.4** Check owner success, non-owner denial, and invalid-field responses.
+- [x] **M2-L1.1** Add display name, bio, location, website, avatar ID, and cover ID to the profile model and shared response type. *(These fields were already present in the model and shared `User` type; the profile API now returns them.)*
+- [x] **M2-L1.2** Implement signed-in profile read and owner-only text edit routes.
+- [x] **M2-L1.3** Validate field lengths and require an HTTPS URL for website.
+- [x] **M2-L1.4** Check owner success, non-owner denial, and invalid-field responses. *(Two-account test confirms `/api/users/me` changes only the account identified by the authenticated session; PATCHing the other account’s ID is rejected with 404, and invalid fields return 400.)*
 
 ### M2-L2 — Laica: Profile screens
 
-- [ ] **M2-L2.1** Show profile name, bio, information, avatar, cover, and friendship status.
-- [ ] **M2-L2.2** Show edit controls only for the current user's profile.
-- [ ] **M2-L2.3** Save text changes with loading, validation, and failure feedback.
-- [ ] **M2-L2.4** Check edits after refresh and from another signed-in account.
+- [x] **M2-L2.1** Show profile name, bio, information, avatar, cover, and friendship status. *(Renders Cloudinary avatar/cover URLs when configured and available, with graceful placeholders; the profile API reports self, accepted friends, or not friends.)*
+- [x] **M2-L2.2** Show edit controls only for the current user's profile. *(The edit form is rendered only when the loaded profile ID matches the signed-in user's ID.)*
+- [x] **M2-L2.3** Save text changes with loading, validation, and failure feedback. *(The form validates input, shows a saving state, and reports save success or errors.)*
+- [x] **M2-L2.4** Check edits after refresh and from another signed-in account. *(Manual browser check reported passed: saved changes persisted after refresh and were visible to another signed-in account.)*
 
 ### M2-L3 — Laica: Profile image storage
 
 - [ ] **M2-L3.1** Validate avatar and cover file type/content and the 5 MB size limit on the server.
-- [ ] **M2-L3.2** Upload the accepted image to Cloudinary and save its asset ID to the correct profile field.
+- [ ] **M2-L3.2** Upload the accepted image to Cloudinary and save its public ID to the correct profile field.
 - [ ] **M2-L3.3** Delete the old asset after successful replacement and the new asset if the database update fails.
 - [ ] **M2-L3.4** Check upload, replacement, invalid file, and persistence after server restart.
 

@@ -14,8 +14,18 @@ export interface User {
     website?: string;
   };
   avatarId?: string;
+  avatarUrl?: string;
   coverId?: string;
+  coverUrl?: string;
   createdAt: string;
+}
+
+/** Relationship of the signed-in viewer to the requested profile. */
+export type ProfileFriendshipStatus = "self" | "friends" | "none";
+
+export interface ProfileResponse {
+  user: User;
+  friendshipStatus: ProfileFriendshipStatus;
 }
 
 /** Additional private fields returned only for the authenticated user. */
