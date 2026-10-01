@@ -1,0 +1,40 @@
+{
+  "name": "@senderi/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Senderi Express API server",
+  "engines": {
+    "node": "^22.13.0 || >=24"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "lint": "eslint . --max-warnings=0",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p ../shared/tsconfig.json",
+    "test": "tsx --test test/app.test.ts test/auth.test.ts test/database.test.ts test/users.test.ts"
+  },
+  "dependencies": {
+    "argon2": "^0.45.1",
+    "cloudinary": "^2.11.0",
+    "dotenv": "^18.0.4",
+    "express": "^5.1.0",
+    "file-type": "^22.1.1",
+    "mongodb": "^7.7.0",
+    "multer": "^2.4.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/express": "^5.0.3",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^24.0.0",
+    "@types/supertest": "^6.0.3",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
+    "supertest": "^7.1.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.0"
+  }
+}
