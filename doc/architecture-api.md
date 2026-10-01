@@ -17,11 +17,12 @@ The repository will use `client/` for React, `server/` for Express, and `shared/
 
 Use an opaque session cookie set through the same-origin API path. Store only a hash of its random value in MongoDB; invalidate the session on logout and password reset. Keep REST responses containing private data and photos uncached (`Cache-Control: private, no-store`).
 
-MongoDB collections: `users`, `sessions`, `friendRequests`, `friendships`, `posts`, `comments`, `likes`, `shares`, `messages`, `passwordResets`, `socketTickets`, and `rateLimits`. Store Cloudinary asset IDs and ownership in records, not image bytes. Use unique indexes for email, friend pair, user/post Like, and sender/client message ID. Use TTL indexes for sessions, reset tokens, socket tickets, and rate-limit buckets.
+MongoDB collections: `users`, `sessions`, `friendRequests`, `friendships`, `posts`, `comments`, `likes`, `shares`, `messages`, `passwordResets`, `socketTickets`, and `rateLimits`. Use the native MongoDB driver; store document IDs as BSON ObjectIds and dates as BSON Dates, then serialize IDs as opaque strings and dates as UTC ISO 8601 values in HTTP responses. Normalize emails to trimmed lowercase before storing them. Represent each friendship with lexicographically ordered scalar `userIdLow` and `userIdHigh` ObjectId fields; do not use a unique multikey index on an array of friend IDs. Store Likes with `userId` and `postId`, and make message idempotency unique on `senderId` and `clientId`. Create unique indexes for normalized email, friendship pair, user/post Like, sender/client message ID, and one outstanding password reset per user before the API starts listening. Expiring records in `sessions`, `passwordResets`, `socketTickets`, and `rateLimits` use a BSON Date field named `expiresAt` with a TTL index (`expireAfterSeconds: 0`). TTL cleanup runs asynchronously, so every authorization or token check must also compare `expiresAt` with the current time. Store Cloudinary asset IDs and ownership in records, not image bytes.
 
 ## Shared HTTP rules
 
-- All routes use `/api`. JSON is the default; image uploads use `multipart/form-data`. Dates are UTC ISO 8601 strings; IDs are opaque strings. Errors use `{ "error": { "code": string, "message": string } }` and appropriate HTTP status (`400`, `401`, `403`, `404`, `409`, `429`).
+- All routes use `/api`. JSON is the default; image uploads use `multipart/form-data`. Dates are UTC ISO 8601 strings; IDs are opaque strings. Errors use `{ "error": { "code": string, "message": string } }` and appropriate HTTP status (`400`, `401`, `403`, `404`, `409`, `413`, `429`, `500`).
+- Visibility values in API and database records are `public`, `friends`, or `onlyMe`; the client presents these as Public, Friends, and Only me.
 - All routes except registration, login, forgot password, reset password, and the health check require a valid session. Use generic `404` responses where revealing a hidden post or media record would leak its existence.
 - List routes accept `cursor` and `limit` (default 20, maximum 50), ordered newest first, and return `{ items, nextCursor }`. Cursor values are opaque and stable for pagination.
 - Mutations check the `Origin` header against the configured client origin and validate input on the server. No browser-provided user ID is trusted as an actor ID.
@@ -30,12 +31,12 @@ MongoDB collections: `users`, `sessions`, `friendRequests`, `friendships`, `post
 
 | Endpoint | Input and result | Authorization |
 | --- | --- | --- |
-| `POST /api/auth/register` | `{ email, password, displayName }` -> session and `{ user }` | Public; unique normalized email. |
-| `POST /api/auth/login` | `{ email, password }` -> session and `{ user }` | Public; failed-attempt limits apply. |
-| `POST /api/auth/logout` | Clears current session -> `204` | Current user. |
+| `POST /api/auth/register` | `{ email, password, displayName }` -> session and `{ user }`; trim and lowercase email, trim display name (1–80 characters), require a 12–128 character password | Public; unique normalized email. |
+| `POST /api/auth/login` | `{ email, password }` -> session and `{ user }`; unknown email and wrong password share a generic `401`; throttled requests return `429 rate_limited` and `Retry-After` | Public; five failed attempts per normalized email and source IP in a fixed 15-minute window, followed by a 15-minute cooldown. Check limits before account lookup and password verification. |
+| `POST /api/auth/logout` | Deletes the current session and clears its cookie -> `204` | Current user. |
 | `GET /api/auth/me` | `{ user }` | Current user. |
-| `POST /api/auth/forgot-password` | `{ email }` -> generic `202` | Public; reset limits apply before Brevo; same response for known and unknown email. |
-| `POST /api/auth/reset-password` | `{ token, newPassword }` -> `204` | Valid, unused, unexpired token; consumes token and invalidates existing sessions. |
+| `POST /api/auth/forgot-password` | `{ email }` -> generic `202` | Public; normalized-email and source-IP limits run before account lookup. Known and unknown emails get the same `202` body; email/IP throttles return the same `429` for either. |
+| `POST /api/auth/reset-password` | `{ token, newPassword }` -> `204` | Valid, unused, unexpired token; atomically consumes the token, hashes the new password, and invalidates existing sessions. Invalid/expired/reused token returns generic `400`; failed-token IP limits return `429`. |
 | `POST /api/auth/socket-ticket` | Empty body -> `{ ticket, expiresAt }` | Current user; ticket expires after 60 seconds and is consumed once. |
 | `GET /api/users?query=` | Paged user search | Signed in; returns public profile fields only. |
 | `GET /api/users/:userId` | Profile and friendship status | Signed in. |
