@@ -1,4 +1,5 @@
 import type { ErrorRequestHandler } from "express";
+import multer from "multer";
 import { HttpError } from "../errors/http-error";
 
 type BodyParserError = Error & {
@@ -25,6 +26,17 @@ export const errorHandler: ErrorRequestHandler = (error, _request, response, nex
       error: {
         code: "invalid_json",
         message: "Request body must contain valid JSON.",
+      },
+    });
+    return;
+  }
+
+  if (error instanceof multer.MulterError) {
+    const tooLarge = error.code === "LIMIT_FILE_SIZE";
+    response.status(tooLarge ? 413 : 400).json({
+      error: {
+        code: tooLarge ? "file_too_large" : "invalid_multipart",
+        message: tooLarge ? "Profile images must be 5 MB or smaller." : "Invalid image upload.",
       },
     });
     return;

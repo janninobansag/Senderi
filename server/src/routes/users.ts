@@ -1,5 +1,7 @@
 import { ObjectId, type Db } from "mongodb";
+import { randomUUID } from "node:crypto";
 import { Router, type Response } from "express";
+import multer from "multer";
 import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toAuthUserResponse, toPublicUserResponse } from "../auth/user-response";
@@ -8,6 +10,8 @@ import { collectionNames, type FriendshipDocument, type UserDocument } from "../
 import { HttpError } from "../errors/http-error";
 import { requireClientOrigin } from "../middleware/require-client-origin";
 import { validateBody } from "../middleware/validate-body";
+import { cloudinaryProfileImageStorage, type ProfileImageStorage } from "../media/cloudinary";
+import { validateProfileImage } from "../media/profile-image";
 
 const displayNameSchema = z.string().trim().min(1).max(80);
 const bioSchema = z.string().trim().max(500);
@@ -47,6 +51,7 @@ export interface UsersRouterDependencies {
   getAllowedOrigins: () => readonly string[];
   getCloudinaryCloudName: () => string | undefined;
   now: () => Date;
+  imageStorage: ProfileImageStorage;
 }
 
 const defaultDependencies: UsersRouterDependencies = {
@@ -58,6 +63,7 @@ const defaultDependencies: UsersRouterDependencies = {
       .filter(Boolean),
   getCloudinaryCloudName: () => process.env.CLOUDINARY_CLOUD_NAME,
   now: () => new Date(),
+  imageStorage: cloudinaryProfileImageStorage,
 };
 
 function toObjectId(value: string): ObjectId {
@@ -77,6 +83,10 @@ export function createUsersRouter(
   const dependencies = { ...defaultDependencies, ...overrides };
   const router = Router();
   const authenticated = requireSession({ getDatabase: dependencies.getDatabase });
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+  });
 
   router.get("/:userId", authenticated, async (request, response) => {
     const userId = toObjectId(String(request.params.userId));
@@ -148,6 +158,63 @@ export function createUsersRouter(
       response.json({ user: toAuthUserResponse(updated) });
     },
   );
+
+  for (const imageKind of ["avatar", "cover"] as const) {
+    router.put(
+      `/me/${imageKind}`,
+      requireClientOrigin(dependencies.getAllowedOrigins),
+      authenticated,
+      upload.single("file"),
+      async (request, response) => {
+        const file = request.file;
+        if (!file) {
+          throw new HttpError(400, "file_required", "Attach one image file in the file field.");
+        }
+
+        await validateProfileImage(file);
+        const session = getAuthenticatedSession(response);
+        const database = dependencies.getDatabase();
+        const users = database.collection<UserDocument>(collectionNames.users);
+        const currentUser = await users.findOne({ _id: session.user._id });
+        if (!currentUser) {
+          throw new HttpError(404, "not_found", "Requested profile was not found.");
+        }
+
+        const oldAssetId = imageKind === "avatar" ? currentUser.avatarId : currentUser.coverId;
+        const publicId = `${session.user._id.toHexString()}-${imageKind}-${randomUUID()}`;
+        const uploaded = await dependencies.imageStorage.upload(file.buffer, publicId);
+
+        try {
+          const update = imageKind === "avatar"
+            ? { avatarId: uploaded.assetId, updatedAt: dependencies.now() }
+            : { coverId: uploaded.assetId, updatedAt: dependencies.now() };
+          const updated = await users.findOneAndUpdate(
+            { _id: session.user._id },
+            { $set: update },
+            { returnDocument: "after" },
+          );
+
+          if (!updated) {
+            throw new HttpError(404, "not_found", "Requested profile was not found.");
+          }
+
+          if (oldAssetId) {
+            await dependencies.imageStorage.destroy(oldAssetId).catch((error) => {
+              console.error("Failed to delete replaced profile image", error);
+            });
+          }
+
+          response.setHeader("Cache-Control", "private, no-store");
+          response.json({ user: toAuthUserResponse(updated) });
+        } catch (error) {
+          await dependencies.imageStorage.destroy(uploaded.assetId).catch((cleanupError) => {
+            console.error("Failed to clean up abandoned profile image", cleanupError);
+          });
+          throw error;
+        }
+      },
+    );
+  }
 
   return router;
 }
