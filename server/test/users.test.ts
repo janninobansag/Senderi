@@ -6,7 +6,6 @@ import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
-import { type SessionDocument, type UserDocument } from "../src/db/documents";
 import type { ProfileImageStorage } from "../src/media/cloudinary";
 import { type FriendshipDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
 import { createUsersRouter } from "../src/routes/users";
@@ -68,10 +67,11 @@ function makeUser(email: string, displayName: string): UserDocument {
 function createTestApp(
   users: UserDocument[],
   sessions: SessionDocument[],
-  imageStorage?: ProfileImageStorage,
-) {
-  const database = createDatabase(users, sessions);
-  options: { friendships?: FriendshipDocument[]; cloudinaryCloudName?: string } = {},
+  options: {
+    friendships?: FriendshipDocument[];
+    cloudinaryCloudName?: string;
+    imageStorage?: ProfileImageStorage;
+  } = {},
 ) {
   const database = createDatabase(users, sessions, options.friendships ?? []);
   const app = express();
@@ -83,7 +83,7 @@ function createTestApp(
       getAllowedOrigins: () => ["http://localhost:5173"],
       getCloudinaryCloudName: () => options.cloudinaryCloudName,
       now: () => new Date("2026-10-01T01:00:00.000Z"),
-      ...(imageStorage ? { imageStorage } : {}),
+      ...(options.imageStorage ? { imageStorage: options.imageStorage } : {}),
     }),
   );
   app.use(notFoundHandler);
@@ -240,7 +240,7 @@ test("profile image upload replaces the old asset and persists the new ID", asyn
     upload: async (_buffer, publicId) => ({ assetId: `profiles/${publicId}` }),
     destroy: async (assetId) => { destroyed.push(assetId); },
   };
-  const app = createTestApp([owner], [sessionFor(owner)], storage);
+  const app = createTestApp([owner], [sessionFor(owner)], { imageStorage: storage });
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
@@ -264,7 +264,7 @@ test("profile image upload rejects invalid content and missing files", async () 
     upload: async () => ({ assetId: "profiles/unused" }),
     destroy: async () => undefined,
   };
-  const app = createTestApp([owner], [sessionFor(owner)], storage);
+  const app = createTestApp([owner], [sessionFor(owner)], { imageStorage: storage });
   const notAnImage = Buffer.from("this is not an image");
   const cookie = `${SESSION_COOKIE_NAME}=profile-session-token`;
 
