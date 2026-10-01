@@ -95,10 +95,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M2-L3 — Laica: Profile image storage
 
-- [ ] **M2-L3.1** Validate avatar and cover file type/content and the 5 MB size limit on the server.
-- [ ] **M2-L3.2** Upload the accepted image to Cloudinary and save its public ID to the correct profile field.
-- [ ] **M2-L3.3** Delete the old asset after successful replacement and the new asset if the database update fails.
-- [ ] **M2-L3.4** Check upload, replacement, invalid file, and persistence after server restart.
+- [x] **M2-L3.1** Validate avatar and cover file type/content and the 5 MB size limit on the server. *(Server upload routes enforce the limit and validate JPEG, PNG, or WebP content; a test verifies oversized uploads are rejected before storage is called.)*
+- [x] **M2-L3.2** Upload the accepted image to Cloudinary and save its public ID to the correct profile field. *(Avatar and cover uploads store the returned public IDs in their matching profile fields; avatar and cover replacement paths are tested.)*
+- [x] **M2-L3.3** Delete the old asset after successful replacement and the new asset if the database update fails. *(Tests verify old-asset deletion after replacement and new-asset cleanup with the old profile ID preserved after a failed update.)*
+- [x] **M2-L3.4** Check upload, replacement, invalid file, and persistence after server restart. *(Passed: automated checks cover oversized and invalid files, avatar/cover replacement, and cleanup after a failed database update. The MongoDB persistence test passed after reconnecting and recreating the API app; the full suite reported 38 passed, 0 failed, and 0 skipped.)*
 
 ### M2-L4 — Laica: Profile image controls
 
