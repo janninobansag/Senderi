@@ -14,6 +14,7 @@ function createDatabase(
   users: UserDocument[],
   sessions: SessionDocument[],
   friendships: FriendshipDocument[],
+  failProfileUpdate = false,
 ): Db {
   return {
     collection: (name: string) => {
@@ -25,6 +26,7 @@ function createDatabase(
             { _id }: { _id: ObjectId },
             { $set }: { $set: Partial<UserDocument> },
           ) => {
+            if (failProfileUpdate) throw new Error("Simulated profile update failure.");
             const user = users.find((candidate) => candidate._id.equals(_id));
             if (!user) return null;
             Object.assign(user, $set);
@@ -71,9 +73,15 @@ function createTestApp(
     friendships?: FriendshipDocument[];
     cloudinaryCloudName?: string;
     imageStorage?: ProfileImageStorage;
+    failProfileUpdate?: boolean;
   } = {},
 ) {
-  const database = createDatabase(users, sessions, options.friendships ?? []);
+  const database = createDatabase(
+    users,
+    sessions,
+    options.friendships ?? [],
+    options.failProfileUpdate ?? false,
+  );
   const app = express();
   app.use(express.json());
   app.use(
@@ -256,6 +264,92 @@ test("profile image upload replaces the old asset and persists the new ID", asyn
   assert.match(owner.avatarId ?? "", /^profiles\//);
   assert.deepEqual(destroyed, ["profiles/old-avatar"]);
   assert.equal(response.body.user.avatarId, owner.avatarId);
+});
+
+test("cover upload replaces only the cover and deletes the previous cover asset", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  owner.avatarId = "senderi/profiles/old-avatar";
+  owner.coverId = "senderi/profiles/old-cover";
+  const destroyed: string[] = [];
+  const storage: ProfileImageStorage = {
+    upload: async (_buffer, publicId) => ({ assetId: `senderi/profiles/${publicId}` }),
+    destroy: async (assetId) => { destroyed.push(assetId); },
+  };
+  const app = createTestApp([owner], [sessionFor(owner)], { imageStorage: storage });
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+
+  const response = await request(app)
+    .put("/api/users/me/cover")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+    .attach("file", png, "cover.png");
+
+  assert.equal(response.status, 200);
+  assert.match(owner.coverId ?? "", /^senderi\/profiles\//);
+  assert.equal(owner.avatarId, "senderi/profiles/old-avatar");
+  assert.equal(response.body.user.coverId, owner.coverId);
+  assert.deepEqual(destroyed, ["senderi/profiles/old-cover"]);
+});
+
+test("profile image upload rejects files over 5 MB before calling storage", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  owner.avatarId = "senderi/profiles/old-avatar";
+  let uploadCalls = 0;
+  const storage: ProfileImageStorage = {
+    upload: async () => {
+      uploadCalls += 1;
+      return { assetId: "senderi/profiles/unexpected" };
+    },
+    destroy: async () => undefined,
+  };
+  const app = createTestApp([owner], [sessionFor(owner)], { imageStorage: storage });
+
+  const response = await request(app)
+    .put("/api/users/me/avatar")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+    .attach("file", Buffer.alloc(5 * 1024 * 1024 + 1), "large-avatar.png");
+
+  assert.equal(response.status, 413);
+  assert.equal(response.body.error.code, "file_too_large");
+  assert.equal(uploadCalls, 0);
+  assert.equal(owner.avatarId, "senderi/profiles/old-avatar");
+});
+
+test("failed profile update deletes the newly uploaded asset and preserves the old one", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  owner.avatarId = "senderi/profiles/old-avatar";
+  const destroyed: string[] = [];
+  let uploadedAssetId = "";
+  const storage: ProfileImageStorage = {
+    upload: async (_buffer, publicId) => {
+      uploadedAssetId = `senderi/profiles/${publicId}`;
+      return { assetId: uploadedAssetId };
+    },
+    destroy: async (assetId) => { destroyed.push(assetId); },
+  };
+  const app = createTestApp([owner], [sessionFor(owner)], {
+    imageStorage: storage,
+    failProfileUpdate: true,
+  });
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+
+  const response = await request(app)
+    .put("/api/users/me/avatar")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+    .attach("file", png, "avatar.png");
+
+  assert.equal(response.status, 500);
+  assert.equal(owner.avatarId, "senderi/profiles/old-avatar");
+  assert.equal(uploadedAssetId.length > 0, true);
+  assert.deepEqual(destroyed, [uploadedAssetId]);
 });
 
 test("profile image upload rejects invalid content and missing files", async () => {
