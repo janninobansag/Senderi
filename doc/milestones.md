@@ -43,8 +43,8 @@ Use the [task checklist](task-checklist.md) for smaller steps within each task. 
 | --- | --- | --- | --- |
 | M2-L1 | Laica | Add profile read/edit data and routes for display name, bio, location, and HTTPS website. Depends on M1-J2. | A signed-in user can read profiles; only the owner can edit; invalid fields are rejected. |
 | M2-L2 | Laica | Build the profile page and edit form with loading, validation, and save states. Depends on M2-L1. | Edited text appears after refresh and to another signed-in user. |
-| M2-L3 | Laica | Add validated avatar and cover uploads to Cloudinary, persist asset IDs, and clean up replaced or failed uploads. Depends on M2-L1. | Images survive a server restart; replacing one removes the old asset without affecting other profile data. |
-| M2-L4 | Laica | Add avatar/cover controls and responsive display; verify owner-only upload behavior. Depends on M2-L3. | Both images can be changed in the browser; another user cannot replace them. |
+| M2-L3 | Laica | Add validated avatar and cover uploads to Cloudinary, persist their public IDs, and clean up replaced or failed uploads. Depends on M2-L1. | Images survive a server restart; replacing one removes the old asset without affecting other profile data. |
+| M2-L4 | Laica | Add owner-only avatar/cover pickers, previews, progress, and error feedback. Depends on M2-L3. | Both images can be changed in the browser; another user cannot replace them. |
 
 ## M3 — Friends
 

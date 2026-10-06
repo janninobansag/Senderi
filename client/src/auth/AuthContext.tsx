@@ -11,7 +11,9 @@ export interface AuthUser {
     website?: string;
   };
   avatarId?: string;
+  avatarUrl?: string;
   coverId?: string;
+  coverUrl?: string;
   createdAt: string;
 }
 

@@ -3,21 +3,9 @@ import { useParams } from "react-router-dom";
 import { ApiError, apiFetch, apiUpload } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { LoadingState, RequestErrorState } from "../components/AsyncState";
+import type { ProfileResponse, User } from "../../../shared";
 
-type Profile = {
-  id: string;
-  displayName: string;
-  bio: string;
-  info: { location?: string; website?: string };
-  avatarId?: string;
-  coverId?: string;
-  createdAt: string;
-};
-
-type ProfileResponse = {
-  user: Profile;
-  friendshipStatus: "self" | "none";
-};
+type Profile = User;
 
 type FormValues = {
   displayName: string;
@@ -45,9 +33,47 @@ function validateForm(values: FormValues): string | null {
   return null;
 }
 
-function profileImageUrl(assetId: string | undefined): string | undefined {
-  const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME?.trim();
-  return assetId && cloudName ? `https://res.cloudinary.com/${cloudName}/image/upload/f_auto,q_auto/${assetId}` : undefined;
+function ProfileAvatar({ imageUrl, displayName }: { imageUrl?: string; displayName: string }) {
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
+  const initial = displayName.trim().charAt(0).toUpperCase();
+
+  return (
+    <div className="profile-avatar" role="img" aria-label={`${displayName}'s profile photo`}>
+      {imageUrl && failedImageUrl !== imageUrl ? (
+        <img
+          className="profile-avatar-image"
+          src={imageUrl}
+          alt=""
+          onError={() => setFailedImageUrl(imageUrl)}
+        />
+      ) : (
+        <span aria-hidden="true">{initial}</span>
+      )}
+    </div>
+  );
+}
+
+function ProfileCover({ imageUrl, displayName }: { imageUrl?: string; displayName: string }) {
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
+
+  if (!imageUrl || failedImageUrl === imageUrl) return null;
+
+  return (
+    <img
+      className="profile-cover-image"
+      src={imageUrl}
+      alt={`${displayName}'s cover photo`}
+      onError={() => setFailedImageUrl(imageUrl)}
+    />
+  );
+}
+
+function friendshipLabel(status: ProfileResponse["friendshipStatus"]): string {
+  switch (status) {
+    case "self": return "This is you";
+    case "friends": return "Friends";
+    case "none": return "Not friends";
+  }
 }
 
 export function ProfilePage() {
@@ -66,6 +92,11 @@ export function ProfilePage() {
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const avatarInput = useRef<HTMLInputElement>(null);
   const coverInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => () => {
+    if (previews.avatar) URL.revokeObjectURL(previews.avatar);
+    if (previews.cover) URL.revokeObjectURL(previews.cover);
+  }, [previews]);
 
   useEffect(() => {
     if (!profileId) return;
@@ -158,6 +189,7 @@ export function ProfilePage() {
     } catch (requestError: unknown) {
       setUploadMessage(requestError instanceof ApiError ? requestError.message : "We couldn’t upload that image.");
     } finally {
+      setPreviews((current) => ({ ...current, [kind]: undefined }));
       setUploading(null);
       setUploadProgress(0);
       if (kind === "avatar" && avatarInput.current) avatarInput.current.value = "";
@@ -167,6 +199,10 @@ export function ProfilePage() {
 
   function chooseImage(kind: "avatar" | "cover", file: File | undefined) {
     if (!file) return;
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size > 5 * 1024 * 1024) {
+      void uploadImage(kind, file);
+      return;
+    }
     const preview = URL.createObjectURL(file);
     setPreviews((current) => {
       const previous = current[kind];
@@ -183,10 +219,8 @@ export function ProfilePage() {
   return (
     <div className="space-y-5">
       <section className="profile-cover">
-        {(previews.cover ?? profileImageUrl(profile.user.coverId)) && <img className="profile-cover-image" src={previews.cover ?? profileImageUrl(profile.user.coverId)} alt="" />}
-        <div className="profile-avatar">
-          {previews.avatar ?? profileImageUrl(profile.user.avatarId) ? <img src={previews.avatar ?? profileImageUrl(profile.user.avatarId)} alt={`${profile.user.displayName} profile`} /> : profile.user.displayName.trim().charAt(0).toUpperCase()}
-        </div>
+        <ProfileCover imageUrl={previews.cover ?? profile.user.coverUrl} displayName={profile.user.displayName} />
+        <ProfileAvatar imageUrl={previews.avatar ?? profile.user.avatarUrl} displayName={profile.user.displayName} />
       </section>
 
       <section className="surface-card -mt-12 p-6 pt-16 sm:p-8 sm:pt-16">
@@ -196,7 +230,9 @@ export function ProfilePage() {
             <h1 className="mt-3 text-3xl font-bold tracking-[-0.04em] text-ink">{profile.user.displayName}</h1>
             <p className="mt-2 text-sm text-muted">Member since {memberSince}</p>
           </div>
-          <span className="profile-status">{profile.friendshipStatus === "self" ? "This is you" : "Senderi member"}</span>
+          <span className="profile-status" aria-label={`Friendship status: ${friendshipLabel(profile.friendshipStatus)}`}>
+            {friendshipLabel(profile.friendshipStatus)}
+          </span>
         </div>
 
         <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.65fr)]">

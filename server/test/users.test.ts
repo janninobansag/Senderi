@@ -6,11 +6,16 @@ import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
-import { type SessionDocument, type UserDocument } from "../src/db/documents";
 import type { ProfileImageStorage } from "../src/media/cloudinary";
+import { type FriendshipDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
 import { createUsersRouter } from "../src/routes/users";
 
-function createDatabase(users: UserDocument[], sessions: SessionDocument[]): Db {
+function createDatabase(
+  users: UserDocument[],
+  sessions: SessionDocument[],
+  friendships: FriendshipDocument[],
+  failProfileUpdate = false,
+): Db {
   return {
     collection: (name: string) => {
       if (name === "users") {
@@ -21,11 +26,21 @@ function createDatabase(users: UserDocument[], sessions: SessionDocument[]): Db 
             { _id }: { _id: ObjectId },
             { $set }: { $set: Partial<UserDocument> },
           ) => {
+            if (failProfileUpdate) throw new Error("Simulated profile update failure.");
             const user = users.find((candidate) => candidate._id.equals(_id));
             if (!user) return null;
             Object.assign(user, $set);
             return user;
           },
+        };
+      }
+
+      if (name === "friendships") {
+        return {
+          findOne: async ({ userIdLow, userIdHigh }: Pick<FriendshipDocument, "userIdLow" | "userIdHigh">) =>
+            friendships.find((friendship) =>
+              friendship.userIdLow.equals(userIdLow) && friendship.userIdHigh.equals(userIdHigh),
+            ) ?? null,
         };
       }
 
@@ -54,9 +69,19 @@ function makeUser(email: string, displayName: string): UserDocument {
 function createTestApp(
   users: UserDocument[],
   sessions: SessionDocument[],
-  imageStorage?: ProfileImageStorage,
+  options: {
+    friendships?: FriendshipDocument[];
+    cloudinaryCloudName?: string;
+    imageStorage?: ProfileImageStorage;
+    failProfileUpdate?: boolean;
+  } = {},
 ) {
-  const database = createDatabase(users, sessions);
+  const database = createDatabase(
+    users,
+    sessions,
+    options.friendships ?? [],
+    options.failProfileUpdate ?? false,
+  );
   const app = express();
   app.use(express.json());
   app.use(
@@ -64,8 +89,9 @@ function createTestApp(
     createUsersRouter({
       getDatabase: () => database,
       getAllowedOrigins: () => ["http://localhost:5173"],
+      getCloudinaryCloudName: () => options.cloudinaryCloudName,
       now: () => new Date("2026-10-01T01:00:00.000Z"),
-      ...(imageStorage ? { imageStorage } : {}),
+      ...(options.imageStorage ? { imageStorage: options.imageStorage } : {}),
     }),
   );
   app.use(notFoundHandler);
@@ -80,6 +106,18 @@ function sessionFor(user: UserDocument, token = "profile-session-token"): Sessio
     tokenHash: hashSessionToken(token),
     createdAt: new Date("2026-10-01T00:00:00.000Z"),
     expiresAt: new Date("2026-10-08T00:00:00.000Z"),
+  };
+}
+
+function friendshipFor(first: UserDocument, second: UserDocument): FriendshipDocument {
+  const [userIdLow, userIdHigh] = [first._id, second._id].sort((left, right) =>
+    left.toHexString().localeCompare(right.toHexString()),
+  );
+  return {
+    _id: new ObjectId(),
+    userIdLow,
+    userIdHigh,
+    createdAt: new Date("2026-10-01T00:00:00.000Z"),
   };
 }
 
@@ -100,14 +138,56 @@ test("signed-in users can read a profile without private email data", async () =
   assert.equal(response.headers["cache-control"], "private, no-store");
 });
 
-test("profile text edits update only the authenticated owner", async () => {
+test("profile reads report accepted friendship and build profile image URLs from Cloudinary public IDs", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  owner.avatarId = "profiles/owner/avatar";
+  owner.coverId = "profiles/owner/cover";
+  const viewer = makeUser("viewer@example.com", "Viewer Example");
+  const app = createTestApp([owner, viewer], [sessionFor(viewer)], {
+    friendships: [friendshipFor(owner, viewer)],
+    cloudinaryCloudName: "senderi-demo",
+  });
+
+  const response = await request(app)
+    .get(`/api/users/${owner._id.toHexString()}`)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.friendshipStatus, "friends");
+  assert.equal(
+    response.body.user.avatarUrl,
+    "https://res.cloudinary.com/senderi-demo/image/upload/c_fill,g_face,h_256,w_256/f_auto/q_auto/profiles/owner/avatar",
+  );
+  assert.equal(
+    response.body.user.coverUrl,
+    "https://res.cloudinary.com/senderi-demo/image/upload/c_fill,g_auto,h_480,w_1600/f_auto/q_auto/profiles/owner/cover",
+  );
+});
+
+test("profile reads report self for the signed-in user's own profile", async () => {
   const owner = makeUser("owner@example.com", "Owner Example");
   const app = createTestApp([owner], [sessionFor(owner)]);
 
   const response = await request(app)
+    .get(`/api/users/${owner._id.toHexString()}`)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.friendshipStatus, "self");
+});
+
+test("profile edits only change the account identified by the authenticated session", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  const other = makeUser("other@example.com", "Other Example");
+  const app = createTestApp(
+    [owner, other],
+    [sessionFor(owner, "owner-profile-token"), sessionFor(other, "other-profile-token")],
+  );
+
+  const response = await request(app)
     .patch("/api/users/me")
     .set("Origin", "http://localhost:5173")
-    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=owner-profile-token`)
     .send({
       displayName: "Updated Owner",
       bio: "A short profile bio.",
@@ -123,11 +203,16 @@ test("profile text edits update only the authenticated owner", async () => {
   });
   assert.equal(response.body.user.email, "owner@example.com");
   assert.equal(owner.displayName, "Updated Owner");
+  assert.equal(owner.bio, "A short profile bio.");
+  assert.equal(other.displayName, "Other Example");
+  assert.equal(other.bio, "");
+  assert.deepEqual(other.info, {});
 });
 
-test("profile edits reject invalid fields and non-owner route targets", async () => {
+test("profile edits reject invalid fields and unsupported user-targeted edits", async () => {
   const owner = makeUser("owner@example.com", "Owner Example");
-  const app = createTestApp([owner], [sessionFor(owner)]);
+  const other = makeUser("other@example.com", "Other Example");
+  const app = createTestApp([owner, other], [sessionFor(owner)]);
   const cookie = `${SESSION_COOKIE_NAME}=profile-session-token`;
 
   const invalidWebsite = await request(app)
@@ -147,11 +232,12 @@ test("profile edits reject invalid fields and non-owner route targets", async ()
   assert.equal(unknownField.body.error.code, "validation_error");
 
   const otherTarget = await request(app)
-    .patch(`/api/users/${new ObjectId().toHexString()}`)
+    .patch(`/api/users/${other._id.toHexString()}`)
     .set("Origin", "http://localhost:5173")
     .set("Cookie", cookie)
     .send({ displayName: "Not allowed" });
   assert.equal(otherTarget.status, 404);
+  assert.equal(other.displayName, "Other Example");
 });
 
 test("profile image upload replaces the old asset and persists the new ID", async () => {
@@ -162,7 +248,7 @@ test("profile image upload replaces the old asset and persists the new ID", asyn
     upload: async (_buffer, publicId) => ({ assetId: `profiles/${publicId}` }),
     destroy: async (assetId) => { destroyed.push(assetId); },
   };
-  const app = createTestApp([owner], [sessionFor(owner)], storage);
+  const app = createTestApp([owner], [sessionFor(owner)], { imageStorage: storage });
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
@@ -180,13 +266,99 @@ test("profile image upload replaces the old asset and persists the new ID", asyn
   assert.equal(response.body.user.avatarId, owner.avatarId);
 });
 
+test("cover upload replaces only the cover and deletes the previous cover asset", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  owner.avatarId = "senderi/profiles/old-avatar";
+  owner.coverId = "senderi/profiles/old-cover";
+  const destroyed: string[] = [];
+  const storage: ProfileImageStorage = {
+    upload: async (_buffer, publicId) => ({ assetId: `senderi/profiles/${publicId}` }),
+    destroy: async (assetId) => { destroyed.push(assetId); },
+  };
+  const app = createTestApp([owner], [sessionFor(owner)], { imageStorage: storage });
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+
+  const response = await request(app)
+    .put("/api/users/me/cover")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+    .attach("file", png, "cover.png");
+
+  assert.equal(response.status, 200);
+  assert.match(owner.coverId ?? "", /^senderi\/profiles\//);
+  assert.equal(owner.avatarId, "senderi/profiles/old-avatar");
+  assert.equal(response.body.user.coverId, owner.coverId);
+  assert.deepEqual(destroyed, ["senderi/profiles/old-cover"]);
+});
+
+test("profile image upload rejects files over 5 MB before calling storage", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  owner.avatarId = "senderi/profiles/old-avatar";
+  let uploadCalls = 0;
+  const storage: ProfileImageStorage = {
+    upload: async () => {
+      uploadCalls += 1;
+      return { assetId: "senderi/profiles/unexpected" };
+    },
+    destroy: async () => undefined,
+  };
+  const app = createTestApp([owner], [sessionFor(owner)], { imageStorage: storage });
+
+  const response = await request(app)
+    .put("/api/users/me/avatar")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+    .attach("file", Buffer.alloc(5 * 1024 * 1024 + 1), "large-avatar.png");
+
+  assert.equal(response.status, 413);
+  assert.equal(response.body.error.code, "file_too_large");
+  assert.equal(uploadCalls, 0);
+  assert.equal(owner.avatarId, "senderi/profiles/old-avatar");
+});
+
+test("failed profile update deletes the newly uploaded asset and preserves the old one", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  owner.avatarId = "senderi/profiles/old-avatar";
+  const destroyed: string[] = [];
+  let uploadedAssetId = "";
+  const storage: ProfileImageStorage = {
+    upload: async (_buffer, publicId) => {
+      uploadedAssetId = `senderi/profiles/${publicId}`;
+      return { assetId: uploadedAssetId };
+    },
+    destroy: async (assetId) => { destroyed.push(assetId); },
+  };
+  const app = createTestApp([owner], [sessionFor(owner)], {
+    imageStorage: storage,
+    failProfileUpdate: true,
+  });
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+
+  const response = await request(app)
+    .put("/api/users/me/avatar")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+    .attach("file", png, "avatar.png");
+
+  assert.equal(response.status, 500);
+  assert.equal(owner.avatarId, "senderi/profiles/old-avatar");
+  assert.equal(uploadedAssetId.length > 0, true);
+  assert.deepEqual(destroyed, [uploadedAssetId]);
+});
+
 test("profile image upload rejects invalid content and missing files", async () => {
   const owner = makeUser("owner@example.com", "Owner Example");
   const storage: ProfileImageStorage = {
     upload: async () => ({ assetId: "profiles/unused" }),
     destroy: async () => undefined,
   };
-  const app = createTestApp([owner], [sessionFor(owner)], storage);
+  const app = createTestApp([owner], [sessionFor(owner)], { imageStorage: storage });
   const notAnImage = Buffer.from("this is not an image");
   const cookie = `${SESSION_COOKIE_NAME}=profile-session-token`;
 
@@ -205,3 +377,42 @@ test("profile image upload rejects invalid content and missing files", async () 
   assert.equal(missing.status, 400);
   assert.equal(missing.body.error.code, "file_required");
 });
+
+for (const kind of ["avatar", "cover"] as const) {
+  test(`${kind} uploads cannot target another account and /me uses the session owner`, async () => {
+    const owner = makeUser("owner@example.com", "Owner");
+    const other = makeUser("other@example.com", "Other");
+    owner.avatarId = "profiles/owner-avatar";
+    owner.coverId = "profiles/owner-cover";
+    const destroyed: string[] = [];
+    let uploads = 0;
+    const app = createTestApp([owner, other], [sessionFor(other)], {
+      imageStorage: {
+        upload: async (_buffer, publicId) => {
+          uploads += 1;
+          return { assetId: `profiles/${publicId}` };
+        },
+        destroy: async (assetId) => { destroyed.push(assetId); },
+      },
+    });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const targeted = await request(app)
+      .put(`/api/users/${owner._id.toHexString()}/${kind}`)
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+      .attach("file", png, `${kind}.png`);
+    assert.equal(targeted.status, 404);
+    assert.equal(uploads, 0);
+    const own = await request(app)
+      .put(`/api/users/me/${kind}`)
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", `${SESSION_COOKIE_NAME}=profile-session-token`)
+      .attach("file", png, `${kind}.png`);
+    assert.equal(own.status, 200);
+    assert.equal(own.body.user.id, other._id.toHexString());
+    assert.equal(owner.avatarId, "profiles/owner-avatar");
+    assert.equal(owner.coverId, "profiles/owner-cover");
+    assert.equal(uploads, 1);
+    assert.deepEqual(destroyed, []);
+  });
+}

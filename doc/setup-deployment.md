@@ -52,6 +52,8 @@ npm test --prefix server
 
 The current automated test suite is in `server/test/`; there are no client tests yet. GitHub Actions runs the lint, type-check, build, and available server tests for every pull request. M0-J3.4 is complete only after a pull request has triggered the workflow and its check reports success or a clear failure. M0-J3 adds no environment variables.
 
+The profile image persistence test is optional and runs only when `MONGODB_TEST_URI` is set. Point it to a dedicated test MongoDB instance or cluster, not production. The test uses the `senderi_m2_l3_test` database, creates uniquely identified user and session records, closes the first database connection, reconnects with a new API app instance, and removes only those records afterward. Without this variable, the persistence test is skipped; upload and cleanup unit tests still run.
+
 For Atlas, create a MongoDB Atlas Free cluster and database user. Keep the connection string in `server/.env` or the deployment environment; do not commit it. Atlas Free has a 0.5 GB data limit, so keep image bytes in Cloudinary. [Atlas Free limits](https://www.mongodb.com/docs/atlas/reference/free-shared-limitations/)
 
 Create a Cloudinary account for M2/M4 image work. The server signs uploads and handles protected post-photo delivery; the browser does not receive the API secret.
@@ -67,6 +69,7 @@ The committed `server/.env.example` and `client/.env.example` contain placeholde
 | `NODE_ENV` | Server | Development or production behavior. |
 | `PORT` | Server | Render-provided listening port; local default documented by M0. |
 | `MONGODB_URI` | Server | Atlas connection string. |
+| `MONGODB_TEST_URI` | Server test only | Optional connection string for the isolated profile-image persistence test; use a dedicated test database/cluster, never production. |
 | `CLIENT_ORIGINS` | Server | Comma-separated exact Vercel or local client origins allowed for mutation and socket checks. Add a preview URL only while testing that preview. |
 | `TRUST_PROXY_HOPS` | Server | Number of trusted reverse-proxy hops before Express; `0` locally. Set the Render value to the verified request path's hop count so per-IP limits use the client address. |
 | `SESSION_SECRET` | Server | Random secret for session-token hashing or signing support. |

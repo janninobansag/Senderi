@@ -81,31 +81,31 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M2-L1 — Laica: Profile data and API
 
-- [x] **M2-L1.1** Add display name, bio, location, website, avatar ID, and cover ID to the profile model and shared response type.
+- [x] **M2-L1.1** Add display name, bio, location, website, avatar ID, and cover ID to the profile model and shared response type. *(These fields were already present in the model and shared `User` type; the profile API now returns them.)*
 - [x] **M2-L1.2** Implement signed-in profile read and owner-only text edit routes.
 - [x] **M2-L1.3** Validate field lengths and require an HTTPS URL for website.
-- [x] **M2-L1.4** Check owner success, non-owner denial, and invalid-field responses.
+- [x] **M2-L1.4** Check owner success, non-owner denial, and invalid-field responses. *(Two-account test confirms `/api/users/me` changes only the account identified by the authenticated session; PATCHing the other account’s ID is rejected with 404, and invalid fields return 400.)*
 
 ### M2-L2 — Laica: Profile screens
 
-- [x] **M2-L2.1** Show profile name, bio, information, avatar, cover, and friendship status.
-- [x] **M2-L2.2** Show edit controls only for the current user's profile.
-- [x] **M2-L2.3** Save text changes with loading, validation, and failure feedback.
-- [ ] **M2-L2.4** Check edits after refresh and from another signed-in account.
+- [x] **M2-L2.1** Show profile name, bio, information, avatar, cover, and friendship status. *(Renders Cloudinary avatar/cover URLs when configured and available, with graceful placeholders; the profile API reports self, accepted friends, or not friends.)*
+- [x] **M2-L2.2** Show edit controls only for the current user's profile. *(The edit form is rendered only when the loaded profile ID matches the signed-in user's ID.)*
+- [x] **M2-L2.3** Save text changes with loading, validation, and failure feedback. *(The form validates input, shows a saving state, and reports save success or errors.)*
+- [x] **M2-L2.4** Check edits after refresh and from another signed-in account. *(Manual browser check reported passed: saved changes persisted after refresh and were visible to another signed-in account.)*
 
 ### M2-L3 — Laica: Profile image storage
 
-- [x] **M2-L3.1** Validate avatar and cover file type/content and the 5 MB size limit on the server.
-- [x] **M2-L3.2** Upload the accepted image to Cloudinary and save its asset ID to the correct profile field.
-- [x] **M2-L3.3** Delete the old asset after successful replacement and the new asset if the database update fails.
-- [x] **M2-L3.4** Check upload, replacement, invalid file, and persistence after server restart.
+- [x] **M2-L3.1** Validate avatar and cover file type/content and the 5 MB size limit on the server. *(Server upload routes enforce the limit and validate JPEG, PNG, or WebP content; a test verifies oversized uploads are rejected before storage is called.)*
+- [x] **M2-L3.2** Upload the accepted image to Cloudinary and save its public ID to the correct profile field. *(Avatar and cover uploads store the returned public IDs in their matching profile fields; avatar and cover replacement paths are tested.)*
+- [x] **M2-L3.3** Delete the old asset after successful replacement and the new asset if the database update fails. *(Tests verify old-asset deletion after replacement and new-asset cleanup with the old profile ID preserved after a failed update.)*
+- [x] **M2-L3.4** Check upload, replacement, invalid file, and persistence after server restart. *(Passed: automated checks cover oversized and invalid files, avatar/cover replacement, and cleanup after a failed database update. The MongoDB persistence test passed after reconnecting and recreating the API app; the full suite reported 38 passed, 0 failed, and 0 skipped.)*
 
 ### M2-L4 — Laica: Profile image controls
 
 - [x] **M2-L4.1** Add avatar and cover pickers, previews, progress, and error messages.
 - [x] **M2-L4.2** Render both images in the profile layout at mobile and desktop widths.
-- [x] **M2-L4.3** Hide controls from non-owners and verify the API also rejects their upload attempts.
-- [x] **M2-L4.4** Check replacement in the browser without stale images after refresh.
+- [ ] **M2-L4.3** Hide controls from non-owners and verify the API also rejects their upload attempts.
+- [ ] **M2-L4.4** Check replacement in the browser without stale images after refresh.
 
 ## M3 — Friends
 

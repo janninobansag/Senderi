@@ -6,7 +6,7 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toAuthUserResponse, toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type UserDocument } from "../db/documents";
+import { collectionNames, type FriendshipDocument, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { requireClientOrigin } from "../middleware/require-client-origin";
 import { validateBody } from "../middleware/validate-body";
@@ -49,6 +49,7 @@ type ProfilePatchInput = z.infer<typeof profilePatchSchema>;
 export interface UsersRouterDependencies {
   getDatabase: () => Db;
   getAllowedOrigins: () => readonly string[];
+  getCloudinaryCloudName: () => string | undefined;
   now: () => Date;
   imageStorage: ProfileImageStorage;
 }
@@ -60,6 +61,7 @@ const defaultDependencies: UsersRouterDependencies = {
       .split(",")
       .map((origin) => origin.trim())
       .filter(Boolean),
+  getCloudinaryCloudName: () => process.env.CLOUDINARY_CLOUD_NAME,
   now: () => new Date(),
   imageStorage: cloudinaryProfileImageStorage,
 };
@@ -98,10 +100,23 @@ export function createUsersRouter(
     }
 
     const currentUserId = getAuthenticatedSession(response).user._id;
+    let friendshipStatus: "self" | "friends" | "none" = "none";
+    if (currentUserId.equals(user._id)) {
+      friendshipStatus = "self";
+    } else {
+      const [userIdLow, userIdHigh] = [currentUserId, user._id].sort((left, right) =>
+        left.toHexString().localeCompare(right.toHexString()),
+      );
+      const friendship = await database
+        .collection<FriendshipDocument>(collectionNames.friendships)
+        .findOne({ userIdLow, userIdHigh });
+      if (friendship) friendshipStatus = "friends";
+    }
+
     response.setHeader("Cache-Control", "private, no-store");
     response.json({
-      user: toPublicUserResponse(user),
-      friendshipStatus: currentUserId.equals(user._id) ? "self" : "none",
+      user: toPublicUserResponse(user, dependencies.getCloudinaryCloudName()),
+      friendshipStatus,
     });
   });
 
