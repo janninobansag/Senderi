@@ -7,7 +7,7 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type PostDocument, type PostVisibility, type UserDocument } from "../db/documents";
+import { collectionNames, type LikeDocument, type PostDocument, type PostVisibility, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { cloudinaryPostPhotoStorage, validatePostPhoto, type PostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
@@ -34,6 +34,19 @@ interface PostResponseItem {
   photoUrl?: string;
   visibility: PostVisibility;
   createdAt: string;
+  likeCount: number;
+  isLikedByViewer: boolean;
+}
+
+interface LikeSummary {
+  likeCount: number;
+  isLikedByViewer: boolean;
+}
+
+interface AggregatedLikeSummary {
+  _id: ObjectId;
+  likeCount: number;
+  viewerLikeCount: number;
 }
 
 interface PostListResponse {
@@ -79,7 +92,12 @@ function toObjectIdOrNotFound(value: string, resource: "post" | "profile"): Obje
   return new ObjectId(value);
 }
 
-function toPostResponse(post: PostDocument, author: UserDocument, cloudName?: string): PostResponseItem {
+function toPostResponse(
+  post: PostDocument,
+  author: UserDocument,
+  likeSummary: LikeSummary,
+  cloudName?: string,
+): PostResponseItem {
   return {
     id: post._id.toHexString(),
     author: toPublicUserResponse(author, cloudName),
@@ -87,36 +105,77 @@ function toPostResponse(post: PostDocument, author: UserDocument, cloudName?: st
     ...(post.photoAssetId ? { photoUrl: `/api/posts/${post._id.toHexString()}/photo` } : {}),
     visibility: post.visibility,
     createdAt: post.createdAt.toISOString(),
+    ...likeSummary,
   };
 }
 
-async function toPostResponses(database: Db, posts: PostDocument[], cloudName?: string): Promise<PostResponseItem[]> {
+async function toPostResponses(
+  database: Db,
+  posts: PostDocument[],
+  viewerId: ObjectId,
+  cloudName?: string,
+): Promise<PostResponseItem[]> {
   if (posts.length === 0) return [];
 
   const authorIds = [...new Map(posts.map((post) => [
     post.authorId.toHexString(),
     post.authorId,
   ])).values()];
-  const authors = await database
-    .collection<UserDocument>(collectionNames.users)
-    .find({ _id: { $in: authorIds } }, {
-      projection: {
-        _id: 1,
-        displayName: 1,
-        bio: 1,
-        info: 1,
-        avatarId: 1,
-        coverId: 1,
-        createdAt: 1,
+  const postIds = posts.map((post) => post._id);
+  const [authors, likeSummaries] = await Promise.all([
+    database
+      .collection<UserDocument>(collectionNames.users)
+      .find({ _id: { $in: authorIds } }, {
+        projection: {
+          _id: 1,
+          displayName: 1,
+          bio: 1,
+          info: 1,
+          avatarId: 1,
+          coverId: 1,
+          createdAt: 1,
+        },
+      })
+      .toArray(),
+    database.collection<LikeDocument>(collectionNames.likes).aggregate<AggregatedLikeSummary>([
+      { $match: { postId: { $in: postIds } } },
+      {
+        $group: {
+          _id: "$postId",
+          likeCount: { $sum: 1 },
+          viewerLikeCount: { $sum: { $cond: [{ $eq: ["$userId", viewerId] }, 1, 0] } },
+        },
       },
-    })
-    .toArray();
+    ]).toArray(),
+  ]);
   const authorsById = new Map(authors.map((author) => [author._id.toHexString(), author]));
+  const likesByPostId = new Map(likeSummaries.map((summary) => [summary._id.toHexString(), {
+    likeCount: summary.likeCount,
+    isLikedByViewer: summary.viewerLikeCount > 0,
+  }]));
 
   return posts.flatMap((post) => {
     const author = authorsById.get(post.authorId.toHexString());
-    return author ? [toPostResponse(post, author, cloudName)] : [];
+    return author ? [toPostResponse(
+      post,
+      author,
+      likesByPostId.get(post._id.toHexString()) ?? { likeCount: 0, isLikedByViewer: false },
+      cloudName,
+    )] : [];
   });
+}
+
+async function getPostLikeSummary(database: Db, postId: ObjectId, viewerId: ObjectId): Promise<LikeSummary> {
+  const likes = database.collection<LikeDocument>(collectionNames.likes);
+  const [likeCount, viewerLike] = await Promise.all([
+    likes.countDocuments({ postId }),
+    likes.findOne({ postId, userId: viewerId }, { projection: { _id: 1 } }),
+  ]);
+  return { likeCount, isLikedByViewer: viewerLike !== null };
+}
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 11000;
 }
 
 function toPostListResponse(posts: PostResponseItem[], nextCursor: string | null): PostListResponse {
@@ -196,8 +255,12 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         });
       }
 
+      const session = getAuthenticatedSession(response);
+      const likeSummary = await getPostLikeSummary(database, updated._id, session.user._id);
       response.setHeader("Cache-Control", "private, no-store");
-      response.json({ post: toPostResponse(updated, getAuthenticatedSession(response).user, dependencies.getCloudinaryCloudName()) } satisfies PostResponse);
+      response.json({
+        post: toPostResponse(updated, session.user, likeSummary, dependencies.getCloudinaryCloudName()),
+      } satisfies PostResponse);
     },
   );
 
@@ -240,7 +303,8 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
 
       const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
       const session = getAuthenticatedSession(response);
-      const updated = await dependencies.getDatabase()
+      const database = dependencies.getDatabase();
+      const updated = await database
         .collection<PostDocument>(collectionNames.posts)
         .findOneAndUpdate(
           { _id: postId, authorId: session.user._id },
@@ -250,10 +314,70 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
 
       if (!updated) throw new HttpError(404, "not_found", "Post was not found.");
 
+      const likeSummary = await getPostLikeSummary(database, updated._id, session.user._id);
       response.setHeader("Cache-Control", "private, no-store");
       response.json({
-        post: toPostResponse(updated, session.user, dependencies.getCloudinaryCloudName()),
+        post: toPostResponse(updated, session.user, likeSummary, dependencies.getCloudinaryCloudName()),
       } satisfies PostResponse);
+    },
+  );
+
+  router.put(
+    "/:postId/like",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+      if (!post || !(await canViewPost(database, session.user._id, post))) {
+        throw new HttpError(404, "not_found", "Post was not found.");
+      }
+
+      try {
+        await database.collection<LikeDocument>(collectionNames.likes).updateOne(
+          { userId: session.user._id, postId },
+          {
+            $setOnInsert: {
+              _id: new ObjectId(),
+              userId: session.user._id,
+              postId,
+              createdAt: new Date(),
+            },
+          },
+          { upsert: true },
+        );
+      } catch (error) {
+        if (!isDuplicateKeyError(error)) throw error;
+      }
+
+      const likeSummary = await getPostLikeSummary(database, postId, session.user._id);
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json(likeSummary);
+    },
+  );
+
+  router.delete(
+    "/:postId/like",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+      if (!post || !(await canViewPost(database, session.user._id, post))) {
+        throw new HttpError(404, "not_found", "Post was not found.");
+      }
+
+      await database.collection<LikeDocument>(collectionNames.likes).deleteOne({
+        userId: session.user._id,
+        postId,
+      });
+      const likeSummary = await getPostLikeSummary(database, postId, session.user._id);
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json(likeSummary);
     },
   );
 
@@ -303,7 +427,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
 
       response.setHeader("Cache-Control", "private, no-store");
       response.status(201).json({
-        post: toPostResponse(post, session.user, dependencies.getCloudinaryCloudName()),
+        post: toPostResponse(post, session.user, { likeCount: 0, isLikedByViewer: false }, dependencies.getCloudinaryCloudName()),
       } satisfies PostResponse);
     },
   );
@@ -313,7 +437,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     const database = dependencies.getDatabase();
     const viewerId = getAuthenticatedSession(response).user._id;
     const page = await listVisiblePostDocuments(database, viewerId, query);
-    const items = await toPostResponses(database, page.items, dependencies.getCloudinaryCloudName());
+    const items = await toPostResponses(database, page.items, viewerId, dependencies.getCloudinaryCloudName());
 
     response.setHeader("Cache-Control", "private, no-store");
     response.json(toPostListResponse(items, page.nextCursor));
@@ -334,8 +458,9 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       .findOne({ _id: post.authorId });
     if (!author) throw new HttpError(404, "not_found", "Post was not found.");
 
+    const likeSummary = await getPostLikeSummary(database, postId, viewerId);
     const body: PostResponse = {
-      post: toPostResponse(post, author, dependencies.getCloudinaryCloudName()),
+      post: toPostResponse(post, author, likeSummary, dependencies.getCloudinaryCloudName()),
     };
     response.setHeader("Cache-Control", "private, no-store");
     response.json(body);
@@ -358,7 +483,7 @@ export function createUserPostsRouter(overrides: Partial<PostsRouterDependencies
     const query = parsePageQuery(request.query as Record<string, unknown>);
     const viewerId = getAuthenticatedSession(response).user._id;
     const page = await listVisiblePostDocuments(database, viewerId, { ...query, authorId });
-    const items = await toPostResponses(database, page.items, dependencies.getCloudinaryCloudName());
+    const items = await toPostResponses(database, page.items, viewerId, dependencies.getCloudinaryCloudName());
 
     response.setHeader("Cache-Control", "private, no-store");
     response.json(toPostListResponse(items, page.nextCursor));

@@ -24,6 +24,7 @@ The exact counters and cap are initial development defaults. Review them before 
 ## Authorization and media
 
 - Centralize `canViewPost(viewer, post)` and use it for feed queries, direct post reads, Likes, comments, shares, and photo delivery. Only the author changes audience. Check share visibility and the original post's current Public status on every share read.
+- Require a signed-in session, an allowed Origin, and the current `canViewPost` result before creating or removing a Like. Keep one Like per user/post with the unique index; do not expose counts for posts the viewer cannot read.
 - Friendship is accepted and mutual before it grants access. Recheck it for each chat send and history request. Treat IDs from the browser as lookup targets, never as proof of identity.
 - Upload post photos as Cloudinary `authenticated` assets through the author's session and exact allowed Origin. For each `GET /api/posts/:postId/photo`, rerun the current post audience check before streaming bytes; never return the Cloudinary asset ID or provider URL to clients. Ordinary Cloudinary `upload` assets are public by default. [Cloudinary media access](https://cloudinary.com/documentation/control_access_to_media).
 - Create text-and-photo posts through the same authenticated, Origin-checked route. Validate multipart text, audience, and inspected photo content before saving; if post insertion fails after upload, delete the new asset. Only the author may change a post's audience, and all feed, direct-post, and photo requests must use the updated audience immediately.

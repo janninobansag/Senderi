@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { CreatePostRequest, CreatePostResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, Visibility } from "../../../shared";
+import type { CreatePostRequest, CreatePostResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, Visibility } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
 import { EmptyState, LoadingState, RequestErrorState } from "./AsyncState";
@@ -202,9 +202,40 @@ function PostCard({ post, onUpdated }: { post: Post; onUpdated: (updated: Post) 
   const { user } = useAuth();
   const [isUpdating, setIsUpdating] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<{ text: string; isError: boolean } | null>(null);
+  const [likeState, setLikeState] = useState({
+    likeCount: post.likeCount,
+    isLikedByViewer: post.isLikedByViewer,
+  });
+  const [isLikePending, setIsLikePending] = useState(false);
+  const [likeMessage, setLikeMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const isOwner = user?.id === post.author.id;
   const initial = post.author.displayName.trim().charAt(0).toUpperCase() || "S";
   const createdAt = new Date(post.createdAt);
+
+  useEffect(() => {
+    setLikeState({ likeCount: post.likeCount, isLikedByViewer: post.isLikedByViewer });
+  }, [post.likeCount, post.isLikedByViewer]);
+
+  async function toggleLike() {
+    if (isLikePending) return;
+    const wasLiked = likeState.isLikedByViewer;
+    setIsLikePending(true);
+    setLikeMessage(null);
+    try {
+      const response = await apiFetch<LikeResponse>(`/api/posts/${post.id}/like`, {
+        method: wasLiked ? "DELETE" : "PUT",
+      });
+      setLikeState(response);
+      setLikeMessage({ text: wasLiked ? "Like removed." : "Post liked.", isError: false });
+    } catch (error: unknown) {
+      setLikeMessage({
+        text: error instanceof ApiError ? error.message : "We couldn’t update your Like. Try again.",
+        isError: true,
+      });
+    } finally {
+      setIsLikePending(false);
+    }
+  }
 
   async function changeAudience(nextVisibility: Visibility) {
     if (!isOwner || nextVisibility === post.visibility || isUpdating) return;
@@ -289,6 +320,26 @@ function PostCard({ post, onUpdated }: { post: Post; onUpdated: (updated: Post) 
           referrerPolicy="no-referrer"
         />
       )}
+      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+        <button
+          className="button-secondary disabled:opacity-60"
+          type="button"
+          aria-pressed={likeState.isLikedByViewer}
+          aria-label={likeState.isLikedByViewer ? "Unlike post" : "Like post"}
+          disabled={isLikePending}
+          onClick={() => void toggleLike()}
+        >
+          {isLikePending ? (likeState.isLikedByViewer ? "Removing Like…" : "Liking…") : likeState.isLikedByViewer ? "Liked" : "Like"}
+        </button>
+        <span className="text-sm text-muted" aria-live="polite">
+          {likeState.likeCount} {likeState.likeCount === 1 ? "Like" : "Likes"}
+        </span>
+        {likeMessage && (
+          <p className={likeMessage.isError ? "form-error" : "form-success"} role={likeMessage.isError ? "alert" : "status"}>
+            {likeMessage.text}
+          </p>
+        )}
+      </div>
     </article>
   );
 }

@@ -47,14 +47,14 @@ MongoDB collections: `users`, `sessions`, `friendRequests`, `friendships`, `post
 | `PATCH /api/friend-requests/:requestId` | `{ action: "accept" | "decline" }` -> `{ request: FriendRequest }` | Recipient only; only pending requests can be resolved. The pending-to-resolved transition is conditional, so concurrent responses have one winner; acceptance creates one canonical mutual-friendship record. |
 | `GET /api/friends?cursor=&limit=` | `{ items: User[], nextCursor }`, newest friendships first; defaults to 20 and caps at 50 | Current user; returns public profile fields only. |
 | `DELETE /api/friends/:userId` | `204` | Either friend may remove the canonical friendship record; repeated removal is safe. |
-| `GET /api/posts` | Paged feed of visible posts and shares | Signed in; filter in the database and recheck before returning. |
-| `GET /api/users/:userId/posts` | Paged visible posts and shares by user | Signed in; apply current audience. |
-| `GET /api/posts/:postId` | Post detail | Viewer must pass current audience check. |
+| `GET /api/posts` | Paged feed of visible posts and shares, including `likeCount` and `isLikedByViewer` for each post | Signed in; filter in the database and recheck before returning. |
+| `GET /api/users/:userId/posts` | Paged visible posts and shares by user, including `likeCount` and `isLikedByViewer` | Signed in; apply current audience. |
+| `GET /api/posts/:postId` | Post detail with Like count and viewer state | Viewer must pass current audience check. |
 | `POST /api/posts` | JSON `{ text, visibility }` or multipart `text`, `visibility`, and optional `file` -> post | Signed in; derives the author from the current session. Multipart photos are inspected and uploaded as authenticated assets before inserting the post; failed inserts clean up the uploaded asset. |
 | `PATCH /api/posts/:postId` | `{ visibility }` -> post | Author only; requires an allowed Origin and persists the new audience. Feed, direct reads, and photo reads apply it immediately. |
 | `PUT /api/posts/:postId/photo` | One multipart `file` -> post | Author only; one JPEG, PNG, or WebP up to 5 MB, inspected on the server and stored as an authenticated Cloudinary asset. |
 | `GET /api/posts/:postId/photo` | Image byte stream | Signed in; rechecks the post's current audience and streams protected Cloudinary media without revealing a provider URL. Response is `private, no-store`. |
-| `PUT /api/posts/:postId/like`, `DELETE /api/posts/:postId/like` | Like/unlike -> count and viewer state | Viewer must pass post audience check; idempotent. |
+| `PUT /api/posts/:postId/like`, `DELETE /api/posts/:postId/like` | `{ likeCount, isLikedByViewer }` | Signed in; exact allowed Origin and current post visibility required. A unique user/post index makes repeated Like requests idempotent; repeated unlike is also safe. |
 | `GET /api/posts/:postId/comments` | Paged comments | Viewer must pass post audience check. |
 | `POST /api/posts/:postId/comments` | `{ text }` -> comment | Viewer must pass post audience check. |
 | `POST /api/posts/:postId/shares` | `{ visibility }` -> share | Source post must currently be Public; share author is current user. |
