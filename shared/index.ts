@@ -160,3 +160,14 @@ export interface CreateCommentRequest {
 export interface CreateCommentResponse {
   comment: Comment;
 }
+
+/** A stored one-to-one message returned in authorized conversation history. */
+export interface Message {
+  id: string;
+  senderId: UserId;
+  recipientId: UserId;
+  text: string;
+  createdAt: string;
+}
+
+export type MessageHistoryResponse = Page<Message>;

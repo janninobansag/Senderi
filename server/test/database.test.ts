@@ -49,6 +49,15 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       [{ visibility: 1, createdAt: -1, _id: -1 }, "posts_visibility_newest_first"],
     ],
   );
+  assert.deepEqual(
+    databaseIndexes
+      .filter((index) => index.options.name.startsWith("messages_"))
+      .map(({ keys, options }) => [keys, options.name]),
+    [
+      [{ senderId: 1, clientId: 1 }, "messages_sender_client_unique"],
+      [{ senderId: 1, recipientId: 1, createdAt: -1, _id: -1 }, "messages_conversation_newest_first"],
+    ],
+  );
 
   const ttlIndexes = databaseIndexes.filter((index) => index.options.expireAfterSeconds !== undefined);
   assert.deepEqual(

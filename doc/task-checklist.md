@@ -194,10 +194,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M6-L1 — Laica: Stored messages
 
-- [ ] **M6-L1.1** Define message records with sender, recipient, text, creation time, and client ID.
-- [ ] **M6-L1.2** Add indexed, paged conversation history in stable message order.
-- [ ] **M6-L1.3** Require current accepted friendship before returning history.
-- [ ] **M6-L1.4** Check friend history and non-friend denial with two accounts.
+- [x] **M6-L1.1** Define message records with sender, recipient, text, creation time, and client ID. *(MongoDB `MessageDocument` stores sender, recipient, text, creation time, and sender-generated client ID; the shared `Message` response exposes public history fields without the retry-only client ID.)*
+- [x] **M6-L1.2** Add indexed, paged conversation history in stable message order. *(`GET /api/chats/:friendId/messages` returns stable newest-first pages sorted by `createdAt` and `_id`, using an opaque cursor and the `messages_conversation_newest_first` compound index.)*
+- [x] **M6-L1.3** Require current accepted friendship before returning history. *(The history route calls the persisted `areFriends` check on every request and returns the same `404` for non-friends and removed friends.)*
+- [x] **M6-L1.4** Check friend history and non-friend denial with two accounts. *(Server tests verify both sides of a two-account accepted conversation can page the same history, an outsider receives `404`, friendship removal immediately revokes access, cursor pages stay ordered without overlap, and malformed paging input is rejected.)*
 
 ### M6-L2 — Laica: Socket server
 
