@@ -215,10 +215,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M6-L4 — Laica: Chat resilience
 
-- [ ] **M6-L4.1** Exchange messages, restart or let Render sleep, reconnect, and compare stored history with the UI.
-- [ ] **M6-L4.2** Remove friendship while chat is open and check send and history are denied.
-- [ ] **M6-L4.3** Open multiple tabs for one user and check delivery without duplicate persisted messages.
-- [ ] **M6-L4.4** Document any free-tier reconnect delay seen during acceptance.
+- [ ] **M6-L4.1** Exchange messages, restart or let Render sleep, reconnect, and compare stored history with the UI. *(An opt-in MongoDB integration test exchanges messages over Socket.IO, restarts the API and database connections, obtains fresh tickets, reconnects both sockets, and compares both history responses to stored records. Still verify the recovered conversation in the browser after a server restart; a deployed Render sleep is an alternative.)*
+- [x] **M6-L4.2** Remove friendship while chat is open and check send and history are denied. *(Socket integration coverage removes the friendship after connection, confirms the open socket rejects a new send, and confirms the history route returns 404 without exposing prior messages.)*
+- [x] **M6-L4.3** Open multiple tabs for one user and check delivery without duplicate persisted messages. *(Socket integration coverage opens two concurrent sockets for one user, confirms both receive the same single message event, retries with the same client ID, and verifies one stored record and no duplicate deliveries.)*
+- [ ] **M6-L4.4** Document any free-tier reconnect delay seen during acceptance. *(No deployed Render free-tier delay has been observed yet. Record the measured reconnect time in `doc/chat-resilience-acceptance.md` during deployed acceptance.)*
 
 ## M7 — Deployment and release
 
