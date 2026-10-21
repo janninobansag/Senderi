@@ -102,10 +102,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M2-L4 — Laica: Profile image controls
 
-- [ ] **M2-L4.1** Add avatar and cover pickers, previews, progress, and error messages.
-- [ ] **M2-L4.2** Render both images in the profile layout at mobile and desktop widths.
-- [ ] **M2-L4.3** Hide controls from non-owners and verify the API also rejects their upload attempts.
-- [ ] **M2-L4.4** Check replacement in the browser without stale images after refresh.
+- [x] **M2-L4.1** Add avatar and cover pickers, previews, progress, and error messages. *(Owner controls preview selected images, show upload progress, validate the 5 MB limit and supported image types, and report success or errors.)*
+- [x] **M2-L4.2** Render both images in the profile layout at mobile and desktop widths. *(Cover sizing and image cropping are responsive; picker placement adapts at the mobile breakpoint.)*
+- [x] **M2-L4.3** Hide controls from non-owners and verify the API also rejects their upload attempts. *(Pickers render only for the profile owner. Server tests confirm unauthenticated uploads return 401 and a signed-in user cannot target another user's avatar or cover route.)*
+- [x] **M2-L4.4** Check replacement in the browser without stale images after refresh. *(Browser test replaced the avatar and cover with distinct images; after a full page refresh, both new Cloudinary images loaded from their saved URLs without stale images. Test assets were deleted and the profile was restored to placeholders.)*
 
 ## M3 — Friends
 

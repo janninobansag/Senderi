@@ -72,3 +72,53 @@ export async function apiFetch<T>(path: string, options: ApiRequestInit = {}): P
 
   return responseBody as T;
 }
+
+export function apiUpload<T>(path: string, file: File, onProgress: (percent: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", path);
+    request.withCredentials = true;
+    request.setRequestHeader("Accept", "application/json");
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    });
+    request.addEventListener("load", () => {
+      const contentType = request.getResponseHeader("content-type") ?? "";
+      let responseBody: unknown;
+
+      if (contentType.includes("application/json")) {
+        try {
+          responseBody = JSON.parse(request.responseText);
+        } catch {
+          reject(new ApiError("The server returned an invalid response.", request.status, "invalid_response"));
+          return;
+        }
+      }
+
+      if (request.status < 200 || request.status >= 300) {
+        const retryAfterHeader = request.getResponseHeader("Retry-After");
+        const retryAfterSeconds = retryAfterHeader && /^\d+$/.test(retryAfterHeader)
+          ? Number(retryAfterHeader)
+          : null;
+        if (isApiErrorBody(responseBody)) {
+          reject(new ApiError(responseBody.error.message, request.status, responseBody.error.code, retryAfterSeconds));
+          return;
+        }
+        reject(new ApiError("The request could not be completed.", request.status, "request_failed", retryAfterSeconds));
+        return;
+      }
+
+      resolve(responseBody as T);
+    });
+    request.addEventListener("error", () => {
+      reject(new ApiError("Could not reach Senderi. Check your connection and try again.", 0, "network_error"));
+    });
+    request.addEventListener("abort", () => {
+      reject(new ApiError("The upload was canceled.", 0, "upload_aborted"));
+    });
+
+    const body = new FormData();
+    body.append("file", file);
+    request.send(body);
+  });
+}

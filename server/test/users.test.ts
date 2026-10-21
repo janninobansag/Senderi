@@ -100,12 +100,13 @@ function createTestApp(
 }
 
 function sessionFor(user: UserDocument, token = "profile-session-token"): SessionDocument {
+  const createdAt = new Date();
   return {
     _id: new ObjectId(),
     userId: user._id,
     tokenHash: hashSessionToken(token),
-    createdAt: new Date("2026-10-01T00:00:00.000Z"),
-    expiresAt: new Date("2026-10-08T00:00:00.000Z"),
+    createdAt,
+    expiresAt: new Date(createdAt.getTime() + 7 * 24 * 60 * 60 * 1_000),
   };
 }
 
@@ -292,6 +293,49 @@ test("cover upload replaces only the cover and deletes the previous cover asset"
   assert.equal(owner.avatarId, "senderi/profiles/old-avatar");
   assert.equal(response.body.user.coverId, owner.coverId);
   assert.deepEqual(destroyed, ["senderi/profiles/old-cover"]);
+});
+
+test("profile image uploads require a session and cannot target another user's image", async () => {
+  const owner = makeUser("owner@example.com", "Owner Example");
+  const viewer = makeUser("viewer@example.com", "Viewer Example");
+  let uploadCalls = 0;
+  const storage: ProfileImageStorage = {
+    upload: async (_buffer, publicId) => {
+      uploadCalls += 1;
+      return { assetId: `senderi/profiles/${publicId}` };
+    },
+    destroy: async () => undefined,
+  };
+  const app = createTestApp([owner, viewer], [sessionFor(viewer, "viewer-profile-token")], { imageStorage: storage });
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+
+  const unauthenticated = await request(app)
+    .put("/api/users/me/avatar")
+    .set("Origin", "http://localhost:5173")
+    .attach("file", png, "avatar.png");
+  assert.equal(unauthenticated.status, 401);
+
+  const otherProfile = await request(app)
+    .put(`/api/users/${owner._id.toHexString()}/avatar`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=viewer-profile-token`)
+    .attach("file", png, "avatar.png");
+  assert.equal(otherProfile.status, 404);
+
+  const otherCover = await request(app)
+    .put(`/api/users/${owner._id.toHexString()}/cover`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=viewer-profile-token`)
+    .attach("file", png, "cover.png");
+  assert.equal(otherCover.status, 404);
+  assert.equal(uploadCalls, 0);
+  assert.equal(owner.avatarId, undefined);
+  assert.equal(owner.coverId, undefined);
+  assert.equal(viewer.avatarId, undefined);
+  assert.equal(viewer.coverId, undefined);
 });
 
 test("profile image upload rejects files over 5 MB before calling storage", async () => {
