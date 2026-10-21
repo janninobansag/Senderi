@@ -231,7 +231,7 @@ export function MessagesPage() {
       autoConnect: false,
       withCredentials: true,
       auth: (callback) => {
-        void apiFetch<SocketTicketResponse>("/api/auth/socket-ticket")
+        void apiFetch<SocketTicketResponse>("/api/auth/socket-ticket", { method: "POST", body: {} })
           .then(({ ticket }) => callback({ ticket }))
           .catch(() => callback({ ticket: "" }));
       },
