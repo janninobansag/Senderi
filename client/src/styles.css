@@ -113,6 +113,35 @@ button { cursor: pointer; }
 .hero-orbit { position: absolute; border: 1px solid rgb(169 201 255 / 16%); border-radius: 50%; pointer-events: none; }
 .hero-orbit-one { right: -130px; top: -210px; height: 560px; width: 560px; }
 .hero-orbit-two { right: -50px; top: -130px; height: 400px; width: 400px; }
+.friend-count { display: inline-flex; width: fit-content; border-radius: 999px; background: var(--color-blue-soft); padding: 7px 11px; color: var(--color-violet-dark); font-size: 12px; font-weight: 700; }
+.friend-tabs { display: flex; gap: 6px; overflow-x: auto; margin-top: 25px; border-bottom: 1px solid var(--color-line); }
+.friend-tab { min-height: 44px; flex: 0 0 auto; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 0 14px; color: var(--color-muted); font-size: 14px; font-weight: 700; }
+.friend-tab:hover { color: var(--color-ink); }
+.friend-tab-active { border-bottom-color: var(--color-violet); color: var(--color-violet-dark); }
+.friend-subtabs { display: flex; width: fit-content; max-width: 100%; gap: 4px; overflow-x: auto; border-radius: 12px; background: var(--color-canvas); padding: 4px; }
+.friend-subtab { min-height: 36px; flex: 0 0 auto; border: 0; border-radius: 9px; background: transparent; padding: 0 12px; color: var(--color-muted); font-size: 12px; font-weight: 700; }
+.friend-subtab-active { background: white; color: var(--color-violet-dark); box-shadow: 0 2px 8px rgb(20 33 61 / 8%); }
+.friend-search-form { display: flex; align-items: center; gap: 10px; }
+.friend-search-form .form-input { min-width: 0; flex: 1; }
+.friend-list { display: grid; gap: 10px; margin-bottom: 0; padding: 0; list-style: none; }
+.friend-card { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid var(--color-line); border-radius: 16px; background: white; padding: 13px 15px; }
+.friend-person { display: flex; min-width: 0; align-items: center; gap: 12px; }
+.friend-avatar { display: grid; height: 46px; width: 46px; flex: 0 0 auto; place-items: center; overflow: hidden; border-radius: 50%; background: var(--color-blue-soft); color: var(--color-violet-dark); font-size: 17px; font-weight: 800; }
+.friend-avatar img { height: 100%; width: 100%; object-fit: cover; }
+.friend-person-copy { min-width: 0; }
+.friend-person-name { color: var(--color-ink); font-size: 14px; font-weight: 700; text-decoration: none; }
+.friend-person-name:hover { color: var(--color-violet-dark); text-decoration: underline; text-underline-offset: 3px; }
+.friend-person-copy p { overflow: hidden; margin: 3px 0 0; color: var(--color-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.friend-card-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.friend-action { min-height: 36px; border-radius: 10px; padding: 0 12px; font-size: 12px; text-decoration: none; }
+.friend-action:disabled { cursor: wait; opacity: .62; }
+.button-secondary { display: inline-flex; min-height: 40px; align-items: center; justify-content: center; border: 1px solid var(--color-line); border-radius: 12px; background: white; padding: 0 14px; color: var(--color-ink); font-size: 13px; font-weight: 700; transition: border-color .18s, background .18s, color .18s; }
+.button-secondary:hover { border-color: #bccde7; background: #f8faff; color: var(--color-violet-dark); }
+.button-secondary:disabled { cursor: wait; opacity: .62; }
+.friend-relationship { display: inline-flex; align-items: center; border-radius: 999px; background: #edf3ff; padding: 8px 11px; color: var(--color-violet-dark); font-size: 12px; font-weight: 700; }
+.friend-relationship-muted { background: #f2f4f8; color: var(--color-muted); }
+.friend-feedback { margin: 14px 0 0; border-radius: 10px; background: #f3fbf7; padding: 10px 12px; color: #28643e; font-size: 13px; font-weight: 600; }
+.friend-feedback-error { background: #fff4f4; color: #9c3047; }
 
 @media (max-width: 640px) {
   .hero-card { min-height: 390px; }
@@ -120,6 +149,11 @@ button { cursor: pointer; }
   .profile-cover-picker { top: 12px; right: 12px; }
   .profile-image-picker { min-height: 38px; padding: 0 11px; }
   .profile-avatar-picker { min-height: 0; padding: 0; }
+  .friend-search-form { align-items: stretch; flex-direction: column; }
+  .friend-search-form .button-accent { justify-content: center; }
+  .friend-card { align-items: flex-start; flex-direction: column; }
+  .friend-card-actions { width: 100%; justify-content: flex-start; }
+  .friend-action { flex: 1 1 auto; }
 }
 
 @media (max-width: 820px) {
