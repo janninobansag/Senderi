@@ -16,6 +16,7 @@ interface PostTestData {
   sessions: SessionDocument[];
   friendships: FriendshipDocument[];
   posts: PostDocument[];
+  failPostInsert?: boolean;
   failPostUpdate?: boolean;
 }
 
@@ -105,6 +106,7 @@ function createDatabase(data: PostTestData): Db {
       if (name === collectionNames.posts) {
         return {
           insertOne: async (post: PostDocument) => {
+            if (data.failPostInsert) throw new Error("Simulated post insert failure.");
             data.posts.push(post);
             return { acknowledged: true, insertedId: post._id };
           },
@@ -316,6 +318,7 @@ test("post creation attributes the authenticated author and returns only public 
   const { data, tokens } = matrixFixture();
   const response = await request(createApp(data))
     .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
     .set("Cookie", cookie(tokens.friend))
     .send({ text: "  A fresh update  ", visibility: "friends" })
     .expect(201);
@@ -347,13 +350,18 @@ test("post creation rejects missing, blank, oversized, malformed, or non-text-on
   for (const body of invalidBodies) {
     const response = await request(app)
       .post("/api/posts")
+      .set("Origin", "http://localhost:5173")
       .set("Cookie", authCookie)
       .send(body)
       .expect(400);
     assert.equal(response.body.error.code, "validation_error");
   }
 
-  await request(app).post("/api/posts").send({ text: "Unauthenticated", visibility: "public" }).expect(401);
+  await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .send({ text: "Unauthenticated", visibility: "public" })
+    .expect(401);
   assert.equal(data.posts.length, 3);
 });
 
@@ -365,6 +373,7 @@ test("two accounts see newly created posts after reloading according to each sel
   for (const visibility of ["public", "friends", "onlyMe"] as const) {
     await request(app)
       .post("/api/posts")
+      .set("Origin", "http://localhost:5173")
       .set("Cookie", cookie(tokens.author))
       .send({ text: `${visibility} update`, visibility })
       .expect(201);
@@ -390,6 +399,187 @@ test("two accounts see newly created posts after reloading according to each sel
   assert.deepEqual(friendTimeline.body.items.map((post: { visibility: string }) => post.visibility), [
     "friends", "public",
   ]);
+});
+
+test("post creation publishes text and an inspected photo together and removes an orphan if insert fails", async () => {
+  const { data, tokens } = matrixFixture();
+  const uploaded: Array<{ buffer: Buffer; publicId: string }> = [];
+  const destroyed: string[] = [];
+  const storage = createPhotoStorage({
+    upload: async (buffer, publicId) => {
+      uploaded.push({ buffer, publicId });
+      return { assetId: `senderi/posts/${publicId}` };
+    },
+    destroy: async (assetId) => { destroyed.push(assetId); },
+  });
+  const app = createApp(data, storage);
+
+  const response = await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .field("text", "A caption with a photo")
+    .field("visibility", "friends")
+    .attach("file", validPng, "moment.png")
+    .expect(201);
+
+  const post = data.posts.at(-1)!;
+  assert.equal(post.text, "A caption with a photo");
+  assert.equal(post.visibility, "friends");
+  assert.equal(post.authorId.toHexString(), ids.author);
+  assert.equal(post.photoAssetId, uploaded[0] && `senderi/posts/${uploaded[0].publicId}`);
+  assert.deepEqual(uploaded[0]?.buffer, validPng);
+  assert.equal(response.body.post.photoUrl, `/api/posts/${post._id.toHexString()}/photo`);
+  assert.equal("photoAssetId" in response.body.post, false);
+  assert.deepEqual(destroyed, []);
+
+  data.failPostInsert = true;
+  const countBeforeFailure = data.posts.length;
+  await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .field("text", "This insert will fail")
+    .field("visibility", "public")
+    .attach("file", validPng, "moment.png")
+    .expect(500);
+
+  assert.equal(data.posts.length, countBeforeFailure);
+  assert.equal(uploaded.length, 2);
+  assert.deepEqual(destroyed, [`senderi/posts/${uploaded[1]!.publicId}`]);
+});
+
+test("post creation rejects invalid and oversized multipart photos before storage or insert", async () => {
+  const { data, tokens } = matrixFixture();
+  const uploads: string[] = [];
+  const storage = createPhotoStorage({
+    upload: async (_buffer, publicId) => {
+      uploads.push(publicId);
+      return { assetId: `senderi/posts/${publicId}` };
+    },
+  });
+  const app = createApp(data, storage);
+  const initialPostCount = data.posts.length;
+
+  await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .field("text", "Not really an image")
+    .field("visibility", "public")
+    .attach("file", Buffer.from("not an image"), "fake.png")
+    .expect(400);
+
+  await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .field("text", "Too large")
+    .field("visibility", "friends")
+    .attach("file", Buffer.alloc(5 * 1024 * 1024 + 1), "large.png")
+    .expect(413);
+
+  assert.equal(data.posts.length, initialPostCount);
+  assert.deepEqual(uploads, []);
+});
+
+test("post audience edits validate input and allow only the author to persist changes", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const post = data.posts.find((candidate) => candidate._id.toHexString() === ids.public)!;
+  const path = `/api/posts/${ids.public}`;
+  const origin = "http://localhost:5173";
+
+  const updated = await request(app)
+    .patch(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "onlyMe" })
+    .expect(200);
+  assert.equal(updated.body.post.visibility, "onlyMe");
+  assert.equal(data.posts.find((candidate) => candidate._id.equals(post._id))?.visibility, "onlyMe");
+  assert.equal(updated.headers["cache-control"], "private, no-store");
+
+  for (const body of [{ visibility: "private" }, { visibility: "public", authorId: ids.outsider }, {}]) {
+    const invalid = await request(app)
+      .patch(path)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens.author))
+      .send(body)
+      .expect(400);
+    assert.equal(invalid.body.error.code, "validation_error");
+  }
+
+  await request(app)
+    .patch(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ visibility: "public" })
+    .expect(404);
+  await request(app)
+    .patch(`/api/posts/${ids.outsider}`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "public" })
+    .expect(404);
+  await request(app)
+    .patch(path)
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "public" })
+    .expect(403);
+  await request(app)
+    .patch(path)
+    .set("Origin", origin)
+    .send({ visibility: "public" })
+    .expect(401);
+
+  assert.equal(data.posts.find((candidate) => candidate._id.equals(post._id))?.visibility, "onlyMe");
+});
+
+test("feed, direct post, and the same photo URL recheck access after every audience change", async () => {
+  const { data, tokens } = matrixFixture();
+  const post = data.posts.find((candidate) => candidate._id.toHexString() === ids.public)!;
+  post.photoAssetId = "senderi/posts/old-photo";
+  data.posts = [post];
+  const downloads: string[] = [];
+  const storage = createPhotoStorage({
+    download: async (assetId) => {
+      downloads.push(assetId);
+      return { stream: Readable.from([validPng]), contentType: "image/png", contentLength: validPng.length };
+    },
+  });
+  const app = createApp(data, storage);
+  const origin = "http://localhost:5173";
+  const oldPhotoUrl = `/api/posts/${post._id.toHexString()}/photo`;
+
+  for (const visibility of ["onlyMe", "friends", "public"] as const) {
+    const edited = await request(app)
+      .patch(`/api/posts/${post._id.toHexString()}`)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens.author))
+      .send({ visibility })
+      .expect(200);
+    assert.equal(edited.body.post.visibility, visibility);
+    assert.equal(edited.body.post.photoUrl, oldPhotoUrl);
+
+    for (const viewer of ["author", "friend", "outsider"] as const) {
+      const visible = viewer === "author" || visibility === "public" || (viewer === "friend" && visibility === "friends");
+      const authCookie = cookie(tokens[viewer]);
+      const feed = await request(app).get("/api/posts").set("Cookie", authCookie).expect(200);
+      assert.equal(feed.body.items.some((item: { id: string }) => item.id === post._id.toHexString()), visible,
+        `${viewer} feed access for ${visibility}`);
+
+      const detail = await request(app).get(`/api/posts/${post._id.toHexString()}`).set("Cookie", authCookie);
+      assert.equal(detail.status, visible ? 200 : 404, `${viewer} direct post access for ${visibility}`);
+
+      const photo = await request(app).get(oldPhotoUrl).set("Cookie", authCookie);
+      assert.equal(photo.status, visible ? 200 : 404, `${viewer} old photo URL access for ${visibility}`);
+      if (visible) assert.equal(photo.headers["cache-control"], "private, no-store");
+    }
+  }
+
+  assert.equal(downloads.length, 6);
+  assert.ok(downloads.every((assetId) => assetId === "senderi/posts/old-photo"));
 });
 
 test("feed and author timeline paginate newest first without duplicates", async () => {
