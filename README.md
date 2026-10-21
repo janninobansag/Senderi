@@ -2,7 +2,7 @@
 
 Senderi is a Facebook-like social platform in development. The first release is planned as a TypeScript MERN application for sharing posts, connecting with friends, and chatting in real time.
 
-> **Project status:** The repository currently contains the product plan and task breakdown. The application has not been built yet. Work begins with M0 — Foundation in the [milestones](doc/milestones.md).
+> **Project status:** Senderi is under active development. See the [milestones](doc/milestones.md) and [task checklist](doc/task-checklist.md) for implementation progress.
 
 ## Planned features
 
@@ -41,4 +41,4 @@ Jan and Laica each own complete features across the client, server, and tests. T
 
 ## Getting started
 
-There are no install or run commands yet because this is a documentation-only starting point. Begin with M0 in the [milestones](doc/milestones.md), then add the client and server setup commands to [Setup and deployment](doc/setup-deployment.md) as the foundation is built.
+Install the client and server dependencies from the repository root with `npm ci --prefix client` and `npm ci --prefix server`. Create `server/.env` from `server/.env.example` and configure `MONGODB_URI`. Then run `npm run dev` from the root to start both services. Open `http://localhost:5173`; the API health check is at `http://localhost:3000/api/health`. See [Setup and deployment](doc/setup-deployment.md) for prerequisites and environment details.

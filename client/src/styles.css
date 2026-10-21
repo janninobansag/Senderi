@@ -94,6 +94,12 @@ button { cursor: pointer; }
 .form-input:focus { border-color: var(--color-violet); box-shadow: 0 0 0 3px rgb(57 115 217 / 14%); }
 .form-input-error { border-color: #cc5364; }
 .form-input-error:focus { box-shadow: 0 0 0 3px rgb(204 83 100 / 12%); }
+.password-field { position: relative; }
+.password-input { padding-right: 50px; }
+.password-visibility-toggle { position: absolute; top: 50%; right: 9px; display: grid; height: 32px; width: 32px; transform: translateY(-50%); place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--color-muted); }
+.password-visibility-toggle:hover { background: var(--color-canvas); color: var(--color-ink); }
+.password-visibility-toggle:focus-visible { outline: 2px solid var(--color-violet); outline-offset: 1px; }
+.password-visibility-toggle svg { height: 18px; width: 18px; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .field-error { color: #a63347; font-size: 12px; line-height: 1.45; }
 .form-alert { border: 1px solid #f1c2c7; border-radius: 12px; background: #fff4f4; padding: 12px 14px; color: #8e293b; font-size: 13px; line-height: 1.55; }
 .auth-submit { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: center; border: 0; border-radius: 12px; background: var(--color-violet); padding: 0 18px; color: #fff; font-size: 14px; font-weight: 700; text-align: center; text-decoration: none; transition: background .2s, transform .2s; }
