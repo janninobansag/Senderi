@@ -125,10 +125,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M3-J3 — Jan: Friend screens
 
-- [ ] **M3-J3.1** Add user search results with the correct request/friend status control.
-- [ ] **M3-J3.2** Add incoming and outgoing request views with accept/decline actions.
-- [ ] **M3-J3.3** Add a friend list and remove action with success/error feedback.
-- [ ] **M3-J3.4** Complete send, accept, view, and remove in the browser using two accounts.
+- [x] **M3-J3.1** Add user search results with the correct request/friend status control. *(Search results show Add friend, Request sent, incoming request accept/decline actions, or Friends based on current API relationship state.)*
+- [x] **M3-J3.2** Add incoming and outgoing request views with accept/decline actions. *(The request screen lists the current user's incoming and sent pending requests; incoming requests can be accepted or declined, and the list refreshes after a response.)*
+- [x] **M3-J3.3** Add a friend list and remove action with success/error feedback. *(The paged friend list links to profiles and supports removal with visible success and failure feedback.)*
+- [x] **M3-J3.4** Complete send, accept, view, and remove in the browser using two accounts. *(Manually verified with two synthetic accounts in the isolated `senderi_m3_j3_ui_test` database: searched and sent a request, confirmed incoming and sent request views, accepted it, verified the friend list and Friends search status, removed the friend, and confirmed success feedback and the empty list.)*
 
 ## M4 — Timeline and privacy
 

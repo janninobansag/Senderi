@@ -4,6 +4,7 @@ import { ApiError, apiFetch } from "./api/client";
 import { EmptyState, LoadingState, RequestErrorState } from "./components/AsyncState";
 import { useAuth } from "./auth/AuthContext";
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage } from "./pages/AccountPages";
+import { FriendsPage } from "./pages/FriendsPage";
 import { ProfilePage } from "./pages/ProfilePage";
 
 type IconName = "home" | "users" | "message" | "user" | "bell" | "plus" | "arrow";
@@ -87,7 +88,7 @@ function HomePage() {
             {health === "empty" && <EmptyState title="No API status yet" message="The server returned an empty health response." />}
             {health === "error" && <RequestErrorState title="API unavailable" message={healthMessage} />}
           </div>
-          <button className="button-link mt-6" type="button">Find your friends <Icon name="arrow" size={16} /></button>
+          <Link className="button-link mt-6" to="/friends">Find your friends <Icon name="arrow" size={16} /></Link>
         </section>
         <section className="accent-card flex min-h-44 flex-col justify-between p-6 sm:p-7">
           <div className="flex items-center justify-between"><span className="text-sm font-semibold text-ink/70">Today’s note</span><span className="sparkle">✦</span></div>
@@ -123,7 +124,7 @@ export default function App() {
         <Route path="/signup" element={<PublicAccountRoute><SignupPage /></PublicAccountRoute>} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
-        <Route path="/friends" element={<RequireUser><PlaceholderPage title="Your people, all in one place." description="Friend requests and your connections will appear here." eyebrow="Friends" /></RequireUser>} />
+        <Route path="/friends" element={<RequireUser><FriendsPage /></RequireUser>} />
         <Route path="/messages" element={<RequireUser><PlaceholderPage title="Conversations that feel easy." description="Your private conversations will appear here." eyebrow="Messages" /></RequireUser>} />
         <Route path="/profile" element={<RequireUser><ProfilePage /></RequireUser>} />
         <Route path="/profile/:userId" element={<RequireUser><ProfilePage /></RequireUser>} />
