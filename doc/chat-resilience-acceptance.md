@@ -1,14 +1,14 @@
 # Chat resilience acceptance
 
-Use this record during acceptance. Automated checks cover socket exchange, friendship revocation, multi-socket delivery, and MongoDB restart persistence. A browser server-restart check completes M6-L4.1. A deployed Render Free run is needed only to measure the free-tier wake-up delay for M6-L4.4.
+Use this record during acceptance. Automated checks cover socket exchange, friendship revocation, multi-socket delivery, and MongoDB restart persistence. A browser server-restart check completes M6-L4.1. The M6-L4.4 recording captures end-to-end recovery on Render Free; it does not isolate the time spent waking Render from session restoration and page navigation.
 
 ## Free-tier reconnect observation
 
-No Render free-tier reconnect delay has been measured for this branch yet. Do not estimate the delay from the configured idle period. Record the actual timestamps from one acceptance run:
+The screen recording shows about 38 seconds from opening the deployed app to the Messages page showing Connected. This is an end-to-end client recovery time that includes session restoration and navigation; the recording does not show the exact idle period or when Render entered sleep.
 
 | Date and time (with time zone) | Render plan | Idle period | Reconnect began | UI showed Connected | Measured delay | Browser history matched records? | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Pending deployed acceptance | Render Free | - | - | - | Not measured | - | - |
+| 2026-10-21 22:51:22-22:52:00 SGT (approx) | Render Free | Exact idle duration not visible in recording | 22:51:22 SGT (video +16s) | 22:52:00 SGT (video +54s) | About 38 seconds end-to-end | Yes - earlier messages reappeared once and in order | Measured from app navigation to Messages Connected; includes session restoration/navigation. Exact Render sleep start is not shown. |
 
 ### Browser check for M6-L4.1
 
@@ -19,9 +19,11 @@ No Render free-tier reconnect delay has been measured for this branch yet. Do no
 
 | Date and time | Environment | Server restart | UI reconnected | UI matched stored history | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Pending browser check | Local or deployed | - | - | - | - |
+| 2026-10-21 ~22:51:22 SGT | Deployed Vercel client + Render Free API | Session restored after idle period | Yes - Connected at ~22:52:00 SGT | Yes - earlier "hi" and "hello" messages remained visible once and in order | Screen recording confirms recovery; exact idle period is not visible. |
 
 ### Render Free delay check for M6-L4.4
+
+The recorded run documents the observed end-to-end recovery. To isolate Render's wake-up time in a future run, capture the first request or socket reconnect attempt separately from the time Messages shows **Connected**.
 
 1. Sign in as two friends and exchange messages on the deployed Render Free service.
 2. Let the service sleep according to its current free-tier behavior. Record when the first request or socket reconnect attempt wakes it.

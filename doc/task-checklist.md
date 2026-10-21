@@ -215,10 +215,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M6-L4 — Laica: Chat resilience
 
-- [ ] **M6-L4.1** Exchange messages, restart or let Render sleep, reconnect, and compare stored history with the UI. *(An opt-in MongoDB integration test exchanges messages over Socket.IO, restarts the API and database connections, obtains fresh tickets, reconnects both sockets, and compares both history responses to stored records. Still verify the recovered conversation in the browser after a server restart; a deployed Render sleep is an alternative.)*
+- [x] **M6-L4.1** Exchange messages, restart or let Render sleep, reconnect, and compare stored history with the UI. *(The MongoDB integration test compares both users’ history responses with stored records after an API/database restart. In the deployed Vercel/Render browser check, the client reconnected and the earlier “hi” and “hello” messages remained visible once and in order after restoring the session.)*
 - [x] **M6-L4.2** Remove friendship while chat is open and check send and history are denied. *(Socket integration coverage removes the friendship after connection, confirms the open socket rejects a new send, and confirms the history route returns 404 without exposing prior messages.)*
 - [x] **M6-L4.3** Open multiple tabs for one user and check delivery without duplicate persisted messages. *(Socket integration coverage opens two concurrent sockets for one user, confirms both receive the same single message event, retries with the same client ID, and verifies one stored record and no duplicate deliveries.)*
-- [ ] **M6-L4.4** Document any free-tier reconnect delay seen during acceptance. *(No deployed Render free-tier delay has been observed yet. Record the measured reconnect time in `doc/chat-resilience-acceptance.md` during deployed acceptance.)*
+- [x] **M6-L4.4** Document any free-tier reconnect delay seen during acceptance. *(The screen recording shows the deployed app opening at about 22:51:22 SGT and Messages reaching Connected at about 22:52:00 SGT, an approximately 38-second end-to-end recovery. Earlier messages remained visible once and in order. The exact idle period is not visible in the recording; details are in `doc/chat-resilience-acceptance.md`.)*
 
 ## M7 — Deployment and release
 
