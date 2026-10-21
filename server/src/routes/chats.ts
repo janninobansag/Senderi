@@ -76,13 +76,14 @@ function decodeCursor(token: string, expectedFriendId: ObjectId): MessageHistory
   }
 }
 
-function toMessageResponse(message: MessageDocument) {
+function toMessageResponse(message: MessageDocument, viewerId: ObjectId) {
   return {
     id: message._id.toHexString(),
     senderId: message.senderId.toHexString(),
     recipientId: message.recipientId.toHexString(),
     text: message.text,
     createdAt: message.createdAt.toISOString(),
+    ...(message.senderId.equals(viewerId) ? { clientId: message.clientId } : {}),
   };
 }
 
@@ -141,7 +142,7 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
 
     response.setHeader("Cache-Control", "private, no-store");
     response.json({
-      items: pageMessages.map(toMessageResponse),
+      items: pageMessages.map((message) => toMessageResponse(message, viewerId)),
       nextCursor: hasMore && lastMessage ? encodeCursor(lastMessage, friendId) : null,
     });
   });

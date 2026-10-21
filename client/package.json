@@ -8,9 +8,11 @@
     "dev": "vite",
     "lint": "eslint . --max-warnings=0",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "socket.io-client": "^4.8.4",
     "@vitejs/plugin-react": "^5.0.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
@@ -25,6 +27,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.12.0",
     "tailwindcss": "^4.1.13",
+    "tsx": "^4.20.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.0",
     "vite": "^7.1.7"

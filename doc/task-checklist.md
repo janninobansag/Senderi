@@ -208,10 +208,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M6-L3 — Laica: Chat client
 
-- [ ] **M6-L3.1** Add a friend conversation list and paged message view.
-- [ ] **M6-L3.2** Add text compose/send with stable client IDs and pending, acknowledged, and failed states.
-- [ ] **M6-L3.3** Renew a socket ticket and reconnect after interruption, then reload missed history.
-- [ ] **M6-L3.4** Check no duplicate messages after a retry or reconnect.
+- [x] **M6-L3.1** Add a friend conversation list and paged message view. *(The Messages screen lists accepted friends with pagination, loads a selected conversation newest-first, and supports older-page loading.)*
+- [x] **M6-L3.2** Add text compose/send with stable client IDs and pending, acknowledged, and failed states. *(Messages get a UUID client ID before sending; the UI shows queued/sending, sent, or failed state and retries with that same ID.)*
+- [x] **M6-L3.3** Renew a socket ticket and reconnect after interruption, then reload missed history. *(Each Socket.IO handshake requests a fresh one-use ticket. Automatic reconnect resends pending messages with their existing IDs and pages history until it overlaps the already loaded messages.)*
+- [x] **M6-L3.4** Check no duplicate messages after a retry or reconnect. *(Client tests verify retries keep the same ID and that author-visible history, acknowledgements, repeated realtime events, and overlapping history pages converge to one UI message after reconnect. Server history tests confirm client IDs are hidden from other authors; M6-L2 integration tests verify duplicate sends persist and deliver once.)*
 
 ### M6-L4 — Laica: Chat resilience
 
