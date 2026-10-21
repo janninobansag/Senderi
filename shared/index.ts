@@ -168,6 +168,8 @@ export interface Message {
   recipientId: UserId;
   text: string;
   createdAt: string;
+  /** Included in history only when the current viewer authored this message. */
+  clientId?: string;
 }
 
 export type MessageHistoryResponse = Page<Message>;

@@ -64,14 +64,14 @@ Message records contain `senderId`, `recipientId`, `text`, `createdAt`, and a se
 | `GET /api/posts/:postId/comments?cursor=&limit=` | `{ items: Comment[], nextCursor }`, newest first; defaults to 20 and caps at 50 | Signed in; rechecks the post's current audience and returns public author fields only. |
 | `POST /api/posts/:postId/comments` | `{ text }` -> `{ comment }`; trimmed text must contain 1–2,000 characters | Signed in; exact allowed Origin and current post audience required. The author comes from the session. |
 | `POST /api/posts/:postId/shares` | `{ visibility }` -> `{ share }` with `201` | Signed in with an allowed Origin; source post must currently be Public, and share author is derived from the session. |
-| `GET /api/chats/:friendId/messages?cursor=&limit=` | `{ items: Message[], nextCursor }`, newest first; defaults to 20 and caps at 50 | Signed in; the current accepted friendship is checked for every request. Invalid IDs, cursors, or limits return `400`; non-friends receive `404`. |
+| `GET /api/chats/:friendId/messages?cursor=&limit=` | `{ items: Message[], nextCursor }`, newest first; defaults to 20 and caps at 50 | Signed in; the current accepted friendship is checked for every request. Invalid IDs, cursors, or limits return `400`; non-friends receive `404`. A history item includes its `clientId` only for its author, so that author's pending client message can reconcile after reconnect. |
 | `GET /api/health` | `{ status: "ok" }` | Public; no secrets or account data. |
 
 Profile and cover photos are ordinary profile media; post photos use authenticated Cloudinary delivery because audience can change. Profile image delivery URLs use the configured Cloudinary cloud name with optimized `f_auto`/`q_auto` transformations. The client shows a default avatar or cover if an image ID or usable URL is absent. Uploads accept JPEG, PNG, or WebP up to 5 MB after server-side file inspection. Delete replaced assets and abandoned uploads. Cloudinary documents that default `upload` delivery is public, whereas `authenticated` protects originals and derivatives: [Cloudinary access control](https://cloudinary.com/documentation/control_access_to_media).
 
 ## Socket.IO contract
 
-The client obtains a socket ticket from `POST /api/auth/socket-ticket`, connects to the API with `auth: { ticket }`, and fetches history through REST after connecting or reconnecting. The server accepts only exact origins in `CLIENT_ORIGINS`, consumes the ticket once, confirms its issuing session is still active, and binds the connection to that user. Invalid, expired, reused, or session-revoked tickets are rejected.
+The client obtains a fresh socket ticket from `POST /api/auth/socket-ticket` in the Socket.IO auth callback for every connection or reconnection. It loads newest-first history through REST on connect and after reconnect, merging overlapping pages by server message ID. The server accepts only exact origins in `CLIENT_ORIGINS`, consumes the ticket once, confirms its issuing session is still active, and binds the connection to that user. Invalid, expired, reused, or session-revoked tickets are rejected.
 
 | Event | Payload | Server behavior |
 | --- | --- | --- |
@@ -80,6 +80,6 @@ The client obtains a socket ticket from `POST /api/auth/socket-ticket`, connects
 | Server `message:new` | `{ message }` | Sent to the recipient's active connections after first persistence. If the recipient is offline, the message remains in conversation history. |
 | Server `message:error` | `{ clientId?, code, message }` | Denied, invalid, or failed send; no new message is persisted for that send. |
 
-`message` contains `{ id, senderId, recipientId, text, createdAt }`. The server checks friendship on every send, so a removed friend cannot keep sending through an old connection. Reusing a client ID with different message content returns `client_id_conflict`. Message history is the source of truth after disconnects; realtime events are delivery hints, not the only copy of a message.
+`message` contains `{ id, senderId, recipientId, text, createdAt }`. The client creates a stable UUID `clientId` before sending and retains it for retry, so a lost acknowledgement can be reconciled with history or safely retried. The server checks friendship on every send, so a removed friend cannot keep sending through an old connection. Reusing a client ID with different message content returns `client_id_conflict`. Message history is the source of truth after disconnects; realtime events are delivery hints, not the only copy of a message.
 
 The friendship utility `server/src/friends/are-friends.ts` checks the canonical `friendships` record and is shared by profile visibility and future post/chat authorization. A friendship is mutual: one record stores the ordered `userIdLow` and `userIdHigh` IDs, and either account can remove that record.

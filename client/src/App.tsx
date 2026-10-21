@@ -5,6 +5,7 @@ import { PostComposer, PostList } from "./components/Posts";
 import { useAuth } from "./auth/AuthContext";
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage } from "./pages/AccountPages";
 import { FriendsPage } from "./pages/FriendsPage";
+import { MessagesPage } from "./pages/MessagesPage";
 import { ProfilePage } from "./pages/ProfilePage";
 
 type IconName = "home" | "users" | "message" | "user" | "bell" | "plus" | "arrow";
@@ -29,16 +30,6 @@ const navigation = [
   { label: "Messages", to: "/messages", icon: "message" as const },
   { label: "Profile", to: "/profile", icon: "user" as const },
 ];
-
-function PlaceholderPage({ title, description, eyebrow = "Senderi space" }: { title: string; description: string; eyebrow?: string }) {
-  return (
-    <section className="surface-card p-7 sm:p-10">
-      <span className="eyebrow">{eyebrow}</span>
-      <h1 className="mt-4 max-w-2xl text-3xl font-bold tracking-[-0.04em] text-ink sm:text-5xl">{title}</h1>
-      <p className="mt-5 max-w-xl text-base leading-7 text-muted sm:text-lg">{description}</p>
-    </section>
-  );
-}
 
 function HomePage() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -93,7 +84,7 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/friends" element={<RequireUser><FriendsPage /></RequireUser>} />
-        <Route path="/messages" element={<RequireUser><PlaceholderPage title="Conversations that feel easy." description="Your private conversations will appear here." eyebrow="Messages" /></RequireUser>} />
+        <Route path="/messages" element={<RequireUser><MessagesPage /></RequireUser>} />
         <Route path="/profile" element={<RequireUser><ProfilePage /></RequireUser>} />
         <Route path="/profile/:userId" element={<RequireUser><ProfilePage /></RequireUser>} />
         <Route path="*" element={<Navigate to="/" replace />} />

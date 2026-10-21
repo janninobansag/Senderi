@@ -33,7 +33,7 @@ npm run dev:server
 npm run dev:client
 ```
 
-In Windows PowerShell, if the `npm` command is blocked by its script execution policy, use `npm.cmd` (for example, `npm.cmd run dev`). The current `client/.env.example` contains the public `VITE_SOCKET_URL` placeholder for the later Socket.IO feature; local REST requests do not need a backend URL variable.
+In Windows PowerShell, if the `npm` command is blocked by its script execution policy, use `npm.cmd` (for example, `npm.cmd run dev`). Set the public `VITE_SOCKET_URL` in `client/.env` to the API origin when local REST and socket traffic do not share the Vite proxy host; it is used only for the direct Socket.IO connection. Local REST requests continue to use `/api/*` through the Vite proxy.
 
 ## Local checks and CI
 

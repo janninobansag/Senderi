@@ -214,9 +214,10 @@ test("friend conversation history is stably paged newest-first and non-friends a
   ]);
   assert.notEqual(firstPage.body.nextCursor, null);
   assert.deepEqual(Object.keys(firstPage.body.items[0]).sort(), [
-    "createdAt", "id", "recipientId", "senderId", "text",
+    "clientId", "createdAt", "id", "recipientId", "senderId", "text",
   ]);
-  assert.equal("clientId" in firstPage.body.items[0], false);
+  assert.equal(firstPage.body.items[0].clientId, "client-000000000000000000000005");
+  assert.equal("clientId" in firstPage.body.items[1], false, "other authors' client IDs stay private");
 
   const secondPage = await request(app)
     .get(`/api/chats/${bobId}/messages?limit=2&cursor=${firstPage.body.nextCursor}`)
