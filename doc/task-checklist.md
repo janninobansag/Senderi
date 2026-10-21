@@ -141,10 +141,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M4-L2 — Laica: Text posts and feed
 
-- [ ] **M4-L2.1** Add text-only post creation with server validation and author attribution.
-- [ ] **M4-L2.2** Add the composer with text input and an audience selector.
-- [ ] **M4-L2.3** Render posts in feed and author timeline with loading, empty, and next-page states.
-- [ ] **M4-L2.4** Check create and refresh across two accounts with different visibility settings.
+- [x] **M4-L2.1** Add text-only post creation with server validation and author attribution. *(Authenticated `POST /api/posts` accepts trimmed text up to 5,000 characters and a Public/Friends/Only me audience; the author ID comes from the signed-in session, and extra fields are rejected.)*
+- [x] **M4-L2.2** Add the composer with text input and an audience selector. *(The home page composer provides text length feedback, audience selection, pending state, and success or validation error feedback.)*
+- [x] **M4-L2.3** Render posts in feed and author timeline with loading, empty, and next-page states. *(The home feed and profile timelines use cursor-paged reads and show loading, empty, error/retry, and load-more states.)*
+- [x] **M4-L2.4** Check create and refresh across two accounts with different visibility settings. *(Supertest creates Public, Friends, and Only me posts as one account, then reloads the feed and author timeline as the author, an accepted friend, and an unrelated signed-in account to verify visibility.)*
 
 ### M4-L3 — Laica: Protected post photos
 

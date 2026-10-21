@@ -13,6 +13,11 @@ const postPageQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
 }).strict();
 
+const createPostSchema = z.object({
+  text: z.string().trim().min(1).max(5_000),
+  visibility: z.enum(["public", "friends", "onlyMe"]),
+}).strict();
+
 interface PostResponseItem {
   id: string;
   author: ReturnType<typeof toPublicUserResponse>;
@@ -107,6 +112,31 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
   const dependencies = { ...defaultDependencies, ...overrides };
   const router = Router();
   const authenticated = requireSession({ getDatabase: dependencies.getDatabase });
+
+  router.post("/", authenticated, async (request, response) => {
+    const parsed = createPostSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new HttpError(400, "validation_error", "Post text or audience is invalid.");
+    }
+
+    const session = getAuthenticatedSession(response);
+    const database = dependencies.getDatabase();
+    const now = new Date();
+    const post: PostDocument = {
+      _id: new ObjectId(),
+      authorId: session.user._id,
+      text: parsed.data.text,
+      visibility: parsed.data.visibility,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await database.collection<PostDocument>(collectionNames.posts).insertOne(post);
+
+    response.setHeader("Cache-Control", "private, no-store");
+    response.status(201).json({
+      post: toPostResponse(post, session.user, dependencies.getCloudinaryCloudName()),
+    } satisfies PostResponse);
+  });
 
   router.get("/", authenticated, async (request, response) => {
     const query = parsePageQuery(request.query as Record<string, unknown>);

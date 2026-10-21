@@ -97,3 +97,13 @@ export type PostListResponse = Page<Post>;
 export interface PostResponse {
   post: Post;
 }
+
+/** Text-only post fields accepted from an authenticated author. */
+export interface CreatePostRequest {
+  text: string;
+  visibility: Visibility;
+}
+
+export interface CreatePostResponse {
+  post: Post;
+}

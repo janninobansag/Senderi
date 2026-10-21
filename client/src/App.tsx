@@ -1,7 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
-import { ApiError, apiFetch } from "./api/client";
-import { EmptyState, LoadingState, RequestErrorState } from "./components/AsyncState";
+import { LoadingState } from "./components/AsyncState";
+import { PostComposer, PostList } from "./components/Posts";
 import { useAuth } from "./auth/AuthContext";
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage } from "./pages/AccountPages";
 import { FriendsPage } from "./pages/FriendsPage";
@@ -41,28 +41,7 @@ function PlaceholderPage({ title, description, eyebrow = "Senderi space" }: { ti
 }
 
 function HomePage() {
-  const [health, setHealth] = useState<"loading" | "ready" | "empty" | "error">("loading");
-  const [healthMessage, setHealthMessage] = useState("");
-
-  useEffect(() => {
-    let active = true;
-
-    apiFetch<{ status: string }>("/api/health")
-      .then((response) => {
-        if (active) {
-          setHealth(response.status === "ok" ? "ready" : "empty");
-        }
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-        setHealth("error");
-        setHealthMessage(error instanceof ApiError ? error.message : "The API is unavailable right now.");
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   return (
     <div className="space-y-5">
@@ -71,30 +50,19 @@ function HomePage() {
           <span className="eyebrow eyebrow-light">Your space to connect</span>
           <h1 className="mt-4 max-w-xl text-4xl font-bold leading-[1.08] tracking-[-0.05em] text-white sm:text-6xl">Make space for the good stuff.</h1>
           <p className="mt-5 max-w-lg text-base leading-7 text-white/70 sm:text-lg">Share a moment, catch up with your people, and keep the little things that matter close.</p>
-          <button className="button-accent mt-7" type="button"><Icon name="plus" size={18} /> Create a post</button>
+          <a className="button-accent mt-7" href="#post-composer"><Icon name="plus" size={18} /> Create a post</a>
         </div>
       </section>
 
-      <div className="grid gap-5 md:grid-cols-[1.3fr_0.7fr]">
-        <section className="surface-card flex min-h-44 flex-col justify-between p-6 sm:p-7">
-          <div>
-            <p className="text-sm font-semibold text-muted">Your timeline</p>
-            <h2 className="mt-2 text-xl font-bold tracking-[-0.03em] text-ink">A fresh start feels good.</h2>
-            <p className="mt-2 max-w-md text-sm leading-6 text-muted">When your friends start sharing, their updates will show up here.</p>
-          </div>
-          <div className="mt-5">
-            {health === "loading" && <LoadingState message="Connecting to Senderi..." />}
-            {health === "ready" && <div className="api-status"><span className="status-indicator" /> API connected</div>}
-            {health === "empty" && <EmptyState title="No API status yet" message="The server returned an empty health response." />}
-            {health === "error" && <RequestErrorState title="API unavailable" message={healthMessage} />}
-          </div>
-          <Link className="button-link mt-6" to="/friends">Find your friends <Icon name="arrow" size={16} /></Link>
-        </section>
-        <section className="accent-card flex min-h-44 flex-col justify-between p-6 sm:p-7">
-          <div className="flex items-center justify-between"><span className="text-sm font-semibold text-ink/70">Today’s note</span><span className="sparkle">✦</span></div>
-          <p className="mt-8 text-2xl font-bold tracking-[-0.04em] text-ink">Stay curious.<br />Stay connected.</p>
-        </section>
-      </div>
+      <div id="post-composer"><PostComposer onCreated={() => setRefreshKey((current) => current + 1)} /></div>
+
+      <section className="space-y-4">
+        <div className="px-1">
+          <span className="eyebrow">Your timeline</span>
+          <h2 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-ink">Your feed</h2>
+        </div>
+        <PostList path="/api/posts" refreshKey={refreshKey} />
+      </section>
     </div>
   );
 }
