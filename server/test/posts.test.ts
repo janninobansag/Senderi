@@ -9,6 +9,7 @@ import { collectionNames, type CommentDocument, type FriendshipDocument, type Li
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
 import type { PostPhotoStorage } from "../src/media/post-photo";
+import { createFriendsRouter } from "../src/routes/friends";
 import { createPostsRouter, createUserPostsRouter } from "../src/routes/posts";
 
 interface PostTestData {
@@ -148,6 +149,15 @@ function createDatabase(data: PostTestData): Db {
               ),
             ),
           }),
+          deleteOne: async (filter: Pick<FriendshipDocument, "userIdLow" | "userIdHigh">) => {
+            const index = data.friendships.findIndex((friendship) =>
+              friendship.userIdLow.equals(filter.userIdLow) &&
+              friendship.userIdHigh.equals(filter.userIdHigh),
+            );
+            if (index < 0) return { acknowledged: true, deletedCount: 0 };
+            data.friendships.splice(index, 1);
+            return { acknowledged: true, deletedCount: 1 };
+          },
         };
       }
 
@@ -373,6 +383,11 @@ function createApp(data: PostTestData, photoStorage = createPhotoStorage()) {
   const database = createDatabase(data);
   const app = express();
   app.use(express.json());
+  app.use("/api/friends", createFriendsRouter({
+    getDatabase: () => database,
+    getAllowedOrigins: () => ["http://localhost:5173"],
+    getCloudinaryCloudName: () => undefined,
+  }));
   app.use("/api/users", createUserPostsRouter({ getDatabase: () => database }));
   app.use("/api/posts", createPostsRouter({
     getDatabase: () => database,
@@ -831,6 +846,231 @@ test("Like and unlike routes are idempotent, count two users, and deny hidden po
     .set("Cookie", cookie(tokens.outsider))
     .expect(403);
   assert.equal(data.likes.length, 1);
+});
+
+test("Likes and comments on a Friends post are revoked immediately after a friend removes the friendship", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const origin = "http://localhost:5173";
+  const likePath = `/api/posts/${ids.friends}/like`;
+  const commentsPath = `/api/posts/${ids.friends}/comments`;
+
+  const friendLike = await request(app)
+    .put(likePath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.deepEqual(friendLike.body, { likeCount: 1, isLikedByViewer: true });
+  const friendComment = await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .send({ text: "Comment while we are friends" })
+    .expect(201);
+  assert.equal(friendComment.body.comment.text, "Comment while we are friends");
+  const readableComments = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.equal(readableComments.body.items.length, 1);
+
+  await request(app).get(commentsPath).set("Cookie", cookie(tokens.outsider)).expect(404);
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Outsider comment" })
+    .expect(404);
+  await request(app)
+    .put(likePath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
+  await request(app)
+    .delete(likePath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
+
+  await request(app)
+    .delete(`/api/friends/${ids.author}`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(204);
+  assert.equal(data.friendships.length, 0, "the friendship removal must persist before the next request");
+
+  await request(app).get(commentsPath).set("Cookie", cookie(tokens.friend)).expect(404);
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .send({ text: "Former-friend comment" })
+    .expect(404);
+  await request(app)
+    .put(likePath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(404);
+  await request(app)
+    .delete(likePath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(404);
+
+  assert.equal(data.likes.length, 1, "denied Like changes must not alter the existing Like record");
+  assert.equal(data.comments.length, 1, "denied comments must not be stored after access is revoked");
+  const authorPost = await request(app)
+    .get(`/api/posts/${ids.friends}`)
+    .set("Cookie", cookie(tokens.author))
+    .expect(200);
+  assert.equal(authorPost.body.post.likeCount, 1);
+  const authorComments = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.author))
+    .expect(200);
+  assert.deepEqual(authorComments.body.items.map((comment: { text: string }) => comment.text), [
+    "Comment while we are friends",
+  ]);
+});
+
+test("direct Like and comment routes deny non-owners after a Public post changes to Only me", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const origin = "http://localhost:5173";
+  const postPath = `/api/posts/${ids.public}`;
+  const likePath = `${postPath}/like`;
+  const commentsPath = `${postPath}/comments`;
+
+  await request(app)
+    .put(likePath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Visible before the audience change" })
+    .expect(201);
+
+  await request(app)
+    .patch(postPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "onlyMe" })
+    .expect(200);
+
+  for (const viewer of ["friend", "outsider"] as const) {
+    await request(app).get(commentsPath).set("Cookie", cookie(tokens[viewer])).expect(404);
+    await request(app)
+      .post(commentsPath)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens[viewer]))
+      .send({ text: "Must not be stored" })
+      .expect(404);
+    await request(app)
+      .put(likePath)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens[viewer]))
+      .expect(404);
+    await request(app)
+      .delete(likePath)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens[viewer]))
+      .expect(404);
+  }
+
+  assert.equal(data.likes.length, 1, "denied requests must not add or remove the existing Like");
+  assert.equal(data.comments.length, 1, "denied requests must not add comments after the audience change");
+  const authorPost = await request(app)
+    .get(postPath)
+    .set("Cookie", cookie(tokens.author))
+    .expect(200);
+  assert.equal(authorPost.body.post.likeCount, 1);
+  const authorComments = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.author))
+    .expect(200);
+  assert.deepEqual(authorComments.body.items.map((comment: { text: string }) => comment.text), [
+    "Visible before the audience change",
+  ]);
+});
+
+test("a Public share disappears when its source changes to Friends while direct access follows current friendship", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const origin = "http://localhost:5173";
+  const postPath = `/api/posts/${ids.public}`;
+  const likePath = `${postPath}/like`;
+  const commentsPath = `${postPath}/comments`;
+  const createdShare = await request(app)
+    .post(`${postPath}/shares`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .send({ visibility: "public" })
+    .expect(201);
+  const shareId = createdShare.body.share.id as string;
+
+  for (const viewer of ["author", "friend", "outsider"] as const) {
+    const feed = await request(app)
+      .get("/api/posts")
+      .set("Cookie", cookie(tokens[viewer]))
+      .expect(200);
+    assert.ok(
+      feed.body.items.some((item: { share?: { id: string } }) => item.share?.id === shareId),
+      `${viewer} should see the Public share before the source audience changes`,
+    );
+  }
+
+  await request(app)
+    .patch(postPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "friends" })
+    .expect(200);
+
+  for (const viewer of ["author", "friend", "outsider"] as const) {
+    const feed = await request(app)
+      .get("/api/posts")
+      .set("Cookie", cookie(tokens[viewer]))
+      .expect(200);
+    assert.equal(
+      feed.body.items.some((item: { share?: { id: string } }) => item.share?.id === shareId),
+      false,
+      `${viewer} must not see a share whose source is no longer Public`,
+    );
+    const directPost = await request(app).get(postPath).set("Cookie", cookie(tokens[viewer]));
+    assert.equal(directPost.status, viewer === "outsider" ? 404 : 200);
+  }
+
+  const sharerTimeline = await request(app)
+    .get(`/api/users/${ids.friend}/posts`)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.equal(
+    sharerTimeline.body.items.some((item: { share?: { id: string } }) => item.share?.id === shareId),
+    false,
+    "the share author must not retain the stale share card on their own timeline",
+  );
+
+  const friendLike = await request(app)
+    .put(likePath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.deepEqual(friendLike.body, { likeCount: 1, isLikedByViewer: true });
+  const friendComments = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.equal(friendComments.body.items.length, 0);
+  await request(app)
+    .put(likePath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
+  await request(app).get(commentsPath).set("Cookie", cookie(tokens.outsider)).expect(404);
+  assert.equal(data.shares.length, 1, "changing source visibility should hide, not erase, the share record");
 });
 
 test("post creation attributes the authenticated author and returns only public author fields", async () => {
