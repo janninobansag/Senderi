@@ -3,6 +3,7 @@ import { errorHandler } from "./middleware/error-handler";
 import { notFoundHandler } from "./middleware/not-found";
 import { authRouter } from "./routes/auth";
 import { friendRequestsRouter } from "./routes/friend-requests";
+import { friendsRouter } from "./routes/friends";
 import { healthRouter } from "./routes/health";
 import { usersRouter } from "./routes/users";
 
@@ -12,6 +13,7 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use("/api/auth", authRouter);
 app.use("/api/friend-requests", friendRequestsRouter);
+app.use("/api/friends", friendsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/health", healthRouter);
 app.use(notFoundHandler);

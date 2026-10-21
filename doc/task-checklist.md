@@ -118,10 +118,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M3-J2 — Jan: Friendship state
 
-- [ ] **M3-J2.1** Add recipient-only accept and decline actions with a single mutual-friendship record.
-- [ ] **M3-J2.2** Add friend listing and removal by either friend.
-- [ ] **M3-J2.3** Expose a reusable `areFriends` check for post access and chat.
-- [ ] **M3-J2.4** Check pending, declined, accepted, and removed states, including concurrent duplicate acceptance.
+- [x] **M3-J2.1** Add recipient-only accept and decline actions with a single mutual-friendship record. *(Only the request recipient can resolve a pending request. Conditional status updates make simultaneous responses single-winner; accepted pairs are stored once under the canonical unique index.)*
+- [x] **M3-J2.2** Add friend listing and removal by either friend. *(Authenticated friend listing is cursor-paged and returns public profiles; either side can idempotently remove the mutual record.)*
+- [x] **M3-J2.3** Expose a reusable `areFriends` check for post access and chat. *(`server/src/friends/are-friends.ts` checks the canonical stored record and is also used by profile friendship status and friend-request creation.)*
+- [x] **M3-J2.4** Check pending, declined, accepted, and removed states, including concurrent duplicate acceptance. *(Server tests cover pending request visibility, recipient-only decline, accepted profile status, one friendship after concurrent acceptance, paged friend profiles, and removal by either account.)*
 
 ### M3-J3 — Jan: Friend screens
 

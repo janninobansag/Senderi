@@ -63,6 +63,7 @@ export interface FriendRequest {
   recipientId: UserId;
   status: FriendRequestStatus;
   createdAt: string;
+  respondedAt?: string;
 }
 
 /** Pending requests that involve the signed-in user. */
@@ -74,3 +75,10 @@ export interface FriendRequestsResponse {
 export interface CreateFriendRequestResponse {
   request: FriendRequest;
 }
+
+export interface RespondToFriendRequestResponse {
+  request: FriendRequest;
+}
+
+/** Public profiles returned for the signed-in user's accepted friends. */
+export type FriendListResponse = Page<User>;

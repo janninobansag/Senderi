@@ -44,9 +44,9 @@ MongoDB collections: `users`, `sessions`, `friendRequests`, `friendships`, `post
 | `PUT /api/users/me/avatar`, `PUT /api/users/me/cover` | One image file -> updated profile | Owner only; replaces the previous asset. |
 | `POST /api/friend-requests` | `{ recipientId }` -> `{ request: FriendRequest }` with `201` | Signed in; self is `400`, unknown recipient is `404`, and existing friendship or either-direction duplicate pending request is `409`. |
 | `GET /api/friend-requests` | `{ incoming: FriendRequest[], outgoing: FriendRequest[] }` | Signed in; returns only the current user's pending requests. |
-| `PATCH /api/friend-requests/:requestId` | `{ action: "accept" | "decline" }` -> status | Recipient only; accepted request creates mutual friendship. |
-| `GET /api/friends` | Paged accepted friends | Current user. |
-| `DELETE /api/friends/:userId` | `204` | Either friend may remove the friendship. |
+| `PATCH /api/friend-requests/:requestId` | `{ action: "accept" | "decline" }` -> `{ request: FriendRequest }` | Recipient only; only pending requests can be resolved. The pending-to-resolved transition is conditional, so concurrent responses have one winner; acceptance creates one canonical mutual-friendship record. |
+| `GET /api/friends?cursor=&limit=` | `{ items: User[], nextCursor }`, newest friendships first; defaults to 20 and caps at 50 | Current user; returns public profile fields only. |
+| `DELETE /api/friends/:userId` | `204` | Either friend may remove the canonical friendship record; repeated removal is safe. |
 | `GET /api/posts` | Paged feed of visible posts and shares | Signed in; filter in the database and recheck before returning. |
 | `GET /api/users/:userId/posts` | Paged visible posts and shares by user | Signed in; apply current audience. |
 | `GET /api/posts/:postId` | Post detail | Viewer must pass current audience check. |
@@ -74,3 +74,5 @@ The client obtains a socket ticket from `POST /api/auth/socket-ticket`, connects
 | Server `message:error` | `{ clientId?, code, message }` | Denied, invalid, or failed send; no message is persisted. |
 
 `message` contains `{ id, senderId, recipientId, text, createdAt }`. The server checks friendship on every send, so a removed friend cannot keep sending through an old connection. Message history is the source of truth after disconnects; realtime events are delivery hints, not the only copy of a message.
+
+The friendship utility `server/src/friends/are-friends.ts` checks the canonical `friendships` record and is shared by profile visibility and future post/chat authorization. A friendship is mutual: one record stores the ordered `userIdLow` and `userIdHigh` IDs, and either account can remove that record.

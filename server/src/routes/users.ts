@@ -6,8 +6,9 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toAuthUserResponse, toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type FriendshipDocument, type UserDocument } from "../db/documents";
+import { collectionNames, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
+import { areFriends } from "../friends/are-friends";
 import { requireClientOrigin } from "../middleware/require-client-origin";
 import { validateBody } from "../middleware/validate-body";
 import { cloudinaryProfileImageStorage, type ProfileImageStorage } from "../media/cloudinary";
@@ -193,14 +194,8 @@ export function createUsersRouter(
     let friendshipStatus: "self" | "friends" | "none" = "none";
     if (currentUserId.equals(user._id)) {
       friendshipStatus = "self";
-    } else {
-      const [userIdLow, userIdHigh] = [currentUserId, user._id].sort((left, right) =>
-        left.toHexString().localeCompare(right.toHexString()),
-      );
-      const friendship = await database
-        .collection<FriendshipDocument>(collectionNames.friendships)
-        .findOne({ userIdLow, userIdHigh });
-      if (friendship) friendshipStatus = "friends";
+    } else if (await areFriends(database, currentUserId, user._id)) {
+      friendshipStatus = "friends";
     }
 
     response.setHeader("Cache-Control", "private, no-store");

@@ -10,11 +10,15 @@ import {
   type UserDocument,
 } from "../db/documents";
 import { HttpError } from "../errors/http-error";
+import { areFriends, orderedUserPair } from "../friends/are-friends";
 import { requireClientOrigin } from "../middleware/require-client-origin";
 import { validateBody } from "../middleware/validate-body";
 
 const sendFriendRequestSchema = z.object({
   recipientId: z.string().trim().regex(/^[a-f\d]{24}$/i),
+}).strict();
+const respondToFriendRequestSchema = z.object({
+  action: z.enum(["accept", "decline"]),
 }).strict();
 
 type SendFriendRequestInput = z.infer<typeof sendFriendRequestSchema>;
@@ -39,12 +43,6 @@ function getAuthenticatedSession(response: Response): AuthenticatedSessionContex
   return response.locals.authenticatedSession as AuthenticatedSessionContext;
 }
 
-function orderedUserPair(first: ObjectId, second: ObjectId): [ObjectId, ObjectId] {
-  return first.toHexString() < second.toHexString()
-    ? [first, second]
-    : [second, first];
-}
-
 function toFriendRequestResponse(friendRequest: FriendRequestDocument) {
   return {
     id: friendRequest._id.toHexString(),
@@ -52,6 +50,9 @@ function toFriendRequestResponse(friendRequest: FriendRequestDocument) {
     recipientId: friendRequest.recipientId.toHexString(),
     status: friendRequest.status,
     createdAt: friendRequest.createdAt.toISOString(),
+    ...(friendRequest.respondedAt
+      ? { respondedAt: friendRequest.respondedAt.toISOString() }
+      : {}),
   };
 }
 
@@ -94,10 +95,7 @@ export function createFriendRequestsRouter(
       }
 
       const [userIdLow, userIdHigh] = orderedUserPair(sender._id, recipientObjectId);
-      const friendship = await database
-        .collection<FriendshipDocument>(collectionNames.friendships)
-        .findOne({ userIdLow, userIdHigh }, { projection: { _id: 1 } });
-      if (friendship) {
+      if (await areFriends(database, sender._id, recipientObjectId)) {
         throw new HttpError(409, "already_friends", "You are already friends with this user.");
       }
 
@@ -156,6 +154,98 @@ export function createFriendRequestsRouter(
       outgoing: outgoing.map(toFriendRequestResponse),
     });
   });
+
+  router.patch(
+    "/:requestId",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    validateBody(respondToFriendRequestSchema),
+    async (request, response) => {
+      const requestIdValue = String(request.params.requestId);
+      if (!/^[a-f\d]{24}$/i.test(requestIdValue)) {
+        throw new HttpError(400, "invalid_request_id", "Friend request ID is invalid.");
+      }
+
+      const requestId = new ObjectId(requestIdValue);
+      const viewerId = getAuthenticatedSession(response).user._id;
+      const database = dependencies.getDatabase();
+      const requests = database.collection<FriendRequestDocument>(collectionNames.friendRequests);
+      const existing = await requests.findOne({ _id: requestId });
+      if (!existing) {
+        throw new HttpError(404, "friend_request_not_found", "Friend request was not found.");
+      }
+      if (!existing.recipientId.equals(viewerId)) {
+        throw new HttpError(403, "not_friend_request_recipient", "Only the recipient can respond to this friend request.");
+      }
+      if (existing.status !== "pending") {
+        throw new HttpError(409, "friend_request_already_resolved", "Friend request is no longer pending.");
+      }
+
+      const { action } = request.body as z.infer<typeof respondToFriendRequestSchema>;
+      const respondedAt = dependencies.now();
+      const transition = await requests.updateOne(
+        { _id: requestId, recipientId: viewerId, status: "pending" },
+        { $set: { status: action === "accept" ? "accepted" : "declined", respondedAt } },
+      );
+
+      if (transition.matchedCount !== 1) {
+        const current = await requests.findOne({ _id: requestId });
+        if (!current) {
+          throw new HttpError(404, "friend_request_not_found", "Friend request was not found.");
+        }
+        if (!current.recipientId.equals(viewerId)) {
+          throw new HttpError(403, "not_friend_request_recipient", "Only the recipient can respond to this friend request.");
+        }
+        throw new HttpError(409, "friend_request_already_resolved", "Friend request is no longer pending.");
+      }
+
+      const resolved: FriendRequestDocument = {
+        ...existing,
+        status: action === "accept" ? "accepted" : "declined",
+        respondedAt,
+      };
+
+      if (action === "accept") {
+        const [userIdLow, userIdHigh] = orderedUserPair(existing.senderId, existing.recipientId);
+        const friendship: FriendshipDocument = {
+          _id: new ObjectId(),
+          userIdLow,
+          userIdHigh,
+          createdAt: respondedAt,
+        };
+        try {
+          await database.collection<FriendshipDocument>(collectionNames.friendships).updateOne(
+            { userIdLow, userIdHigh },
+            { $setOnInsert: friendship },
+            { upsert: true },
+          );
+        } catch (error) {
+          let friendshipExists = false;
+          try {
+            friendshipExists = (await database
+              .collection<FriendshipDocument>(collectionNames.friendships)
+              .findOne({ userIdLow, userIdHigh }, { projection: { _id: 1 } })) !== null;
+          } catch {
+            // Keep the original write error; request logs retain the failure context.
+          }
+          if (!friendshipExists) {
+            try {
+              await requests.updateOne(
+                { _id: requestId, recipientId: viewerId, status: "accepted", respondedAt },
+                { $set: { status: "pending" }, $unset: { respondedAt: "" } },
+              );
+            } catch {
+              // Preserve the original storage error.
+            }
+            throw error;
+          }
+        }
+      }
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json({ request: toFriendRequestResponse(resolved) });
+    },
+  );
 
   return router;
 }
