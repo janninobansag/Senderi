@@ -13,6 +13,7 @@ import { HttpError } from "../errors/http-error";
 import { areFriends, orderedUserPair } from "../friends/are-friends";
 import { requireClientOrigin } from "../middleware/require-client-origin";
 import { validateBody } from "../middleware/validate-body";
+import { createNotification } from "../notifications/create-notification";
 
 const sendFriendRequestSchema = z.object({
   recipientId: z.string().trim().regex(/^[a-f\d]{24}$/i),
@@ -126,6 +127,12 @@ export function createFriendRequestsRouter(
         }
         throw error;
       }
+      await createNotification(database, {
+        recipientId: recipientObjectId,
+        actorId: sender._id,
+        type: "friend_request",
+        friendRequestId: friendRequest._id,
+      });
 
       response.setHeader("Cache-Control", "private, no-store");
       response.status(201).json({ request: toFriendRequestResponse(friendRequest) });
@@ -240,6 +247,12 @@ export function createFriendRequestsRouter(
             throw error;
           }
         }
+        await createNotification(database, {
+          recipientId: existing.senderId,
+          actorId: viewerId,
+          type: "friend_accepted",
+          friendRequestId: existing._id,
+        });
       }
 
       response.setHeader("Cache-Control", "private, no-store");

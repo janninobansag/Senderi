@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { ObjectId, type Db, type Document } from "mongodb";
 import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
-import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type PostDocument, type SessionDocument, type ShareDocument, type UserDocument } from "../src/db/documents";
+import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type NotificationDocument, type PostDocument, type SessionDocument, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
 import type { PostPhotoStorage } from "../src/media/post-photo";
@@ -17,8 +17,10 @@ interface PostTestData {
   sessions: SessionDocument[];
   friendships: FriendshipDocument[];
   likes: LikeDocument[];
+  shareLikes: ShareLikeDocument[];
   comments: CommentDocument[];
   shares: ShareDocument[];
+  notifications: NotificationDocument[];
   posts: PostDocument[];
   failPostInsert?: boolean;
   failPostUpdate?: boolean;
@@ -72,6 +74,14 @@ function matchesLike(like: LikeDocument, filter: { postId?: ObjectId; userId?: O
     (!filter.userId || like.userId.equals(filter.userId));
 }
 
+function matchesShareLike(like: ShareLikeDocument, filter: MongoFilter): boolean {
+  return Object.entries(filter).every(([field, expected]) => {
+    if (field === "shareId") return matchesObjectId(like.shareId, expected);
+    if (field === "userId") return matchesObjectId(like.userId, expected);
+    return false;
+  });
+}
+
 function matchesComment(comment: CommentDocument, filter: MongoFilter): boolean {
   if ("$and" in filter) {
     return (filter.$and as MongoFilter[]).every((condition) => matchesComment(comment, condition));
@@ -119,6 +129,15 @@ function createDatabase(data: PostTestData): Db {
         return {
           findOne: async (filter: { tokenHash: string }) =>
             data.sessions.find((session) => session.tokenHash === filter.tokenHash) ?? null,
+        };
+      }
+
+      if (name === collectionNames.notifications) {
+        return {
+          insertOne: async (notification: NotificationDocument) => {
+            data.notifications.push(notification);
+            return { acknowledged: true, insertedId: notification._id };
+          },
         };
       }
 
@@ -202,6 +221,62 @@ function createDatabase(data: PostTestData): Db {
             data.likes.splice(index, 1);
             return { acknowledged: true, deletedCount: 1 };
           },
+          deleteMany: async (filter: { postId: ObjectId }) => {
+            const remaining = data.likes.filter((like) => !matchesLike(like, filter));
+            const deletedCount = data.likes.length - remaining.length;
+            data.likes.splice(0, data.likes.length, ...remaining);
+            return { acknowledged: true, deletedCount };
+          },
+        };
+      }
+
+      if (name === collectionNames.shareLikes) {
+        return {
+          aggregate: (pipeline: Document[]) => ({
+            toArray: async () => {
+              const match = pipeline[0]?.["$match"] as { shareId: { $in: ObjectId[] } };
+              const group = pipeline[1]?.["$group"] as {
+                viewerLikeCount: { $sum: { $cond: [{ $eq: [string, ObjectId] }, number, number] } };
+              };
+              const viewerId = group.viewerLikeCount.$sum.$cond[0].$eq[1];
+              const summaries = new Map<string, { _id: ObjectId; likeCount: number; viewerLikeCount: number }>();
+              for (const like of data.shareLikes) {
+                if (!match.shareId.$in.some((shareId) => shareId.equals(like.shareId))) continue;
+                const key = like.shareId.toHexString();
+                const summary = summaries.get(key) ?? { _id: like.shareId, likeCount: 0, viewerLikeCount: 0 };
+                summary.likeCount += 1;
+                if (like.userId.equals(viewerId)) summary.viewerLikeCount += 1;
+                summaries.set(key, summary);
+              }
+              return [...summaries.values()];
+            },
+          }),
+          countDocuments: async (filter: MongoFilter) =>
+            data.shareLikes.filter((like) => matchesShareLike(like, filter)).length,
+          findOne: async (filter: MongoFilter) =>
+            data.shareLikes.find((like) => matchesShareLike(like, filter)) ?? null,
+          updateOne: async (
+            filter: MongoFilter,
+            update: { $setOnInsert: ShareLikeDocument },
+          ) => {
+            if (data.shareLikes.some((like) => matchesShareLike(like, filter))) {
+              return { acknowledged: true, matchedCount: 1, upsertedCount: 0 };
+            }
+            data.shareLikes.push(update.$setOnInsert);
+            return { acknowledged: true, matchedCount: 0, upsertedCount: 1 };
+          },
+          deleteOne: async (filter: MongoFilter) => {
+            const index = data.shareLikes.findIndex((like) => matchesShareLike(like, filter));
+            if (index < 0) return { acknowledged: true, deletedCount: 0 };
+            data.shareLikes.splice(index, 1);
+            return { acknowledged: true, deletedCount: 1 };
+          },
+          deleteMany: async (filter: MongoFilter) => {
+            const remaining = data.shareLikes.filter((like) => !matchesShareLike(like, filter));
+            const deletedCount = data.shareLikes.length - remaining.length;
+            data.shareLikes.splice(0, data.shareLikes.length, ...remaining);
+            return { acknowledged: true, deletedCount };
+          },
         };
       }
 
@@ -210,6 +285,12 @@ function createDatabase(data: PostTestData): Db {
           insertOne: async (comment: CommentDocument) => {
             data.comments.push(comment);
             return { acknowledged: true, insertedId: comment._id };
+          },
+          deleteMany: async (filter: MongoFilter) => {
+            const remaining = data.comments.filter((comment) => !matchesComment(comment, filter));
+            const deletedCount = data.comments.length - remaining.length;
+            data.comments.splice(0, data.comments.length, ...remaining);
+            return { acknowledged: true, deletedCount };
           },
           find: (filter: MongoFilter) => {
             let result = data.comments.filter((comment) => matchesComment(comment, filter));
@@ -235,9 +316,32 @@ function createDatabase(data: PostTestData): Db {
 
       if (name === collectionNames.shares) {
         return {
+          findOne: async (filter: MongoFilter) =>
+            data.shares.find((share) => matchesShare(share, filter)) ?? null,
           insertOne: async (share: ShareDocument) => {
             data.shares.push(share);
             return { acknowledged: true, insertedId: share._id };
+          },
+          findOneAndUpdate: async (
+            filter: MongoFilter,
+            update: { $set: Partial<ShareDocument> },
+          ) => {
+            const share = data.shares.find((candidate) => matchesShare(candidate, filter));
+            if (!share) return null;
+            Object.assign(share, update.$set);
+            return share;
+          },
+          deleteOne: async (filter: MongoFilter) => {
+            const index = data.shares.findIndex((share) => matchesShare(share, filter));
+            if (index < 0) return { acknowledged: true, deletedCount: 0 };
+            data.shares.splice(index, 1);
+            return { acknowledged: true, deletedCount: 1 };
+          },
+          deleteMany: async (filter: MongoFilter) => {
+            const remaining = data.shares.filter((share) => !matchesShare(share, filter));
+            const deletedCount = data.shares.length - remaining.length;
+            data.shares.splice(0, data.shares.length, ...remaining);
+            return { acknowledged: true, deletedCount };
           },
           find: (filter: MongoFilter) => {
             let result = data.shares.filter((share) => matchesShare(share, filter));
@@ -286,6 +390,14 @@ function createDatabase(data: PostTestData): Db {
             if (!post) return null;
             Object.assign(post, update.$set);
             return post;
+          },
+          deleteOne: async (filter: { _id: ObjectId; authorId: ObjectId }) => {
+            const index = data.posts.findIndex((post) =>
+              post._id.equals(filter._id) && post.authorId.equals(filter.authorId),
+            );
+            if (index < 0) return { acknowledged: true, deletedCount: 0 };
+            data.posts.splice(index, 1);
+            return { acknowledged: true, deletedCount: 1 };
           },
           find: (filter: MongoFilter) => {
             let result = data.posts.filter((post) => matchesPost(post, filter));
@@ -428,8 +540,10 @@ function matrixFixture(): { data: PostTestData; tokens: Record<"author" | "frien
       createdAt: new Date(now),
     }],
     likes: [],
+    shareLikes: [],
     comments: [],
     shares: [],
+    notifications: [],
     posts: [
       makePost(ids.onlyMe, author._id, "onlyMe", new Date(now + 3)),
       makePost(ids.friends, author._id, "friends", new Date(now + 2)),
@@ -495,23 +609,36 @@ test("share creation accepts only a Public source and returns its public author 
   const app = createApp(data);
   const sharesPath = `/api/posts/${ids.public}/shares`;
 
-  await request(app)
+  const createdShare = await request(app)
     .post(sharesPath)
     .set("Origin", "http://localhost:5173")
     .set("Cookie", cookie(tokens.friend))
-    .send({ visibility: "public" })
-    .expect(201)
-    .then((response) => {
-      assert.equal(response.body.share.author.id, ids.friend);
-      assert.equal(response.body.share.sourcePostId, ids.public);
-      assert.equal(response.body.share.visibility, "public");
-      assert.equal("email" in response.body.share.author, false);
-      assert.equal("passwordHash" in response.body.share.author, false);
-      assert.equal(response.headers["cache-control"], "private, no-store");
-    });
+    .send({ visibility: "public", caption: "  This is my note.  " })
+    .expect(201);
+  assert.equal(createdShare.body.share.author.id, ids.friend);
+  assert.equal(createdShare.body.share.sourcePostId, ids.public);
+  assert.equal(createdShare.body.share.visibility, "public");
+  assert.equal(createdShare.body.share.caption, "This is my note.");
+  assert.equal("email" in createdShare.body.share.author, false);
+  assert.equal("passwordHash" in createdShare.body.share.author, false);
+  assert.equal(createdShare.headers["cache-control"], "private, no-store");
   assert.equal(data.shares.length, 1);
   assert.equal(data.shares[0]!.authorId.toHexString(), ids.friend);
   assert.equal(data.shares[0]!.sourcePostId.toHexString(), ids.public);
+  assert.equal(data.shares[0]!.caption, "This is my note.");
+  assert.equal(data.notifications.length, 1);
+  assert.equal(data.notifications[0]!.recipientId.toHexString(), ids.author);
+  assert.equal(data.notifications[0]!.actorId.toHexString(), ids.friend);
+  assert.equal(data.notifications[0]!.type, "post_share");
+  assert.equal(data.notifications[0]!.postId?.toHexString(), ids.public);
+
+  const friendFeed = await request(app)
+    .get("/api/posts")
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  const sharedFeedItem = friendFeed.body.items.find((item: { share?: { id: string } }) =>
+    item.share?.id === createdShare.body.share.id);
+  assert.equal(sharedFeedItem?.share.caption, "This is my note.", "the feed must retain the share caption");
 
   for (const sourceId of [ids.friends, ids.onlyMe]) {
     await request(app)
@@ -529,6 +656,12 @@ test("share creation accepts only a Public source and returns its public author 
     .expect(400);
   await request(app)
     .post(sharesPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.friend))
+    .send({ visibility: "public", caption: "x".repeat(2_001) })
+    .expect(400);
+  await request(app)
+    .post(sharesPath)
     .set("Cookie", cookie(tokens.friend))
     .send({ visibility: "public" })
     .expect(403);
@@ -538,6 +671,79 @@ test("share creation accepts only a Public source and returns its public author 
     .send({ visibility: "public" })
     .expect(401);
   assert.equal(data.shares.length, 1, "rejected requests must not create share records");
+});
+
+test("share audience changes are owner-only and never change the source post audience", async () => {
+  const { data, tokens } = matrixFixture();
+  const sourcePost = data.posts.find((post) => post._id.toHexString() === ids.public)!;
+  const share = makeShare(
+    "000000000000000000000081",
+    new ObjectId(ids.friend),
+    sourcePost._id,
+    "public",
+    new Date(),
+  );
+  data.shares.push(share);
+  data.shareLikes.push({
+    _id: new ObjectId(),
+    userId: new ObjectId(ids.author),
+    shareId: share._id,
+    createdAt: new Date(),
+  });
+  const app = createApp(data);
+  const path = `/api/posts/${ids.public}/shares/${share._id.toHexString()}`;
+  const origin = "http://localhost:5173";
+
+  await request(app)
+    .patch(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "friends" })
+    .expect(404);
+  await request(app)
+    .patch(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .send({ visibility: "friends" })
+    .expect(200)
+    .then((response) => {
+      assert.equal(response.body.share.id, share._id.toHexString());
+      assert.equal(response.body.share.visibility, "friends");
+    });
+
+  assert.equal(share.visibility, "friends");
+  assert.equal(sourcePost.visibility, "public", "updating a share must not update its source post");
+});
+
+test("removing a share deletes only the share record and is restricted to its author", async () => {
+  const { data, tokens } = matrixFixture();
+  const sourcePost = data.posts.find((post) => post._id.toHexString() === ids.public)!;
+  const share = makeShare(
+    "000000000000000000000082",
+    new ObjectId(ids.friend),
+    sourcePost._id,
+    "public",
+    new Date(),
+  );
+  data.shares.push(share);
+  const app = createApp(data);
+  const path = `/api/posts/${ids.public}/shares/${share._id.toHexString()}`;
+  const origin = "http://localhost:5173";
+
+  await request(app)
+    .delete(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .expect(404);
+  await request(app)
+    .delete(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(204);
+
+  assert.equal(data.shares.some((candidate) => candidate._id.equals(share._id)), false);
+  assert.equal(data.shareLikes.some((like) => like.shareId.equals(share._id)), false);
+  assert.equal(data.posts.some((candidate) => candidate._id.equals(sourcePost._id)), true);
 });
 
 test("feed and profile timelines require both visible share audience and a currently Public source", async () => {
@@ -768,6 +974,93 @@ test("visible post responses include the Like count and viewer-specific Like sta
   assert.equal(detail.body.post.isLikedByViewer, false);
 });
 
+test("share reactions are independent from the source post and other shares", async () => {
+  const { data, tokens } = matrixFixture();
+  const sourcePostId = new ObjectId(ids.public);
+  const authorId = new ObjectId(ids.author);
+  const friendId = new ObjectId(ids.friend);
+  const shareOne = makeShare("000000000000000000000061", authorId, sourcePostId, "public", new Date());
+  const shareTwo = makeShare("000000000000000000000062", friendId, sourcePostId, "public", new Date());
+  const hiddenShare = makeShare("000000000000000000000063", friendId, sourcePostId, "onlyMe", new Date());
+  data.shares = [shareOne, shareTwo, hiddenShare];
+  data.likes.push({
+    _id: new ObjectId(),
+    userId: authorId,
+    postId: sourcePostId,
+    createdAt: new Date(),
+  });
+  const app = createApp(data);
+  const origin = "http://localhost:5173";
+  const shareOneLikeUrl = `/api/posts/${ids.public}/shares/${shareOne._id.toHexString()}/like`;
+  const shareTwoLikeUrl = `/api/posts/${ids.public}/shares/${shareTwo._id.toHexString()}/like`;
+  const hiddenShareLikeUrl = `/api/posts/${ids.public}/shares/${hiddenShare._id.toHexString()}/like`;
+
+  const firstLike = await request(app)
+    .put(shareOneLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.deepEqual(firstLike.body, { likeCount: 1, isLikedByViewer: true });
+  const duplicateLike = await request(app)
+    .put(shareOneLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.deepEqual(duplicateLike.body, { likeCount: 1, isLikedByViewer: true });
+
+  await request(app)
+    .put(shareTwoLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200, { likeCount: 1, isLikedByViewer: true });
+  await request(app)
+    .put(hiddenShareLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
+
+  const outsiderFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  const sourcePost = outsiderFeed.body.items.find((item: { id: string; share?: unknown }) =>
+    item.id === ids.public && !item.share);
+  const visibleShares = outsiderFeed.body.items.flatMap((item: { share?: { id: string; likeCount: number; isLikedByViewer: boolean } }) =>
+    item.share ? [item.share] : []);
+  const firstShareInFeed = visibleShares.find((share: { id: string }) => share.id === shareOne._id.toHexString());
+  const secondShareInFeed = visibleShares.find((share: { id: string }) => share.id === shareTwo._id.toHexString());
+  assert.deepEqual(
+    { count: sourcePost.likeCount, liked: sourcePost.isLikedByViewer },
+    { count: 1, liked: false },
+    "liking a share must not change the original post reaction",
+  );
+  assert.deepEqual(
+    { count: firstShareInFeed.likeCount, liked: firstShareInFeed.isLikedByViewer },
+    { count: 1, liked: true },
+  );
+  assert.deepEqual(
+    { count: secondShareInFeed.likeCount, liked: secondShareInFeed.isLikedByViewer },
+    { count: 1, liked: false },
+    "another share of the same source keeps its own reaction state",
+  );
+  assert.equal(data.likes.length, 1);
+  assert.equal(data.shareLikes.length, 2);
+  assert.equal(data.notifications.length, 1, "a newly liked shared card notifies its owner once, but self-likes do not notify");
+  assert.equal(data.notifications[0]!.recipientId.toHexString(), ids.author);
+  assert.equal(data.notifications[0]!.type, "share_like");
+
+  const removeLike = await request(app)
+    .delete(shareOneLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.deepEqual(removeLike.body, { likeCount: 0, isLikedByViewer: false });
+  await request(app)
+    .delete(shareOneLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200, { likeCount: 0, isLikedByViewer: false });
+  assert.equal(data.shareLikes.length, 1, "unliking one share leaves the other share's reaction intact");
+  assert.equal(data.likes.length, 1, "unliking a share leaves source-post reactions intact");
+});
+
 test("Like and unlike routes are idempotent, count two users, and deny hidden posts", async () => {
   const { data, tokens } = matrixFixture();
   const app = createApp(data);
@@ -780,6 +1073,7 @@ test("Like and unlike routes are idempotent, count two users, and deny hidden po
     .set("Cookie", cookie(tokens.author))
     .expect(200);
   assert.deepEqual(firstLike.body, { likeCount: 1, isLikedByViewer: true });
+  assert.equal(data.notifications.length, 0, "the post author liking their own post does not notify themselves");
 
   const duplicateLikes = await Promise.all([
     request(app)
@@ -805,6 +1099,9 @@ test("Like and unlike routes are idempotent, count two users, and deny hidden po
     .expect(200);
   assert.deepEqual(secondUserLike.body, { likeCount: 2, isLikedByViewer: true });
   assert.equal(data.likes.length, 2);
+  assert.equal(data.notifications.length, 1, "the new Like by another user notifies the author once");
+  assert.equal(data.notifications[0]!.type, "post_like");
+  assert.equal(data.notifications[0]!.actorId.toHexString(), ids.friend);
 
   const removeLike = await request(app)
     .delete(publicLikeUrl)
@@ -1297,6 +1594,86 @@ test("post audience edits validate input and allow only the author to persist ch
   assert.equal(data.posts.find((candidate) => candidate._id.equals(post._id))?.visibility, "onlyMe");
 });
 
+test("post deletion is owner-only and removes the post, related records, and Cloudinary photo", async () => {
+  const { data, tokens } = matrixFixture();
+  const post = data.posts.find((candidate) => candidate._id.toHexString() === ids.public)!;
+  const otherPost = data.posts.find((candidate) => candidate._id.toHexString() === ids.friends)!;
+  post.photoAssetId = "senderi/posts/delete-me";
+  data.likes = [
+    { _id: new ObjectId(), userId: new ObjectId(ids.friend), postId: post._id, createdAt: new Date() },
+    { _id: new ObjectId(), userId: new ObjectId(ids.friend), postId: otherPost._id, createdAt: new Date() },
+  ];
+  data.comments = [
+    { _id: new ObjectId(), postId: post._id, authorId: new ObjectId(ids.friend), text: "Remove me", createdAt: new Date() },
+    { _id: new ObjectId(), postId: otherPost._id, authorId: new ObjectId(ids.friend), text: "Keep me", createdAt: new Date() },
+  ];
+  data.shares = [
+    makeShare("000000000000000000000071", new ObjectId(ids.friend), post._id, "public", new Date()),
+    makeShare("000000000000000000000072", new ObjectId(ids.friend), otherPost._id, "public", new Date()),
+  ];
+  const deletedShareId = data.shares[0]!._id;
+  const remainingShareId = data.shares[1]!._id;
+  data.shareLikes = [
+    { _id: new ObjectId(), userId: new ObjectId(ids.friend), shareId: data.shares[0]!._id, createdAt: new Date() },
+    { _id: new ObjectId(), userId: new ObjectId(ids.friend), shareId: data.shares[1]!._id, createdAt: new Date() },
+  ];
+  const destroyed: string[] = [];
+  const app = createApp(data, createPhotoStorage({
+    destroy: async (assetId) => { destroyed.push(assetId); },
+  }));
+  const path = `/api/posts/${ids.public}`;
+  const origin = "http://localhost:5173";
+
+  await request(app)
+    .delete(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(404);
+  await request(app)
+    .delete(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
+  assert.deepEqual(destroyed, [], "non-owners must not trigger photo deletion");
+
+  const deleted = await request(app)
+    .delete(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .expect(204);
+  assert.equal(deleted.headers["cache-control"], "private, no-store");
+  assert.deepEqual(destroyed, ["senderi/posts/delete-me"]);
+  assert.equal(data.posts.some((candidate) => candidate._id.equals(post._id)), false);
+  assert.equal(data.likes.some((like) => like.postId.equals(post._id)), false);
+  assert.equal(data.comments.some((comment) => comment.postId.equals(post._id)), false);
+  assert.equal(data.shares.some((share) => share.sourcePostId.equals(post._id)), false);
+  assert.equal(data.likes.some((like) => like.postId.equals(otherPost._id)), true);
+  assert.equal(data.comments.some((comment) => comment.postId.equals(otherPost._id)), true);
+  assert.equal(data.shares.some((share) => share.sourcePostId.equals(otherPost._id)), true);
+  assert.equal(data.shareLikes.some((like) => like.shareId.equals(deletedShareId)), false);
+  assert.equal(data.shareLikes.some((like) => like.shareId.equals(remainingShareId)), true);
+  assert.equal(data.shareLikes.length, 1, "deleting a source post removes its share reactions but preserves unrelated ones");
+
+  await request(app).get(path).set("Cookie", cookie(tokens.author)).expect(404);
+});
+
+test("post deletion preserves the database post if Cloudinary photo removal fails", async () => {
+  const { data, tokens } = matrixFixture();
+  const post = data.posts.find((candidate) => candidate._id.toHexString() === ids.public)!;
+  post.photoAssetId = "senderi/posts/keep-on-failure";
+  const app = createApp(data, createPhotoStorage({
+    destroy: async () => { throw new Error("simulated Cloudinary failure"); },
+  }));
+
+  const response = await request(app)
+    .delete(`/api/posts/${ids.public}`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .expect(502);
+  assert.equal(response.body.error.code, "post_photo_delete_failed");
+  assert.equal(data.posts.some((candidate) => candidate._id.equals(post._id)), true);
+});
+
 test("feed, direct post, and the same photo URL recheck access after every audience change", async () => {
   const { data, tokens } = matrixFixture();
   const post = data.posts.find((candidate) => candidate._id.toHexString() === ids.public)!;
@@ -1663,6 +2040,9 @@ test("comment creation validates text, requires an allowed origin, and stops aft
   assert.equal("email" in created.body.comment.author, false);
   assert.equal(created.headers["cache-control"], "private, no-store");
   assert.equal(data.comments.length, 1);
+  assert.equal(data.notifications.length, 1);
+  assert.equal(data.notifications[0]!.type, "post_comment");
+  assert.equal(data.notifications[0]!.recipientId.toHexString(), ids.author);
 
   await request(app)
     .patch(postPath)

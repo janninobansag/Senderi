@@ -6,6 +6,7 @@ import { chatsRouter } from "./routes/chats";
 import { friendRequestsRouter } from "./routes/friend-requests";
 import { friendsRouter } from "./routes/friends";
 import { healthRouter } from "./routes/health";
+import { notificationsRouter } from "./routes/notifications";
 import { postsRouter, userPostsRouter } from "./routes/posts";
 import { usersRouter } from "./routes/users";
 
@@ -17,6 +18,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/chats", chatsRouter);
 app.use("/api/friend-requests", friendRequestsRouter);
 app.use("/api/friends", friendsRouter);
+app.use("/api/notifications", notificationsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/users", userPostsRouter);
 app.use("/api/posts", postsRouter);

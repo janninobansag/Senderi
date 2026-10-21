@@ -1,6 +1,6 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, Visibility } from "../../../shared";
+import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, UpdateShareResponse, Visibility } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
 import { EmptyState, LoadingState, RequestErrorState } from "./AsyncState";
@@ -19,8 +19,31 @@ function audienceLabel(visibility: Visibility): string {
 
 const MAX_COMMENT_LENGTH = 2_000;
 
-function CommentsPanel({ postId }: { postId: string }) {
-  const [isOpen, setIsOpen] = useState(false);
+function PostActionIcon({ name }: { name: "like" | "comment" | "share" }) {
+  const commonProps = {
+    "aria-hidden": true as const,
+    className: "post-action-icon",
+    fill: "none",
+    stroke: "currentColor",
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    strokeWidth: 1.8,
+    viewBox: "0 0 24 24",
+  };
+
+  if (name === "like") {
+    return <svg {...commonProps}><path d="M7 10v10H4a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1h3Zm0 0 4-7a3 3 0 0 1 2 3v4h5.2a2 2 0 0 1 2 2.4l-1.3 6A2 2 0 0 1 17 20H7" /></svg>;
+  }
+
+  if (name === "comment") {
+    return <svg {...commonProps}><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H7l-4 2v-5.5A7.5 7.5 0 1 1 20 11.5Z" /></svg>;
+  }
+
+  return <svg {...commonProps}><path d="M14 5 21 12l-7 7" /><path d="M21 12H9a6 6 0 0 0-6 6" /></svg>;
+}
+
+function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; initiallyOpen?: boolean }) {
+  const [isOpen, setIsOpen] = useState(initiallyOpen);
   const [comments, setComments] = useState<Comment[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -33,7 +56,7 @@ function CommentsPanel({ postId }: { postId: string }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const commentsPath = `/api/posts/${postId}/comments`;
 
-  async function loadFirstPage() {
+  const loadFirstPage = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
     try {
@@ -46,7 +69,11 @@ function CommentsPanel({ postId }: { postId: string }) {
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [commentsPath]);
+
+  useEffect(() => {
+    if (isOpen && !hasLoaded && !isLoading) void loadFirstPage();
+  }, [hasLoaded, isLoading, isOpen, loadFirstPage]);
 
   async function loadNextPage() {
     if (!nextCursor || isLoadingMore) return;
@@ -86,26 +113,22 @@ function CommentsPanel({ postId }: { postId: string }) {
   }
 
   function toggleComments() {
-    if (isOpen) {
-      setIsOpen(false);
-      return;
-    }
-    setIsOpen(true);
-    if (!hasLoaded && !isLoading) void loadFirstPage();
+    setIsOpen((open) => !open);
   }
 
   return (
-    <div className="mt-4 border-t border-line pt-4">
+    <>
       <button
-        className="button-secondary"
+        className="post-action"
         type="button"
         aria-expanded={isOpen}
         onClick={toggleComments}
       >
-        {isOpen ? "Hide comments" : comments.length ? `Comments (${comments.length}${nextCursor ? "+" : ""})` : "Comments"}
+        <PostActionIcon name="comment" />
+        <span>{isOpen ? "Hide comments" : "Comment"}</span>
       </button>
       {isOpen && (
-        <section className="mt-4 space-y-4" aria-label="Post comments">
+        <section className="post-comments-panel space-y-4" aria-label="Post comments">
           {isLoading ? (
             <p className="text-sm text-muted" role="status">Loading comments…</p>
           ) : loadError && !hasLoaded ? (
@@ -125,7 +148,7 @@ function CommentsPanel({ postId }: { postId: string }) {
                     return (
                       <li className="flex gap-3 rounded-2xl bg-canvas p-3" key={comment.id}>
                         <Link
-                          className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-violet/10 text-xs font-bold text-violet"
+                          className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-accent/10 text-xs font-bold text-accent"
                           to={`/profile/${comment.author.id}`}
                           aria-label={`${comment.author.displayName}’s profile`}
                         >
@@ -135,7 +158,7 @@ function CommentsPanel({ postId }: { postId: string }) {
                         </Link>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                            <Link className="text-xs font-bold text-ink hover:text-violet" to={`/profile/${comment.author.id}`}>
+                            <Link className="text-xs font-bold text-ink hover:text-accent" to={`/profile/${comment.author.id}`}>
                               {comment.author.displayName}
                             </Link>
                             <time className="text-[11px] text-muted" dateTime={comment.createdAt}>
@@ -169,7 +192,7 @@ function CommentsPanel({ postId }: { postId: string }) {
             <label className="block">
               <span className="sr-only">Write a comment</span>
               <textarea
-                className="min-h-20 w-full resize-y rounded-2xl border border-line bg-canvas px-4 py-3 text-sm leading-6 text-ink outline-none transition placeholder:text-muted focus:border-violet disabled:opacity-60"
+                className="min-h-20 w-full resize-y rounded-2xl border border-line bg-canvas px-4 py-3 text-sm leading-6 text-ink outline-none transition placeholder:text-muted focus:border-accent disabled:opacity-60"
                 aria-label="Write a comment"
                 placeholder="Write a comment…"
                 value={text}
@@ -193,15 +216,27 @@ function CommentsPanel({ postId }: { postId: string }) {
           </form>
         </section>
       )}
-    </div>
+    </>
   );
 }
 
 function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) {
+  const { user } = useAuth();
   const shareAudienceId = useId();
+  const shareDialogTitleId = useId();
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const [visibility, setVisibility] = useState<Visibility>("public");
+  const [caption, setCaption] = useState("");
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [message, setMessage] = useState<{ text: string; isError: boolean } | null>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (isDialogOpen && !dialog.open) dialog.showModal();
+    if (!isDialogOpen && dialog.open) dialog.close();
+  }, [isDialogOpen]);
 
   if (post.visibility !== "public") return null;
 
@@ -212,13 +247,19 @@ function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) 
     setIsSharing(true);
     setMessage(null);
     try {
-      const body: CreateShareRequest = { visibility };
+      const normalizedCaption = caption.trim();
+      const body: CreateShareRequest = {
+        visibility,
+        ...(normalizedCaption ? { caption: normalizedCaption } : {}),
+      };
       await apiFetch<CreateShareResponse>(`/api/posts/${post.id}/shares`, {
         method: "POST",
         body,
       });
       setMessage({ text: "Post shared.", isError: false });
+      setCaption("");
       onShared();
+      setIsDialogOpen(false);
     } catch (error: unknown) {
       setMessage({
         text: error instanceof ApiError ? error.message : "We couldn’t share this post. Try again.",
@@ -230,31 +271,198 @@ function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) 
   }
 
   return (
-    <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => void submitShare(event)}>
-      <label className="sr-only" htmlFor={shareAudienceId}>
-        Share audience
-      </label>
-      <select
-        id={shareAudienceId}
-        className="rounded-xl border border-line bg-canvas px-2 py-2 text-xs font-semibold text-ink outline-none focus:border-violet disabled:opacity-60"
-        value={visibility}
-        onChange={(event) => setVisibility(event.target.value as Visibility)}
-        aria-label="Share audience"
-        disabled={isSharing}
+    <div className="post-share-control">
+      <button
+        className="post-action"
+        type="button"
+        onClick={() => {
+          setMessage(null);
+          setCaption("");
+          setIsDialogOpen(true);
+        }}
       >
-        {audienceOptions.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
-      <button className="button-secondary disabled:opacity-60" type="submit" disabled={isSharing}>
+        <PostActionIcon name="share" />
         {isSharing ? "Sharing…" : "Share"}
       </button>
-      {message && (
+      {message && !isDialogOpen && (
         <span className={message.isError ? "form-error" : "form-success"} role={message.isError ? "alert" : "status"}>
           {message.text}
         </span>
       )}
-    </form>
+      <dialog
+        ref={dialogRef}
+        className="share-dialog"
+        aria-labelledby={shareDialogTitleId}
+        onClose={() => setIsDialogOpen(false)}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) setIsDialogOpen(false);
+        }}
+      >
+        <header className="share-dialog-header">
+          <h2 id={shareDialogTitleId}>Share</h2>
+          <button
+            className="share-dialog-close"
+            type="button"
+            aria-label="Close share dialog"
+            onClick={() => setIsDialogOpen(false)}
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+        </header>
+        <form className="share-dialog-form" onSubmit={(event) => void submitShare(event)}>
+          <div className="share-dialog-body">
+            <div className="share-dialog-identity">
+              <div className="share-dialog-avatar">
+                {user?.avatarUrl
+                  ? <img src={user.avatarUrl} alt="" />
+                  : (user?.displayName ?? "Senderi").trim().charAt(0).toUpperCase() || "S"}
+              </div>
+              <div className="share-dialog-identity-copy">
+                <strong>{user?.displayName ?? "Your profile"}</strong>
+                <div className="share-dialog-destination">
+                  <span className="share-feed-chip">Feed</span>
+                  <label className="sr-only" htmlFor={shareAudienceId}>Share audience</label>
+                  <select
+                    id={shareAudienceId}
+                    className="post-share-audience"
+                    value={visibility}
+                    onChange={(event) => setVisibility(event.target.value as Visibility)}
+                    aria-label="Share audience"
+                    disabled={isSharing}
+                  >
+                    {audienceOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <label className="sr-only" htmlFor={`${shareAudienceId}-caption`}>Add a message to your share</label>
+            <textarea
+              id={`${shareAudienceId}-caption`}
+              className="share-dialog-caption"
+              value={caption}
+              onChange={(event) => setCaption(event.target.value)}
+              maxLength={2_000}
+              rows={3}
+              placeholder="Say something about this..."
+              disabled={isSharing}
+            />
+            <article className="share-preview" aria-label="Post preview">
+              <p className="share-preview-author">Originally posted by {post.author.displayName}</p>
+              {post.text && <p className="share-preview-text">{post.text}</p>}
+              {post.photoUrl && (
+                <img
+                  className="share-preview-image"
+                  src={post.photoUrl}
+                  alt={`Photo shared by ${post.author.displayName}`}
+                  referrerPolicy="no-referrer"
+                />
+              )}
+              {!post.text && !post.photoUrl && <p className="share-preview-text">Shared a post.</p>}
+            </article>
+            {message?.isError && <p className="form-error" role="alert">{message.text}</p>}
+          </div>
+          <footer className="share-dialog-footer">
+            <button className="button-secondary" type="button" disabled={isSharing} onClick={() => setIsDialogOpen(false)}>
+              Cancel
+            </button>
+            <button className="button-accent" type="submit" disabled={isSharing}>
+              {isSharing ? "Sharing…" : "Share now"}
+            </button>
+          </footer>
+        </form>
+      </dialog>
+    </div>
+  );
+}
+
+function PostDetailsDialog({
+  post,
+  isOpen,
+  onClose,
+  likeState,
+  isLikePending,
+  onToggleLike,
+}: {
+  post: Post;
+  isOpen: boolean;
+  onClose: () => void;
+  likeState: { likeCount: number; isLikedByViewer: boolean };
+  isLikePending: boolean;
+  onToggleLike: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const initial = post.author.displayName.trim().charAt(0).toUpperCase() || "S";
+  const createdAt = new Date(post.createdAt);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (isOpen && dialog && !dialog.open) dialog.showModal();
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="post-detail-dialog"
+      aria-label={`Post by ${post.author.displayName}`}
+      onClose={onClose}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <button className="post-detail-close" type="button" aria-label="Close post details" onClick={onClose}>
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+      </button>
+      <div className="post-detail-layout">
+        <div className="post-detail-media">
+          {post.photoUrl
+            ? <img src={post.photoUrl} alt={`Photo shared by ${post.author.displayName}`} referrerPolicy="no-referrer" />
+            : <p>{post.text || "Shared a post."}</p>}
+        </div>
+        <aside className="post-detail-sidebar">
+          <header className="post-detail-author">
+            <Link
+              className="share-post-avatar"
+              to={`/profile/${post.author.id}`}
+              aria-label={`${post.author.displayName}’s profile`}
+            >
+              {post.author.avatarUrl ? <img src={post.author.avatarUrl} alt="" /> : initial}
+            </Link>
+            <div className="share-post-identity-copy">
+              <Link className="share-post-author" to={`/profile/${post.author.id}`}>
+                {post.author.displayName}
+              </Link>
+              <time dateTime={post.createdAt}>
+                {Number.isNaN(createdAt.getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                }).format(createdAt)}
+                <span> · {audienceLabel(post.visibility)} audience</span>
+              </time>
+            </div>
+          </header>
+          {post.photoUrl && post.text && <p className="post-detail-text">{post.text}</p>}
+          <div className="post-action-bar post-detail-actions">
+            <button
+              className={`post-action post-action-like${likeState.isLikedByViewer ? " post-action-active" : ""}`}
+              type="button"
+              aria-pressed={likeState.isLikedByViewer}
+              aria-label={likeState.isLikedByViewer ? "Unlike post" : "Like post"}
+              disabled={isLikePending}
+              onClick={onToggleLike}
+            >
+              <PostActionIcon name="like" />
+              {likeState.isLikedByViewer ? "Liked" : "Like"}
+            </button>
+            <span className="post-action-count">{likeState.likeCount.toLocaleString()}</span>
+          </div>
+          <CommentsPanel postId={post.id} initiallyOpen />
+        </aside>
+      </div>
+    </dialog>
   );
 }
 
@@ -343,7 +551,7 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
       <label className="block">
         <span className="eyebrow">Create a post</span>
         <textarea
-          className="mt-3 min-h-28 w-full resize-y rounded-2xl border border-line bg-canvas px-4 py-3 text-sm leading-6 text-ink outline-none transition placeholder:text-muted focus:border-violet"
+          className="mt-3 min-h-28 w-full resize-y rounded-2xl border border-line bg-canvas px-4 py-3 text-sm leading-6 text-ink outline-none transition placeholder:text-muted focus:border-accent"
           aria-label="Post text"
           placeholder="What’s on your mind?"
           value={text}
@@ -395,7 +603,7 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
         <label className="flex items-center gap-3 text-sm font-semibold text-muted">
           Audience
           <select
-            className="rounded-xl border border-line bg-canvas px-3 py-2 text-sm font-medium text-ink outline-none focus:border-violet"
+            className="rounded-xl border border-line bg-canvas px-3 py-2 text-sm font-medium text-ink outline-none focus:border-accent"
             value={visibility}
             onChange={(event) => setVisibility(event.target.value as Visibility)}
             aria-label="Post audience"
@@ -426,7 +634,7 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
             aria-valuemax={100}
             aria-valuenow={uploadProgress}
           >
-            <div className="h-full rounded-full bg-violet transition-[width]" style={{ width: `${uploadProgress}%` }} />
+            <div className="h-full rounded-full bg-accent transition-[width]" style={{ width: `${uploadProgress}%` }} />
           </div>
         </div>
       )}
@@ -443,61 +651,119 @@ function PostCard({
   post,
   onUpdated,
   onShared,
+  onDeleted,
 }: {
   post: Post;
   onUpdated: (updated: Post) => void;
   onShared: () => void;
+  onDeleted: () => void;
 }) {
   const { user } = useAuth();
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<{ text: string; isError: boolean } | null>(null);
-  const [likeState, setLikeState] = useState({
+  const [postLikeState, setPostLikeState] = useState({
     likeCount: post.likeCount,
     isLikedByViewer: post.isLikedByViewer,
   });
-  const [isLikePending, setIsLikePending] = useState(false);
+  const [shareLikeState, setShareLikeState] = useState({
+    likeCount: post.share?.likeCount ?? 0,
+    isLikedByViewer: post.share?.isLikedByViewer ?? false,
+  });
+  const [pendingLikeTarget, setPendingLikeTarget] = useState<"post" | "share" | null>(null);
   const [likeMessage, setLikeMessage] = useState<{ text: string; isError: boolean } | null>(null);
+  const optionsMenuId = useId();
+  const optionsMenuRef = useRef<HTMLDivElement>(null);
+  const optionsButtonRef = useRef<HTMLButtonElement>(null);
   const isOwner = user?.id === post.author.id;
+  const isShareOwner = Boolean(post.share && user?.id === post.share.author.id);
+  const canManagePostOptions = post.share ? isShareOwner : isOwner;
+  const displayedAudience = post.share?.visibility ?? post.visibility;
   const initial = post.author.displayName.trim().charAt(0).toUpperCase() || "S";
+  const shareInitial = post.share?.author.displayName.trim().charAt(0).toUpperCase() || "S";
   const createdAt = new Date(post.createdAt);
 
   useEffect(() => {
-    setLikeState({ likeCount: post.likeCount, isLikedByViewer: post.isLikedByViewer });
+    setPostLikeState({ likeCount: post.likeCount, isLikedByViewer: post.isLikedByViewer });
   }, [post.likeCount, post.isLikedByViewer]);
 
-  async function toggleLike() {
-    if (isLikePending) return;
-    const wasLiked = likeState.isLikedByViewer;
-    setIsLikePending(true);
+  useEffect(() => {
+    setShareLikeState({
+      likeCount: post.share?.likeCount ?? 0,
+      isLikedByViewer: post.share?.isLikedByViewer ?? false,
+    });
+  }, [post.share?.id, post.share?.likeCount, post.share?.isLikedByViewer]);
+
+  useEffect(() => {
+    if (!isMenuOpen) return;
+
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (event.target instanceof Node && !optionsMenuRef.current?.contains(event.target)) {
+        setIsMenuOpen(false);
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsMenuOpen(false);
+        optionsButtonRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isMenuOpen]);
+
+  async function toggleLike(target: "post" | "share" = post.share ? "share" : "post") {
+    if (pendingLikeTarget) return;
+    const state = target === "share" ? shareLikeState : postLikeState;
+    const wasLiked = state.isLikedByViewer;
+    setPendingLikeTarget(target);
     setLikeMessage(null);
     try {
-      const response = await apiFetch<LikeResponse>(`/api/posts/${post.id}/like`, {
+      const likePath = target === "share" && post.share
+        ? `/api/posts/${post.id}/shares/${post.share.id}/like`
+        : `/api/posts/${post.id}/like`;
+      const response = await apiFetch<LikeResponse>(likePath, {
         method: wasLiked ? "DELETE" : "PUT",
       });
-      setLikeState(response);
-      setLikeMessage({ text: wasLiked ? "Like removed." : "Post liked.", isError: false });
+      if (target === "share") setShareLikeState(response);
+      else setPostLikeState(response);
+      setLikeMessage({ text: wasLiked ? "Like removed." : target === "share" ? "Share liked." : "Post liked.", isError: false });
     } catch (error: unknown) {
       setLikeMessage({
         text: error instanceof ApiError ? error.message : "We couldn’t update your Like. Try again.",
         isError: true,
       });
     } finally {
-      setIsLikePending(false);
+      setPendingLikeTarget(null);
     }
   }
 
   async function changeAudience(nextVisibility: Visibility) {
-    if (!isOwner || nextVisibility === post.visibility || isUpdating) return;
+    if (!canManagePostOptions || nextVisibility === displayedAudience || isUpdating) return;
     setIsUpdating(true);
     setUpdateMessage({ text: "Updating audience…", isError: false });
     try {
       const body: UpdatePostRequest = { visibility: nextVisibility };
-      const response = await apiFetch<PostResponse>(`/api/posts/${post.id}`, {
-        method: "PATCH",
-        body,
-      });
+      const updatedPost = post.share
+        ? {
+            ...post,
+            share: (await apiFetch<UpdateShareResponse>(`/api/posts/${post.id}/shares/${post.share.id}`, {
+              method: "PATCH",
+              body,
+            })).share,
+          }
+        : (await apiFetch<PostResponse>(`/api/posts/${post.id}`, { method: "PATCH", body })).post;
       setUpdateMessage({ text: "Audience updated.", isError: false });
-      onUpdated(response.post);
+      setIsMenuOpen(false);
+      onUpdated(updatedPost);
     } catch (error: unknown) {
       setUpdateMessage({
         text: error instanceof ApiError ? error.message : "We couldn’t update this post’s audience. Try again.",
@@ -508,26 +774,147 @@ function PostCard({
     }
   }
 
+  async function deletePost() {
+    if (!canManagePostOptions || isDeleting) return;
+    setIsDeleting(true);
+    setUpdateMessage(null);
+    try {
+      const deleteUrl = post.share
+        ? `/api/posts/${post.id}/shares/${post.share.id}`
+        : `/api/posts/${post.id}`;
+      await apiFetch<void>(deleteUrl, { method: "DELETE" });
+      setIsMenuOpen(false);
+      onDeleted();
+    } catch (error: unknown) {
+      setUpdateMessage({
+        text: error instanceof ApiError ? error.message : "We couldn't delete this post. Try again.",
+        isError: true,
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  }
+
+  function renderPostOptions() {
+    return (
+      <div className="post-options" ref={optionsMenuRef}>
+        <button
+          ref={optionsButtonRef}
+          className="post-options-trigger"
+          type="button"
+          aria-label="Post options"
+          aria-expanded={isMenuOpen}
+          aria-controls={optionsMenuId}
+          onClick={() => setIsMenuOpen((open) => !open)}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <circle cx="5" cy="12" r="1.6" />
+            <circle cx="12" cy="12" r="1.6" />
+            <circle cx="19" cy="12" r="1.6" />
+          </svg>
+        </button>
+        <div id={optionsMenuId} className="post-options-menu" hidden={!isMenuOpen}>
+          <p className="post-options-title">Post options</p>
+          <div className="post-options-audience">
+            <span>Audience</span>
+            <strong>{audienceLabel(displayedAudience)}</strong>
+          </div>
+          {canManagePostOptions && (
+            <>
+              <label className="post-options-edit-audience">
+                <span>Edit audience</span>
+                <select
+                  value={displayedAudience}
+                  onChange={(event) => void changeAudience(event.target.value as Visibility)}
+                  aria-label="Edit post audience"
+                  disabled={isUpdating || isDeleting}
+                >
+                  {audienceOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="post-options-delete"
+                type="button"
+                disabled={isDeleting || isUpdating}
+                onClick={() => {
+                  const confirmed = post.share
+                    ? window.confirm("Remove this share? The original post will remain.")
+                    : window.confirm("Delete this post permanently? Its photo, comments, likes, and shares will also be removed.");
+                  if (confirmed) void deletePost();
+                }}
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3" /></svg>
+                {isDeleting ? (post.share ? "Removing share…" : "Deleting post…") : (post.share ? "Remove share" : "Delete post")}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const originalPostContent = (
+    <>
+      <div className="mt-5 whitespace-pre-wrap break-words text-sm leading-7 text-ink/85">
+        {post.text || <span className="text-muted">Shared a photo.</span>}
+      </div>
+      {post.photoUrl && (
+        <img
+          className={post.share ? "share-embedded-image" : "mt-4 max-h-[36rem] w-full rounded-2xl border border-line object-contain"}
+          src={post.photoUrl}
+          alt={`Photo shared by ${post.author.displayName}`}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+        />
+      )}
+    </>
+  );
+  const cardLikeState = post.share ? shareLikeState : postLikeState;
+  const isCardLikePending = pendingLikeTarget === (post.share ? "share" : "post");
+  const likeSubject = post.share ? "shared post" : "post";
+
   return (
-    <article className="surface-card p-5 sm:p-6">
+    <article id={`post-${post.id}`} className={`surface-card p-5 sm:p-6${post.share ? " shared-post-card" : ""}`}>
       {post.share && (
-        <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-          <Link className="font-semibold text-ink hover:text-violet" to={`/profile/${post.share.author.id}`}>
-            {post.share.author.displayName}
-          </Link>
-          <span>shared this post</span>
-          <span>· {audienceLabel(post.share.visibility)} audience</span>
-          <time dateTime={post.share.createdAt}>
-            {Number.isNaN(new Date(post.share.createdAt).getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
+        <div className="share-post-context">
+          <header className="share-post-header">
+            <Link
+              className="share-post-avatar"
+              to={`/profile/${post.share.author.id}`}
+              aria-label={`${post.share.author.displayName}’s profile`}
+            >
+              {post.share.author.avatarUrl
+                ? <img src={post.share.author.avatarUrl} alt="" />
+                : shareInitial}
+            </Link>
+            <div className="share-post-identity-copy">
+              <Link className="share-post-author" to={`/profile/${post.share.author.id}`}>
+                {post.share.author.displayName}
+              </Link>
+              <time dateTime={post.share.createdAt}>
+                {Number.isNaN(new Date(post.share.createdAt).getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
               dateStyle: "medium",
               timeStyle: "short",
             }).format(new Date(post.share.createdAt))}
-          </time>
+                <span> · {audienceLabel(post.share.visibility)} audience</span>
+              </time>
+            </div>
+            {renderPostOptions()}
+          </header>
+          {post.share.caption && <p className="share-post-caption">{post.share.caption}</p>}
         </div>
       )}
+      {post.share && updateMessage && (
+        <p className={updateMessage.isError ? "form-error mb-3" : "form-success mb-3"} role={updateMessage.isError ? "alert" : "status"}>
+          {updateMessage.text}
+        </p>
+      )}
+      <div className={post.share ? "share-embedded-post" : undefined}>
       <header className="flex items-center gap-3">
         <Link
-          className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-violet/10 text-sm font-bold text-violet"
+          className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-accent/10 text-sm font-bold text-accent"
           to={`/profile/${post.author.id}`}
           aria-label={`${post.author.displayName}’s profile`}
         >
@@ -536,7 +923,7 @@ function PostCard({
             : initial}
         </Link>
         <div className="min-w-0 flex-1">
-          <Link className="block truncate text-sm font-bold text-ink hover:text-violet" to={`/profile/${post.author.id}`}>
+          <Link className="block truncate text-sm font-bold text-ink hover:text-accent" to={`/profile/${post.author.id}`}>
             {post.author.displayName}
           </Link>
           <time className="mt-0.5 block text-xs text-muted" dateTime={post.createdAt}>
@@ -544,59 +931,43 @@ function PostCard({
               dateStyle: "medium",
               timeStyle: "short",
             }).format(createdAt)}
+            <span> · {audienceLabel(post.visibility)} audience</span>
           </time>
         </div>
-        {isOwner ? (
-          <label className="flex items-center gap-2 text-xs font-semibold text-muted">
-            Audience
-            <select
-              className="max-w-32 rounded-xl border border-line bg-canvas px-2 py-1.5 text-xs font-semibold text-ink outline-none focus:border-violet disabled:opacity-60"
-              value={post.visibility}
-              onChange={(event) => void changeAudience(event.target.value as Visibility)}
-              aria-label="Edit post audience"
-              disabled={isUpdating}
-            >
-              {audienceOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <span className="rounded-full bg-canvas px-3 py-1 text-xs font-semibold text-muted">
-            {audienceLabel(post.visibility)}
-          </span>
-        )}
+        {!post.share && renderPostOptions()}
       </header>
-      {updateMessage && (
+      {!post.share && updateMessage && (
         <p className={updateMessage.isError ? "form-error mt-3" : "form-success mt-3"} role={updateMessage.isError ? "alert" : "status"}>
           {updateMessage.text}
         </p>
       )}
-      <div className="mt-5 whitespace-pre-wrap break-words text-sm leading-7 text-ink/85">
-        {post.text || <span className="text-muted">Shared a photo.</span>}
-      </div>
-      {post.photoUrl && (
-        <img
-          className="mt-4 max-h-[36rem] w-full rounded-2xl border border-line object-contain"
-          src={post.photoUrl}
-          alt={`Photo shared by ${post.author.displayName}`}
-          loading="lazy"
-          referrerPolicy="no-referrer"
-        />
-      )}
-      <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-line pt-4">
+      {post.share ? (
         <button
-          className="button-secondary disabled:opacity-60"
+          className="share-post-open"
           type="button"
-          aria-pressed={likeState.isLikedByViewer}
-          aria-label={likeState.isLikedByViewer ? "Unlike post" : "Like post"}
-          disabled={isLikePending}
+          aria-haspopup="dialog"
+          aria-label={`Open original post by ${post.author.displayName}`}
+          onClick={() => setIsDetailsOpen(true)}
+        >
+          {originalPostContent}
+        </button>
+      ) : originalPostContent}
+      </div>
+      <div className="post-action-bar mt-4">
+        <button
+          className={`post-action post-action-like${cardLikeState.isLikedByViewer ? " post-action-active" : ""}`}
+          type="button"
+          aria-pressed={cardLikeState.isLikedByViewer}
+          aria-label={`${cardLikeState.isLikedByViewer ? "Unlike" : "Like"} ${likeSubject}`}
+          aria-busy={isCardLikePending}
+          disabled={pendingLikeTarget !== null}
           onClick={() => void toggleLike()}
         >
-          {isLikePending ? (likeState.isLikedByViewer ? "Removing Like…" : "Liking…") : likeState.isLikedByViewer ? "Liked" : "Like"}
+          <PostActionIcon name="like" />
+          {isCardLikePending ? (cardLikeState.isLikedByViewer ? "Removing Like…" : "Liking…") : cardLikeState.isLikedByViewer ? "Liked" : "Like"}
         </button>
-        <span className="text-sm text-muted" aria-live="polite">
-          {likeState.likeCount} {likeState.likeCount === 1 ? "Like" : "Likes"}
+        <span className="post-action-count" aria-live="polite">
+          {cardLikeState.likeCount.toLocaleString()}
         </span>
         {likeMessage && (
           <p className={likeMessage.isError ? "form-error" : "form-success"} role={likeMessage.isError ? "alert" : "status"}>
@@ -606,6 +977,16 @@ function PostCard({
         <ShareControl post={post} onShared={onShared} />
       </div>
       <CommentsPanel postId={post.id} />
+      {post.share && (
+        <PostDetailsDialog
+          post={post}
+          isOpen={isDetailsOpen}
+          onClose={() => setIsDetailsOpen(false)}
+          likeState={postLikeState}
+          isLikePending={pendingLikeTarget !== null}
+          onToggleLike={() => void toggleLike("post")}
+        />
+      )}
     </article>
   );
 }
@@ -676,7 +1057,7 @@ export function PostList({ path, refreshKey = 0 }: { path: string; refreshKey?: 
     setItems((current) => current.flatMap((post) => {
       if (post.id !== updatedPost.id) return [post];
       if (post.share && updatedPost.visibility !== "public") return [];
-      return [{ ...updatedPost, ...(post.share ? { share: post.share } : {}) }];
+      return [{ ...updatedPost, ...(post.share && !updatedPost.share ? { share: post.share } : {}) }];
     }));
     try {
       const page = await apiFetch<PostListResponse>(path);
@@ -730,6 +1111,7 @@ export function PostList({ path, refreshKey = 0 }: { path: string; refreshKey?: 
           post={post}
           onUpdated={(updated) => void refreshAfterEdit(updated)}
           onShared={() => void refreshAfterShare()}
+          onDeleted={() => setRetryKey((current) => current + 1)}
         />
       ))}
       {nextPageError && <RequestErrorState title="Unable to load more posts" message={nextPageError} />}

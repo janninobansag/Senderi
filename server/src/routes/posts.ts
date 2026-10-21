@@ -7,12 +7,14 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type CommentDocument, type LikeDocument, type PostDocument, type PostVisibility, type ShareDocument, type UserDocument } from "../db/documents";
+import { collectionNames, type CommentDocument, type LikeDocument, type PostDocument, type PostVisibility, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { cloudinaryPostPhotoStorage, validatePostPhoto, type PostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
 import { canViewPost, decodePostCursor } from "../post-access";
 import { listVisibleFeedRecords, type FeedRecord } from "../feed-access";
+import { canViewShare } from "../share-access";
+import { createNotification } from "../notifications/create-notification";
 
 const postPageQuerySchema = z.object({
   cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
@@ -39,6 +41,7 @@ const createCommentSchema = z.object({
 
 const createShareSchema = z.object({
   visibility: z.enum(["public", "friends", "onlyMe"]),
+  caption: z.string().trim().max(2_000).optional(),
 }).strict();
 
 interface PostResponseItem {
@@ -57,8 +60,11 @@ interface ShareResponseItem {
   id: string;
   author: ReturnType<typeof toPublicUserResponse>;
   sourcePostId: string;
+  caption?: string;
   visibility: PostVisibility;
   createdAt: string;
+  likeCount: number;
+  isLikedByViewer: boolean;
 }
 
 interface LikeSummary {
@@ -82,6 +88,10 @@ interface PostResponse {
 }
 
 interface CreateShareResponse {
+  share: ShareResponseItem;
+}
+
+interface UpdateShareResponse {
   share: ShareResponseItem;
 }
 
@@ -161,9 +171,10 @@ function parseCommentPageQuery(query: Record<string, unknown>) {
   };
 }
 
-function toObjectIdOrNotFound(value: string, resource: "post" | "profile"): ObjectId {
+function toObjectIdOrNotFound(value: string, resource: "post" | "profile" | "share"): ObjectId {
   if (!/^[a-f\d]{24}$/i.test(value)) {
-    throw new HttpError(404, "not_found", resource === "post" ? "Post was not found." : "Profile was not found.");
+    const message = resource === "profile" ? "Profile was not found." : resource === "share" ? "Shared post was not found." : "Post was not found.";
+    throw new HttpError(404, "not_found", message);
   }
   return new ObjectId(value);
 }
@@ -282,13 +293,20 @@ async function toPostResponses(
   });
 }
 
-function toShareResponse(share: ShareDocument, author: UserDocument, cloudName?: string): ShareResponseItem {
+function toShareResponse(
+  share: ShareDocument,
+  author: UserDocument,
+  cloudName?: string,
+  likeSummary: LikeSummary = { likeCount: 0, isLikedByViewer: false },
+): ShareResponseItem {
   return {
     id: share._id.toHexString(),
     author: toPublicUserResponse(author, cloudName),
     sourcePostId: share.sourcePostId.toHexString(),
+    ...(share.caption ? { caption: share.caption } : {}),
     visibility: share.visibility,
     createdAt: share.createdAt.toISOString(),
+    ...likeSummary,
   };
 }
 
@@ -301,7 +319,8 @@ async function toFeedResponses(
   if (records.length === 0) return [];
   const posts = records.map((record) => record.kind === "post" ? record.post : record.sourcePost);
   const shares = records.flatMap((record) => record.kind === "share" ? [record.share] : []);
-  const [postResponses, shareAuthors] = await Promise.all([
+  const shareIds = shares.map((share) => share._id);
+  const [postResponses, shareAuthors, shareLikeSummaries] = await Promise.all([
     toPostResponses(database, posts, viewerId, cloudName),
     shares.length > 0
       ? database
@@ -322,9 +341,25 @@ async function toFeedResponses(
         })
         .toArray()
       : Promise.resolve([] as UserDocument[]),
+    shares.length > 0
+      ? database.collection<ShareLikeDocument>(collectionNames.shareLikes).aggregate<AggregatedLikeSummary>([
+        { $match: { shareId: { $in: shareIds } } },
+        {
+          $group: {
+            _id: "$shareId",
+            likeCount: { $sum: 1 },
+            viewerLikeCount: { $sum: { $cond: [{ $eq: ["$userId", viewerId] }, 1, 0] } },
+          },
+        },
+      ]).toArray()
+      : Promise.resolve([] as AggregatedLikeSummary[]),
   ]);
   const postResponsesById = new Map(postResponses.map((post) => [post.id, post]));
   const shareAuthorsById = new Map(shareAuthors.map((author) => [author._id.toHexString(), author]));
+  const shareLikesById = new Map(shareLikeSummaries.map((summary) => [summary._id.toHexString(), {
+    likeCount: summary.likeCount,
+    isLikedByViewer: summary.viewerLikeCount > 0,
+  }]));
 
   return records.flatMap((record) => {
     const sourcePost = record.kind === "post" ? record.post : record.sourcePost;
@@ -333,7 +368,15 @@ async function toFeedResponses(
     if (record.kind === "post") return [postResponse];
     const shareAuthor = shareAuthorsById.get(record.share.authorId.toHexString());
     return shareAuthor
-      ? [{ ...postResponse, share: toShareResponse(record.share, shareAuthor, cloudName) }]
+      ? [{
+        ...postResponse,
+        share: toShareResponse(
+          record.share,
+          shareAuthor,
+          cloudName,
+          shareLikesById.get(record.share._id.toHexString()) ?? { likeCount: 0, isLikedByViewer: false },
+        ),
+      }]
       : [];
   });
 }
@@ -343,6 +386,15 @@ async function getPostLikeSummary(database: Db, postId: ObjectId, viewerId: Obje
   const [likeCount, viewerLike] = await Promise.all([
     likes.countDocuments({ postId }),
     likes.findOne({ postId, userId: viewerId }, { projection: { _id: 1 } }),
+  ]);
+  return { likeCount, isLikedByViewer: viewerLike !== null };
+}
+
+async function getShareLikeSummary(database: Db, shareId: ObjectId, viewerId: ObjectId): Promise<LikeSummary> {
+  const likes = database.collection<ShareLikeDocument>(collectionNames.shareLikes);
+  const [likeCount, viewerLike] = await Promise.all([
+    likes.countDocuments({ shareId }),
+    likes.findOne({ shareId, userId: viewerId }, { projection: { _id: 1 } }),
   ]);
   return { likeCount, isLikedByViewer: viewerLike !== null };
 }
@@ -495,6 +547,48 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     },
   );
 
+  router.delete(
+    "/:postId",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    requirePostOwner,
+    async (_request, response) => {
+      const post = response.locals.postPhotoPost as PostDocument;
+      const database = dependencies.getDatabase();
+
+      if (post.photoAssetId) {
+        try {
+          await dependencies.photoStorage.destroy(post.photoAssetId);
+        } catch {
+          console.error("Failed to delete post photo.");
+          throw new HttpError(502, "post_photo_delete_failed", "The post photo could not be deleted, so the post was kept. Try again.");
+        }
+      }
+
+      const viewerId = getAuthenticatedSession(response).user._id;
+      const deleted = await database.collection<PostDocument>(collectionNames.posts).deleteOne({
+        _id: post._id,
+        authorId: viewerId,
+      });
+      if (deleted.deletedCount !== 1) throw new HttpError(404, "not_found", "Post was not found.");
+
+      const sourceShares = await database.collection<ShareDocument>(collectionNames.shares)
+        .find({ sourcePostId: post._id }).toArray();
+
+      await Promise.all([
+        database.collection<LikeDocument>(collectionNames.likes).deleteMany({ postId: post._id }),
+        database.collection<CommentDocument>(collectionNames.comments).deleteMany({ postId: post._id }),
+        database.collection<ShareLikeDocument>(collectionNames.shareLikes).deleteMany({
+          shareId: { $in: sourceShares.map((share) => share._id) },
+        }),
+        database.collection<ShareDocument>(collectionNames.shares).deleteMany({ sourcePostId: post._id }),
+      ]);
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(204).end();
+    },
+  );
+
   router.put(
     "/:postId/like",
     requireClientOrigin(dependencies.getAllowedOrigins),
@@ -509,7 +603,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       }
 
       try {
-        await database.collection<LikeDocument>(collectionNames.likes).updateOne(
+        const result = await database.collection<LikeDocument>(collectionNames.likes).updateOne(
           { userId: session.user._id, postId },
           {
             $setOnInsert: {
@@ -521,6 +615,14 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
           },
           { upsert: true },
         );
+        if (result.upsertedCount === 1 && !post.authorId.equals(session.user._id)) {
+          await createNotification(database, {
+            recipientId: post.authorId,
+            actorId: session.user._id,
+            type: "post_like",
+            postId,
+          });
+        }
       } catch (error) {
         if (!isDuplicateKeyError(error)) throw error;
       }
@@ -549,6 +651,82 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         postId,
       });
       const likeSummary = await getPostLikeSummary(database, postId, session.user._id);
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json(likeSummary);
+    },
+  );
+
+  router.put(
+    "/:postId/shares/:shareId/like",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const shareId = toObjectIdOrNotFound(String(request.params.shareId), "share");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const [share, sourcePost] = await Promise.all([
+        database.collection<ShareDocument>(collectionNames.shares).findOne({ _id: shareId, sourcePostId: postId }),
+        database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId }),
+      ]);
+      if (!share || !sourcePost || sourcePost.visibility !== "public" || !(await canViewShare(database, session.user._id, share))) {
+        throw new HttpError(404, "not_found", "Shared post was not found.");
+      }
+
+      try {
+        const result = await database.collection<ShareLikeDocument>(collectionNames.shareLikes).updateOne(
+          { userId: session.user._id, shareId },
+          {
+            $setOnInsert: {
+              _id: new ObjectId(),
+              userId: session.user._id,
+              shareId,
+              createdAt: new Date(),
+            },
+          },
+          { upsert: true },
+        );
+        if (result.upsertedCount === 1 && !share.authorId.equals(session.user._id)) {
+          await createNotification(database, {
+            recipientId: share.authorId,
+            actorId: session.user._id,
+            type: "share_like",
+            postId,
+            shareId,
+          });
+        }
+      } catch (error) {
+        if (!isDuplicateKeyError(error)) throw error;
+      }
+
+      const likeSummary = await getShareLikeSummary(database, shareId, session.user._id);
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json(likeSummary);
+    },
+  );
+
+  router.delete(
+    "/:postId/shares/:shareId/like",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const shareId = toObjectIdOrNotFound(String(request.params.shareId), "share");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const [share, sourcePost] = await Promise.all([
+        database.collection<ShareDocument>(collectionNames.shares).findOne({ _id: shareId, sourcePostId: postId }),
+        database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId }),
+      ]);
+      if (!share || !sourcePost || sourcePost.visibility !== "public" || !(await canViewShare(database, session.user._id, share))) {
+        throw new HttpError(404, "not_found", "Shared post was not found.");
+      }
+
+      await database.collection<ShareLikeDocument>(collectionNames.shareLikes).deleteOne({
+        userId: session.user._id,
+        shareId,
+      });
+      const likeSummary = await getShareLikeSummary(database, shareId, session.user._id);
       response.setHeader("Cache-Control", "private, no-store");
       response.json(likeSummary);
     },
@@ -618,6 +796,12 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         createdAt: new Date(),
       };
       await database.collection<CommentDocument>(collectionNames.comments).insertOne(comment);
+      await createNotification(database, {
+        recipientId: post.authorId,
+        actorId: session.user._id,
+        type: "post_comment",
+        postId,
+      });
 
       response.setHeader("Cache-Control", "private, no-store");
       response.status(201).json({
@@ -648,15 +832,79 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         _id: new ObjectId(),
         authorId: session.user._id,
         sourcePostId: sourcePost._id,
+        ...(parsed.data.caption ? { caption: parsed.data.caption } : {}),
         visibility: parsed.data.visibility,
         createdAt: new Date(),
       };
       await database.collection<ShareDocument>(collectionNames.shares).insertOne(share);
+      await createNotification(database, {
+        recipientId: sourcePost.authorId,
+        actorId: session.user._id,
+        type: "post_share",
+        postId,
+      });
 
       response.setHeader("Cache-Control", "private, no-store");
       response.status(201).json({
         share: toShareResponse(share, session.user, dependencies.getCloudinaryCloudName()),
       } satisfies CreateShareResponse);
+    },
+  );
+
+  router.patch(
+    "/:postId/shares/:shareId",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const shareId = toObjectIdOrNotFound(String(request.params.shareId), "share");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const parsed = updatePostSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new HttpError(400, "validation_error", "Share audience is invalid.");
+      }
+
+      const sourcePost = await database.collection<PostDocument>(collectionNames.posts).findOne({
+        _id: postId,
+        visibility: "public",
+      });
+      if (!sourcePost) throw new HttpError(404, "not_found", "Shared post was not found.");
+
+      const updatedShare = await database.collection<ShareDocument>(collectionNames.shares).findOneAndUpdate(
+        { _id: shareId, sourcePostId: postId, authorId: session.user._id },
+        { $set: { visibility: parsed.data.visibility } },
+        { returnDocument: "after" },
+      );
+      if (!updatedShare) throw new HttpError(404, "not_found", "Shared post was not found.");
+      const likeSummary = await getShareLikeSummary(database, shareId, session.user._id);
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json({
+        share: toShareResponse(updatedShare, session.user, dependencies.getCloudinaryCloudName(), likeSummary),
+      } satisfies UpdateShareResponse);
+    },
+  );
+
+  router.delete(
+    "/:postId/shares/:shareId",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const shareId = toObjectIdOrNotFound(String(request.params.shareId), "share");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const deleted = await database.collection<ShareDocument>(collectionNames.shares).deleteOne({
+        _id: shareId,
+        sourcePostId: postId,
+        authorId: session.user._id,
+      });
+      if (deleted.deletedCount !== 1) throw new HttpError(404, "not_found", "Shared post was not found.");
+      await database.collection<ShareLikeDocument>(collectionNames.shareLikes).deleteMany({ shareId });
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(204).end();
     },
   );
 
