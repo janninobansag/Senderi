@@ -4,6 +4,7 @@ import express from "express";
 import { Readable } from "node:stream";
 import { ObjectId, type Db, type Document } from "mongodb";
 import request from "supertest";
+import sharp from "sharp";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
 import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type NotificationDocument, type PostDocument, type SessionDocument, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
@@ -481,6 +482,12 @@ const validPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
 );
+
+async function makeLargeJpeg(): Promise<Buffer> {
+  return sharp({
+    create: { width: 3000, height: 2000, channels: 3, background: { r: 72, g: 125, b: 201 } },
+  }).jpeg({ quality: 95 }).toBuffer();
+}
 
 function createPhotoStorage(overrides: Partial<PostPhotoStorage> = {}): PostPhotoStorage {
   return {
@@ -1461,6 +1468,7 @@ test("two accounts see newly created posts after reloading according to each sel
 
 test("post creation publishes text and an inspected photo together and removes an orphan if insert fails", async () => {
   const { data, tokens } = matrixFixture();
+  const originalPhoto = await makeLargeJpeg();
   const uploaded: Array<{ buffer: Buffer; publicId: string }> = [];
   const destroyed: string[] = [];
   const storage = createPhotoStorage({
@@ -1478,7 +1486,7 @@ test("post creation publishes text and an inspected photo together and removes a
     .set("Cookie", cookie(tokens.author))
     .field("text", "A caption with a photo")
     .field("visibility", "friends")
-    .attach("file", validPng, "moment.png")
+    .attach("file", originalPhoto, "moment.jpg")
     .expect(201);
 
   const post = data.posts.at(-1)!;
@@ -1486,7 +1494,13 @@ test("post creation publishes text and an inspected photo together and removes a
   assert.equal(post.visibility, "friends");
   assert.equal(post.authorId.toHexString(), ids.author);
   assert.equal(post.photoAssetId, uploaded[0] && `senderi/posts/${uploaded[0].publicId}`);
-  assert.deepEqual(uploaded[0]?.buffer, validPng);
+  const optimizedPhoto = uploaded[0]?.buffer;
+  assert.ok(optimizedPhoto);
+  assert.ok(optimizedPhoto.length < originalPhoto.length, "new post photos should be compressed before storage");
+  const optimizedMetadata = await sharp(optimizedPhoto).metadata();
+  assert.equal(optimizedMetadata.format, "webp");
+  assert.ok(optimizedMetadata.width && optimizedMetadata.width <= 2048);
+  assert.ok(optimizedMetadata.height && optimizedMetadata.height <= 2048);
   assert.equal(response.body.post.photoUrl, `/api/posts/${post._id.toHexString()}/photo`);
   assert.equal("photoAssetId" in response.body.post, false);
   assert.deepEqual(destroyed, []);
@@ -1499,7 +1513,7 @@ test("post creation publishes text and an inspected photo together and removes a
     .set("Cookie", cookie(tokens.author))
     .field("text", "This insert will fail")
     .field("visibility", "public")
-    .attach("file", validPng, "moment.png")
+    .attach("file", originalPhoto, "moment.jpg")
     .expect(500);
 
   assert.equal(data.posts.length, countBeforeFailure);
@@ -1790,6 +1804,7 @@ test("post reads require a valid session and reject malformed IDs and page queri
 
 test("post photo upload inspects bytes, replaces only the owner's photo, and deletes the old asset after saving", async () => {
   const { data, tokens } = matrixFixture();
+  const originalPhoto = await makeLargeJpeg();
   const post = data.posts[0]!;
   post.photoAssetId = "senderi/posts/old-photo";
   const destroyed: string[] = [];
@@ -1808,11 +1823,17 @@ test("post photo upload inspects bytes, replaces only the owner's photo, and del
     .put(`/api/posts/${post._id.toHexString()}/photo`)
     .set("Origin", "http://localhost:5173")
     .set("Cookie", cookie(tokens.author))
-    .attach("file", validPng, "photo.png")
+    .attach("file", originalPhoto, "photo.jpg")
     .expect(200);
 
   assert.equal(uploaded.length, 1);
-  assert.deepEqual(uploaded[0]?.buffer, validPng);
+  const optimizedPhoto = uploaded[0]?.buffer;
+  assert.ok(optimizedPhoto);
+  assert.ok(optimizedPhoto.length < originalPhoto.length, "Cloudinary should receive fewer bytes than the original");
+  const optimizedMetadata = await sharp(optimizedPhoto).metadata();
+  assert.equal(optimizedMetadata.format, "webp");
+  assert.ok(optimizedMetadata.width && optimizedMetadata.width <= 2048);
+  assert.ok(optimizedMetadata.height && optimizedMetadata.height <= 2048);
   assert.match(uploaded[0]?.publicId ?? "", new RegExp(`^${post._id.toHexString()}-[0-9a-f-]{36}$`));
   assert.equal(data.posts[0]?.photoAssetId, "senderi/posts/new-photo");
   assert.deepEqual(destroyed, ["senderi/posts/old-photo"]);
