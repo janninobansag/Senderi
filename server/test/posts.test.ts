@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
 import { Readable } from "node:stream";
-import { ObjectId, type Db } from "mongodb";
+import { ObjectId, type Db, type Document } from "mongodb";
 import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
-import { collectionNames, type FriendshipDocument, type PostDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
+import { collectionNames, type FriendshipDocument, type LikeDocument, type PostDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
 import type { PostPhotoStorage } from "../src/media/post-photo";
@@ -15,6 +15,7 @@ interface PostTestData {
   users: UserDocument[];
   sessions: SessionDocument[];
   friendships: FriendshipDocument[];
+  likes: LikeDocument[];
   posts: PostDocument[];
   failPostInsert?: boolean;
   failPostUpdate?: boolean;
@@ -63,6 +64,11 @@ function matchesPost(post: PostDocument, filter: MongoFilter): boolean {
   });
 }
 
+function matchesLike(like: LikeDocument, filter: { postId?: ObjectId; userId?: ObjectId }): boolean {
+  return (!filter.postId || like.postId.equals(filter.postId)) &&
+    (!filter.userId || like.userId.equals(filter.userId));
+}
+
 function createDatabase(data: PostTestData): Db {
   return {
     collection: (name: string) => {
@@ -100,6 +106,50 @@ function createDatabase(data: PostTestData): Db {
               ),
             ),
           }),
+        };
+      }
+
+      if (name === collectionNames.likes) {
+        return {
+          aggregate: (pipeline: Document[]) => ({
+            toArray: async () => {
+              const match = pipeline[0]?.["$match"] as { postId: { $in: ObjectId[] } };
+              const group = pipeline[1]?.["$group"] as {
+                viewerLikeCount: { $sum: { $cond: [{ $eq: [string, ObjectId] }, number, number] } };
+              };
+              const viewerId = group.viewerLikeCount.$sum.$cond[0].$eq[1];
+              const summaries = new Map<string, { _id: ObjectId; likeCount: number; viewerLikeCount: number }>();
+              for (const like of data.likes) {
+                if (!match.postId.$in.some((postId) => postId.equals(like.postId))) continue;
+                const key = like.postId.toHexString();
+                const summary = summaries.get(key) ?? { _id: like.postId, likeCount: 0, viewerLikeCount: 0 };
+                summary.likeCount += 1;
+                if (like.userId.equals(viewerId)) summary.viewerLikeCount += 1;
+                summaries.set(key, summary);
+              }
+              return [...summaries.values()];
+            },
+          }),
+          countDocuments: async (filter: { postId: ObjectId }) =>
+            data.likes.filter((like) => matchesLike(like, filter)).length,
+          findOne: async (filter: { postId: ObjectId; userId: ObjectId }) =>
+            data.likes.find((like) => matchesLike(like, filter)) ?? null,
+          updateOne: async (
+            filter: { postId: ObjectId; userId: ObjectId },
+            update: { $setOnInsert: LikeDocument },
+          ) => {
+            if (data.likes.some((like) => matchesLike(like, filter))) {
+              return { acknowledged: true, matchedCount: 1, upsertedCount: 0 };
+            }
+            data.likes.push(update.$setOnInsert);
+            return { acknowledged: true, matchedCount: 0, upsertedCount: 1 };
+          },
+          deleteOne: async (filter: { postId: ObjectId; userId: ObjectId }) => {
+            const index = data.likes.findIndex((like) => matchesLike(like, filter));
+            if (index < 0) return { acknowledged: true, deletedCount: 0 };
+            data.likes.splice(index, 1);
+            return { acknowledged: true, deletedCount: 1 };
+          },
         };
       }
 
@@ -254,6 +304,7 @@ function matrixFixture(): { data: PostTestData; tokens: Record<"author" | "frien
       userIdHigh: friend._id,
       createdAt: new Date(now),
     }],
+    likes: [],
     posts: [
       makePost(ids.onlyMe, author._id, "onlyMe", new Date(now + 3)),
       makePost(ids.friends, author._id, "friends", new Date(now + 2)),
@@ -314,6 +365,128 @@ test("feed, author timeline, and direct URLs enforce every audience for author, 
   assert.deepEqual(hidden.body, nonexistent.body);
 });
 
+test("visible post responses include the Like count and viewer-specific Like state", async () => {
+  const { data, tokens } = matrixFixture();
+  const publicPostId = new ObjectId(ids.public);
+  data.likes.push(
+    { _id: new ObjectId(), userId: new ObjectId(ids.author), postId: publicPostId, createdAt: new Date() },
+    { _id: new ObjectId(), userId: new ObjectId(ids.friend), postId: publicPostId, createdAt: new Date() },
+  );
+  const app = createApp(data);
+
+  const authorFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.author)).expect(200);
+  const friendFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.friend)).expect(200);
+  const outsiderFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  const authorPost = authorFeed.body.items.find((post: { id: string }) => post.id === ids.public);
+  const friendPost = friendFeed.body.items.find((post: { id: string }) => post.id === ids.public);
+  const outsiderPost = outsiderFeed.body.items.find((post: { id: string }) => post.id === ids.public);
+
+  assert.deepEqual(
+    { count: authorPost.likeCount, liked: authorPost.isLikedByViewer },
+    { count: 2, liked: true },
+  );
+  assert.deepEqual(
+    { count: friendPost.likeCount, liked: friendPost.isLikedByViewer },
+    { count: 2, liked: true },
+  );
+  assert.deepEqual(
+    { count: outsiderPost.likeCount, liked: outsiderPost.isLikedByViewer },
+    { count: 2, liked: false },
+  );
+
+  const friendTimeline = await request(app)
+    .get(`/api/users/${ids.author}/posts`)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  const timelinePost = friendTimeline.body.items.find((post: { id: string }) => post.id === ids.public);
+  assert.equal(timelinePost.likeCount, 2);
+  assert.equal(timelinePost.isLikedByViewer, true);
+
+  const detail = await request(app).get(`/api/posts/${ids.public}`).set("Cookie", cookie(tokens.outsider)).expect(200);
+  assert.equal(detail.body.post.likeCount, 2);
+  assert.equal(detail.body.post.isLikedByViewer, false);
+});
+
+test("Like and unlike routes are idempotent, count two users, and deny hidden posts", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const origin = "http://localhost:5173";
+  const publicLikeUrl = `/api/posts/${ids.public}/like`;
+
+  const firstLike = await request(app)
+    .put(publicLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .expect(200);
+  assert.deepEqual(firstLike.body, { likeCount: 1, isLikedByViewer: true });
+
+  const duplicateLikes = await Promise.all([
+    request(app)
+      .put(publicLikeUrl)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens.author))
+      .expect(200),
+    request(app)
+      .put(publicLikeUrl)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens.author))
+      .expect(200),
+  ]);
+  for (const duplicateLike of duplicateLikes) {
+    assert.deepEqual(duplicateLike.body, { likeCount: 1, isLikedByViewer: true });
+  }
+  assert.equal(data.likes.length, 1);
+
+  const secondUserLike = await request(app)
+    .put(publicLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.deepEqual(secondUserLike.body, { likeCount: 2, isLikedByViewer: true });
+  assert.equal(data.likes.length, 2);
+
+  const removeLike = await request(app)
+    .delete(publicLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.deepEqual(removeLike.body, { likeCount: 1, isLikedByViewer: false });
+  const duplicateRemoval = await request(app)
+    .delete(publicLikeUrl)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.deepEqual(duplicateRemoval.body, { likeCount: 1, isLikedByViewer: false });
+  assert.equal(data.likes.length, 1);
+
+  for (const [viewer, postId] of [
+    ["outsider", ids.friends],
+    ["friend", ids.onlyMe],
+  ] as const) {
+    await request(app)
+      .put(`/api/posts/${postId}/like`)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens[viewer]))
+      .expect(404);
+    await request(app)
+      .delete(`/api/posts/${postId}/like`)
+      .set("Origin", origin)
+      .set("Cookie", cookie(tokens[viewer]))
+      .expect(404);
+  }
+
+  await request(app)
+    .put(publicLikeUrl)
+    .set("Origin", origin)
+    .expect(401);
+  await request(app)
+    .put(publicLikeUrl)
+    .set("Origin", "https://unexpected.example")
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(403);
+  assert.equal(data.likes.length, 1);
+});
+
 test("post creation attributes the authenticated author and returns only public author fields", async () => {
   const { data, tokens } = matrixFixture();
   const response = await request(createApp(data))
@@ -328,6 +501,8 @@ test("post creation attributes the authenticated author and returns only public 
   assert.equal(response.body.post.author.id, ids.friend);
   assert.equal("email" in response.body.post.author, false);
   assert.equal("passwordHash" in response.body.post.author, false);
+  assert.equal(response.body.post.likeCount, 0);
+  assert.equal(response.body.post.isLikedByViewer, false);
   assert.equal(response.headers["cache-control"], "private, no-store");
   assert.equal(data.posts.length, 4);
   assert.equal(data.posts.at(-1)?.authorId.toHexString(), ids.friend);

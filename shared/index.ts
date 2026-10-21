@@ -84,7 +84,12 @@ export interface RespondToFriendRequestResponse {
 export type FriendListResponse = Page<User>;
 
 /** A visible post with its public author profile; never contains storage secrets. */
-export interface Post {
+export interface PostLikeState {
+  likeCount: number;
+  isLikedByViewer: boolean;
+}
+
+export interface Post extends PostLikeState {
   id: string;
   author: User;
   text?: string;
@@ -99,6 +104,9 @@ export type PostListResponse = Page<Post>;
 export interface PostResponse {
   post: Post;
 }
+
+/** Current Like count and signed-in viewer state for a visible post. */
+export type LikeResponse = PostLikeState;
 
 /** Text and audience fields accepted for a post; multipart requests may add one photo. */
 export interface CreatePostRequest {

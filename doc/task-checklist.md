@@ -164,10 +164,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M5-J1 — Jan: Like
 
-- [ ] **M5-J1.1** Create a unique user/post Like record and idempotent add/remove routes.
-- [ ] **M5-J1.2** Return Like count and current-viewer state with visible post responses.
-- [ ] **M5-J1.3** Add a Like/unlike button with pending and failure feedback.
-- [ ] **M5-J1.4** Check duplicate clicks, two-user counts, and hidden-post denial.
+- [x] **M5-J1.1** Create a unique user/post Like record and idempotent add/remove routes. *(Uses the existing unique `{ userId, postId }` MongoDB index. `PUT /api/posts/:postId/like` upserts one record and `DELETE` removes it; both return the resulting count and viewer state.)*
+- [x] **M5-J1.2** Return Like count and current-viewer state with visible post responses. *(Feed, author timeline, direct post, create, photo replacement, and audience update responses include `likeCount` and `isLikedByViewer`; summaries are computed in one grouped query per page.)*
+- [x] **M5-J1.3** Add a Like/unlike button with pending and failure feedback. *(The post card disables the control while the request is pending, updates its count and selected state after success, and displays request errors.)*
+- [x] **M5-J1.4** Check duplicate clicks, two-user counts, and hidden-post denial. *(Integration tests repeat Like and unlike requests, verify counts and viewer state with two accounts, and confirm Friends-only and Only-me posts deny hidden viewers without changing Like records.)*
 
 ### M5-J2 — Jan: Comments
 
