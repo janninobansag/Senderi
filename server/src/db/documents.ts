@@ -123,6 +123,7 @@ export interface PasswordResetDocument extends ExpiringDocument {
 export interface SocketTicketDocument extends ExpiringDocument {
   _id: ObjectId;
   userId: ObjectId;
+  sessionId: ObjectId;
   ticketHash: string;
   createdAt: Date;
 }

@@ -1,8 +1,9 @@
 import "dotenv/config";
 import { once } from "node:events";
-import type { Server } from "node:http";
+import { createServer } from "node:http";
 import { app } from "./app";
 import { closeDatabase, connectToDatabase } from "./db/client";
+import { createSocketServer } from "./socket/server";
 
 function readPort(): number {
   const port = Number(process.env.PORT ?? 3000);
@@ -28,19 +29,22 @@ async function startServer(): Promise<void> {
   app.set("trust proxy", readTrustedProxyHops());
   await connectToDatabase();
 
-  const server = app.listen(port, "0.0.0.0");
+  const server = createServer(app);
+  const socketServer = createSocketServer(server);
+  server.listen(port, "0.0.0.0");
   try {
     await once(server, "listening");
   } catch (error) {
+    await new Promise<void>((resolve) => socketServer.close(() => resolve())).catch(() => undefined);
     await closeDatabase().catch(() => undefined);
     throw new Error(`Senderi API could not listen on port ${port}.`, { cause: error });
   }
 
   console.info(`Senderi API listening on port ${port}.`);
-  registerShutdownHandlers(server);
+  registerShutdownHandlers(socketServer);
 }
 
-function registerShutdownHandlers(server: Server): void {
+function registerShutdownHandlers(socketServer: ReturnType<typeof createSocketServer>): void {
   let isShuttingDown = false;
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -50,12 +54,9 @@ function registerShutdownHandlers(server: Server): void {
 
     let shutdownFailed = false;
     try {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-        server.closeIdleConnections();
-      });
+      await new Promise<void>((resolve) => socketServer.close(() => resolve()));
     } catch {
-      console.error("Senderi API could not close its HTTP server cleanly.");
+      console.error("Senderi API could not close its HTTP and Socket.IO servers cleanly.");
       shutdownFailed = true;
     }
 

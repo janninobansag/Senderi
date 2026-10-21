@@ -117,6 +117,11 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
   },
   {
     collection: collectionNames.socketTickets,
+    keys: { ticketHash: 1 },
+    options: { name: "socket_tickets_hash_unique", unique: true },
+  },
+  {
+    collection: collectionNames.socketTickets,
     keys: { expiresAt: 1 },
     options: { name: "socket_tickets_expires_at_ttl", expireAfterSeconds: 0 },
   },

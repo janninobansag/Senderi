@@ -23,6 +23,7 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       ["likes", { userId: 1, postId: 1 }],
       ["messages", { senderId: 1, clientId: 1 }],
       ["passwordResets", { userId: 1 }],
+      ["socketTickets", { ticketHash: 1 }],
     ],
   );
 
@@ -56,6 +57,15 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
     [
       [{ senderId: 1, clientId: 1 }, "messages_sender_client_unique"],
       [{ senderId: 1, recipientId: 1, createdAt: -1, _id: -1 }, "messages_conversation_newest_first"],
+    ],
+  );
+  assert.deepEqual(
+    databaseIndexes
+      .filter((index) => index.options.name.startsWith("socket_tickets_"))
+      .map(({ keys, options }) => [keys, options.name, options.unique ?? false]),
+    [
+      [{ ticketHash: 1 }, "socket_tickets_hash_unique", true],
+      [{ expiresAt: 1 }, "socket_tickets_expires_at_ttl", false],
     ],
   );
 

@@ -43,7 +43,7 @@ Message records contain `senderId`, `recipientId`, `text`, `createdAt`, and a se
 | `GET /api/auth/me` | `{ user }` | Current user. |
 | `POST /api/auth/forgot-password` | `{ email }` -> generic `202` | Public; normalized-email and source-IP limits run before account lookup. Known and unknown emails get the same `202` body; email/IP throttles return the same `429` for either. |
 | `POST /api/auth/reset-password` | `{ token, newPassword }` -> `204` | Valid, unused, unexpired token; atomically consumes the token, hashes the new password, and invalidates existing sessions. Invalid/expired/reused token returns generic `400`; failed-token IP limits return `429`. |
-| `POST /api/auth/socket-ticket` | Empty body -> `{ ticket, expiresAt }` | Current user; ticket expires after 60 seconds and is consumed once. |
+| `POST /api/auth/socket-ticket` | Empty body -> `201 { ticket, expiresAt }` | Current session; ticket expires after 60 seconds, is stored only as a hash, and is consumed once. |
 | `GET /api/users?query=<1-80 chars>&cursor=&limit=` | `{ items: User[], nextCursor }`, newest first; cursor pagination defaults to 20 results and caps at 50 | Signed in; searches display names, excludes the current user, and returns public profile fields only. Invalid search parameters return `400`. |
 | `GET /api/users/:userId` | `{ user, friendshipStatus }`, where the status is `self`, `friends`, or `none`; `user` includes `avatarUrl`/`coverUrl` when media IDs and the Cloudinary cloud name are configured | Signed in; `friends` requires an accepted friendship record for the viewer and profile owner. |
 | `PATCH /api/users/me` | `{ displayName?, bio?, info?: { location?, website? } }` -> profile | Owner only; all fields are length-limited text, and `website` must be a valid HTTPS URL. |
@@ -71,15 +71,15 @@ Profile and cover photos are ordinary profile media; post photos use authenticat
 
 ## Socket.IO contract
 
-The client obtains a socket ticket from `POST /api/auth/socket-ticket`, connects to Render with `auth: { ticket }`, and fetches history through REST after connecting or reconnecting. The server consumes the ticket, binds the connection to its user, and rejects an invalid or expired ticket.
+The client obtains a socket ticket from `POST /api/auth/socket-ticket`, connects to the API with `auth: { ticket }`, and fetches history through REST after connecting or reconnecting. The server accepts only exact origins in `CLIENT_ORIGINS`, consumes the ticket once, confirms its issuing session is still active, and binds the connection to that user. Invalid, expired, reused, or session-revoked tickets are rejected.
 
 | Event | Payload | Server behavior |
 | --- | --- | --- |
-| Client `message:send` | `{ friendId, clientId, text }` | Validate accepted friendship and text, persist once using `senderId + clientId`, then acknowledge. |
-| Server `message:ack` | `{ clientId, message }` | Sent to sender after persistence; retrying the same client ID returns the same message. |
-| Server `message:new` | `{ message }` | Sent to the recipient's active connections after persistence. |
-| Server `message:error` | `{ clientId?, code, message }` | Denied, invalid, or failed send; no message is persisted. |
+| Client `message:send` | `{ friendId, clientId, text }` | Text is trimmed and must contain 1–2,000 characters. The active session and accepted friendship are checked for each send; the unique `senderId + clientId` key makes retries idempotent. |
+| Server `message:ack` | `{ clientId, message }` | Sent to sender after persistence; retrying the same ID and content returns the same message without another delivery event. |
+| Server `message:new` | `{ message }` | Sent to the recipient's active connections after first persistence. If the recipient is offline, the message remains in conversation history. |
+| Server `message:error` | `{ clientId?, code, message }` | Denied, invalid, or failed send; no new message is persisted for that send. |
 
-`message` contains `{ id, senderId, recipientId, text, createdAt }`. The server checks friendship on every send, so a removed friend cannot keep sending through an old connection. Message history is the source of truth after disconnects; realtime events are delivery hints, not the only copy of a message.
+`message` contains `{ id, senderId, recipientId, text, createdAt }`. The server checks friendship on every send, so a removed friend cannot keep sending through an old connection. Reusing a client ID with different message content returns `client_id_conflict`. Message history is the source of truth after disconnects; realtime events are delivery hints, not the only copy of a message.
 
 The friendship utility `server/src/friends/are-friends.ts` checks the canonical `friendships` record and is shared by profile visibility and future post/chat authorization. A friendship is mutual: one record stores the ordered `userIdLow` and `userIdHigh` IDs, and either account can remove that record.
