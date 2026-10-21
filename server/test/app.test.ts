@@ -60,3 +60,25 @@ test("unknown routes use the shared error envelope", async () => {
   assert.equal(response.status, 404);
   assert.equal(response.body.error.code, "not_found");
 });
+
+test("unexpected errors do not expose exception details in server logs", async () => {
+  const errorApp = express();
+  const sensitiveDetails = "mongodb://user:password@cluster.example.test/senderi";
+  errorApp.get("/test", () => {
+    throw new Error(sensitiveDetails);
+  });
+  errorApp.use(errorHandler);
+
+  const originalError = console.error;
+  const loggedArguments: unknown[][] = [];
+  console.error = (...args: unknown[]) => loggedArguments.push(args);
+  try {
+    const response = await request(errorApp).get("/test");
+
+    assert.equal(response.status, 500);
+    assert.equal(loggedArguments.length, 1);
+    assert.ok(loggedArguments.flat().every((value) => !String(value).includes(sensitiveDetails)));
+  } finally {
+    console.error = originalError;
+  }
+});

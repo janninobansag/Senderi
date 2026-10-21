@@ -66,7 +66,9 @@ export const errorHandler: ErrorRequestHandler = (error, _request, response, nex
     return;
   }
 
-  console.error("Unhandled request error", error);
+  // Error messages may contain request data or credentials from upstream
+  // providers. Keep the user-facing response and server log deliberately generic.
+  console.error("Unhandled request error.");
   response.status(500).json({
     error: {
       code: "internal_error",

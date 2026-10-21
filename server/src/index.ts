@@ -76,9 +76,10 @@ function registerShutdownHandlers(socketServer: ReturnType<typeof createSocketSe
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-void startServer().catch(async (error: unknown) => {
-  const message = error instanceof Error ? error.message : "Unknown startup error.";
-  console.error(`Senderi API failed to start: ${message}`);
+void startServer().catch(async () => {
+  // Startup errors can include connection strings or provider responses. Keep
+  // deployment logs useful without printing exception details or credentials.
+  console.error("Senderi API failed to start. Check deployment configuration and connectivity.");
   await closeDatabase().catch(() => undefined);
   process.exitCode = 1;
 });

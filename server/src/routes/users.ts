@@ -284,16 +284,16 @@ export function createUsersRouter(
           }
 
           if (oldAssetId) {
-            await dependencies.imageStorage.destroy(oldAssetId).catch((error) => {
-              console.error("Failed to delete replaced profile image", error);
+            await dependencies.imageStorage.destroy(oldAssetId).catch(() => {
+              console.error("Failed to delete replaced profile image.");
             });
           }
 
           response.setHeader("Cache-Control", "private, no-store");
           response.json({ user: toAuthUserResponse(updated) });
         } catch (error) {
-          await dependencies.imageStorage.destroy(uploaded.assetId).catch((cleanupError) => {
-            console.error("Failed to clean up abandoned profile image", cleanupError);
+          await dependencies.imageStorage.destroy(uploaded.assetId).catch(() => {
+            console.error("Failed to clean up abandoned profile image.");
           });
           throw error;
         }

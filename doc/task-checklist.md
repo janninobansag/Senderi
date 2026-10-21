@@ -224,10 +224,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M7-J1 — Jan: API deployment
 
-- [ ] **M7-J1.1** Create/configure the Atlas database user and Render web service with build/start commands.
-- [ ] **M7-J1.2** Set server secrets, exact client origins, Brevo sender/template, and Cloudinary credentials in Render.
-- [ ] **M7-J1.3** Confirm health, signup/login, a real reset email, and Socket.IO connection on the deployed API.
-- [ ] **M7-J1.4** Confirm logs omit secrets and that the service recovers from an idle start.
+- [x] **M7-J1.1** Create/configure the Atlas database user and Render web service with build/start commands.
+- [x] **M7-J1.2** Set server secrets, exact client origins, Brevo sender/template, and Cloudinary credentials in Render.
+- [x] **M7-J1.3** Confirm health, signup/login, a real reset email, and Socket.IO connection on the deployed API.
+- [x] **M7-J1.4** Confirm logs omit secrets and that the service recovers from an idle start.
 
 ### M7-L1 — Laica: Client deployment
 
