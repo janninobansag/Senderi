@@ -61,6 +61,16 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "friend_requests_outgoing_pending" },
   },
   {
+    collection: collectionNames.posts,
+    keys: { authorId: 1, createdAt: -1, _id: -1 },
+    options: { name: "posts_author_newest_first" },
+  },
+  {
+    collection: collectionNames.posts,
+    keys: { visibility: 1, createdAt: -1, _id: -1 },
+    options: { name: "posts_visibility_newest_first" },
+  },
+  {
     collection: collectionNames.likes,
     keys: { userId: 1, postId: 1 },
     options: { name: "likes_user_post_unique", unique: true },

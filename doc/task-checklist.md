@@ -134,10 +134,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M4-L1 — Laica: Posts and audience checks
 
-- [ ] **M4-L1.1** Define post records, visibility values, author relationship, and newest-first pagination.
-- [ ] **M4-L1.2** Implement central post-view authorization for Public, Friends, and Only me.
-- [ ] **M4-L1.3** Add paged feed, author timeline, and direct-post read using that check.
-- [ ] **M4-L1.4** Check all three viewer roles against all three audiences and direct URLs.
+- [x] **M4-L1.1** Define post records, visibility values, author relationship, and newest-first pagination. *(Added the MongoDB post record, shared post response contract, author/visibility pagination indexes, and stable `createdAt`/ID cursor ordering.)*
+- [x] **M4-L1.2** Implement central post-view authorization for Public, Friends, and Only me. *(`canViewPost` grants the author access, allows Public posts, checks current accepted friendship for Friends, and denies Only me to other viewers.)*
+- [x] **M4-L1.3** Add paged feed, author timeline, and direct-post read using that check. *(Added signed-in `GET /api/posts`, `GET /api/users/:userId/posts`, and `GET /api/posts/:postId`; hidden direct posts return the same generic 404 as missing posts.)*
+- [x] **M4-L1.4** Check all three viewer roles against all three audiences and direct URLs. *(Supertest covers author, accepted friend, and unrelated viewer across all audiences, feed/timeline visibility, direct URLs, pagination, and secret-free author responses.)*
 
 ### M4-L2 — Laica: Text posts and feed
 

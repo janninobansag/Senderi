@@ -82,3 +82,18 @@ export interface RespondToFriendRequestResponse {
 
 /** Public profiles returned for the signed-in user's accepted friends. */
 export type FriendListResponse = Page<User>;
+
+/** A visible post with its public author profile; never contains storage secrets. */
+export interface Post {
+  id: string;
+  author: User;
+  text?: string;
+  visibility: Visibility;
+  createdAt: string;
+}
+
+export type PostListResponse = Page<Post>;
+
+export interface PostResponse {
+  post: Post;
+}

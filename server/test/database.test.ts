@@ -40,6 +40,15 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       [{ userIdHigh: 1, createdAt: -1, _id: -1 }, "friendships_high_created_at"],
     ],
   );
+  assert.deepEqual(
+    databaseIndexes
+      .filter((index) => index.options.name.startsWith("posts_"))
+      .map(({ keys, options }) => [keys, options.name]),
+    [
+      [{ authorId: 1, createdAt: -1, _id: -1 }, "posts_author_newest_first"],
+      [{ visibility: 1, createdAt: -1, _id: -1 }, "posts_visibility_newest_first"],
+    ],
+  );
 
   const ttlIndexes = databaseIndexes.filter((index) => index.options.expireAfterSeconds !== undefined);
   assert.deepEqual(
