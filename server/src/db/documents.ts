@@ -53,6 +53,20 @@ export interface FriendRequestDocument {
   respondedAt?: Date;
 }
 
+/** A post's audience is checked against its author and the viewer's current friendship. */
+export type PostVisibility = "public" | "friends" | "onlyMe";
+
+export interface PostDocument {
+  _id: ObjectId;
+  authorId: ObjectId;
+  text?: string;
+  /** Cloudinary asset identifier; protected delivery is implemented separately. */
+  photoAssetId?: string;
+  visibility: PostVisibility;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface LikeDocument {
   _id: ObjectId;
   userId: ObjectId;

@@ -5,6 +5,7 @@ import { authRouter } from "./routes/auth";
 import { friendRequestsRouter } from "./routes/friend-requests";
 import { friendsRouter } from "./routes/friends";
 import { healthRouter } from "./routes/health";
+import { postsRouter, userPostsRouter } from "./routes/posts";
 import { usersRouter } from "./routes/users";
 
 export const app = express();
@@ -15,6 +16,8 @@ app.use("/api/auth", authRouter);
 app.use("/api/friend-requests", friendRequestsRouter);
 app.use("/api/friends", friendsRouter);
 app.use("/api/users", usersRouter);
+app.use("/api/users", userPostsRouter);
+app.use("/api/posts", postsRouter);
 app.use("/api/health", healthRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
