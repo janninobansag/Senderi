@@ -3,9 +3,10 @@ import { collectionNames, type FriendshipDocument, type PostDocument } from "./d
 import { HttpError } from "./errors/http-error";
 import { areFriends } from "./friends/are-friends";
 
-export interface PostCursor {
+export interface FeedCursor {
   createdAt: Date;
-  postId: ObjectId;
+  itemId: ObjectId;
+  kind: "post" | "share";
 }
 
 export interface VisiblePostPage {
@@ -13,28 +14,37 @@ export interface VisiblePostPage {
   nextCursor: string | null;
 }
 
-export function encodePostCursor(post: Pick<PostDocument, "_id" | "createdAt">): string {
+export function encodePostCursor(
+  item: { _id: ObjectId; createdAt: Date },
+  kind: FeedCursor["kind"] = "post",
+): string {
   return Buffer.from(JSON.stringify({
-    createdAt: post.createdAt.toISOString(),
-    id: post._id.toHexString(),
+    createdAt: item.createdAt.toISOString(),
+    id: item._id.toHexString(),
+    kind,
   })).toString("base64url");
 }
 
-export function decodePostCursor(token: string): PostCursor {
+export function decodePostCursor(token: string): FeedCursor {
   try {
     const value: unknown = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
     if (
       typeof value !== "object" || value === null ||
       !("createdAt" in value) || typeof value.createdAt !== "string" ||
       !("id" in value) || typeof value.id !== "string" ||
-      !/^[a-f\d]{24}$/i.test(value.id)
+      !/^[a-f\d]{24}$/i.test(value.id) ||
+      ("kind" in value && value.kind !== "post" && value.kind !== "share")
     ) throw new Error("Invalid cursor payload.");
 
     const createdAt = new Date(value.createdAt);
     if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== value.createdAt) {
       throw new Error("Invalid cursor date.");
     }
-    return { createdAt, postId: new ObjectId(value.id) };
+    return {
+      createdAt,
+      itemId: new ObjectId(value.id),
+      kind: "kind" in value && value.kind === "share" ? "share" : "post",
+    };
   } catch {
     throw new HttpError(400, "invalid_cursor", "Post cursor is invalid.");
   }
@@ -64,7 +74,7 @@ export async function canViewPost(
 export async function listVisiblePostDocuments(
   database: Db,
   viewerId: ObjectId,
-  options: { limit: number; cursor?: PostCursor; authorId?: ObjectId },
+  options: { limit: number; cursor?: FeedCursor; authorId?: ObjectId },
 ): Promise<VisiblePostPage> {
   let candidateFilter: Filter<PostDocument>;
 
@@ -107,7 +117,7 @@ export async function listVisiblePostDocuments(
       ? {
         $or: [
           { createdAt: { $lt: scanCursor.createdAt } },
-          { createdAt: scanCursor.createdAt, _id: { $lt: scanCursor.postId } },
+          { createdAt: scanCursor.createdAt, _id: { $lt: scanCursor.itemId } },
         ],
       }
       : undefined;
@@ -124,7 +134,7 @@ export async function listVisiblePostDocuments(
     if (candidates.length === 0) break;
 
     for (const post of candidates) {
-      scanCursor = { createdAt: post.createdAt, postId: post._id };
+      scanCursor = { createdAt: post.createdAt, itemId: post._id, kind: "post" };
       if (await canViewPost(database, viewerId, post)) items.push(post);
       if (items.length > options.limit) {
         hasMoreVisible = true;

@@ -23,7 +23,8 @@ The exact counters and cap are initial development defaults. Review them before 
 
 ## Authorization and media
 
-- Centralize `canViewPost(viewer, post)` and use it for feed queries, direct post reads, Likes, comments, shares, and photo delivery. Only the author changes audience. Check share visibility and the original post's current Public status on every share read.
+- Centralize `canViewPost(viewer, post)` and use it for feed queries, direct post reads, Likes, comments, shares, and photo delivery. Only the author changes audience. On every feed and profile-timeline read, check the share audience and require the source post's current visibility to be Public before returning any source content.
+- Create shares only for a source that is Public at request time. Derive the share author from the authenticated session, validate the share audience, and apply an allowed-Origin check. If the source later changes to Friends or Only me, omit its share card even for the share author; do not return source text, photos, or a share card through cached or stale data.
 - Require a signed-in session, an allowed Origin, and the current `canViewPost` result before creating or removing a Like. Keep one Like per user/post with the unique index; do not expose counts for posts the viewer cannot read.
 - Require a signed-in session and the current `canViewPost` result for every comment list and create request. Comment creation also requires an exact allowed Origin, trims and validates 1–2,000 characters, and derives the author from the session. Recheck the post's current audience on each request so a switch to Only me immediately denies old comment URLs; paginate newest first with a stable cursor and keep responses `private, no-store`.
 - Friendship is accepted and mutual before it grants access. Recheck it for each chat send and history request. Treat IDs from the browser as lookup targets, never as proof of identity.

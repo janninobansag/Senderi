@@ -81,6 +81,16 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "comments_post_newest_first" },
   },
   {
+    collection: collectionNames.shares,
+    keys: { authorId: 1, createdAt: -1, _id: -1 },
+    options: { name: "shares_author_newest_first" },
+  },
+  {
+    collection: collectionNames.shares,
+    keys: { visibility: 1, createdAt: -1, _id: -1 },
+    options: { name: "shares_visibility_newest_first" },
+  },
+  {
     collection: collectionNames.messages,
     keys: { senderId: 1, clientId: 1 },
     options: { name: "messages_sender_client_unique", unique: true },
