@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { ApiError, apiFetch, apiUpload } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { LoadingState, RequestErrorState } from "../components/AsyncState";
+import { PostList } from "../components/Posts";
 import type { ProfileResponse, User } from "../../../shared";
 
 type Profile = User;
@@ -324,6 +325,14 @@ export function ProfilePage() {
             <div><dt>Website</dt><dd>{profile.user.info.website ? <a href={profile.user.info.website} target="_blank" rel="noreferrer">{profile.user.info.website}</a> : "Not shared"}</dd></div>
           </dl>
         </div>
+      </section>
+
+      <section className="surface-card space-y-5 p-6 sm:p-8">
+        <div>
+          <span className="eyebrow">Posts</span>
+          <h2 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-ink">{isOwner ? "Your timeline" : `${profile.user.displayName}’s timeline`}</h2>
+        </div>
+        <PostList path={`/api/users/${profile.user.id}/posts`} />
       </section>
 
       {isOwner && (

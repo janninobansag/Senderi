@@ -101,6 +101,10 @@ function createDatabase(data: PostTestData): Db {
 
       if (name === collectionNames.posts) {
         return {
+          insertOne: async (post: PostDocument) => {
+            data.posts.push(post);
+            return { acknowledged: true, insertedId: post._id };
+          },
           findOne: async (filter: { _id: ObjectId }) =>
             data.posts.find((post) => post._id.equals(filter._id)) ?? null,
           find: (filter: MongoFilter) => {
@@ -174,6 +178,7 @@ function sessionFor(user: UserDocument, token: string): SessionDocument {
 function createApp(data: PostTestData) {
   const database = createDatabase(data);
   const app = express();
+  app.use(express.json());
   app.use("/api/users", createUserPostsRouter({ getDatabase: () => database }));
   app.use("/api/posts", createPostsRouter({ getDatabase: () => database }));
   app.use(notFoundHandler);
@@ -267,6 +272,86 @@ test("feed, author timeline, and direct URLs enforce every audience for author, 
     .set("Cookie", cookie(tokens.outsider));
   assert.equal(hidden.status, nonexistent.status);
   assert.deepEqual(hidden.body, nonexistent.body);
+});
+
+test("post creation attributes the authenticated author and returns only public author fields", async () => {
+  const { data, tokens } = matrixFixture();
+  const response = await request(createApp(data))
+    .post("/api/posts")
+    .set("Cookie", cookie(tokens.friend))
+    .send({ text: "  A fresh update  ", visibility: "friends" })
+    .expect(201);
+
+  assert.equal(response.body.post.text, "A fresh update");
+  assert.equal(response.body.post.visibility, "friends");
+  assert.equal(response.body.post.author.id, ids.friend);
+  assert.equal("email" in response.body.post.author, false);
+  assert.equal("passwordHash" in response.body.post.author, false);
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  assert.equal(data.posts.length, 4);
+  assert.equal(data.posts.at(-1)?.authorId.toHexString(), ids.friend);
+  assert.equal(data.posts.at(-1)?.text, "A fresh update");
+});
+
+test("post creation rejects missing, blank, oversized, malformed, or non-text-only fields", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const authCookie = cookie(tokens.author);
+  const invalidBodies = [
+    {},
+    { text: "   ", visibility: "public" },
+    { text: "x".repeat(5_001), visibility: "public" },
+    { text: "Valid text", visibility: "private" },
+    { text: "Valid text", visibility: "public", authorId: ids.outsider },
+    { text: "Valid text", visibility: "public", photoAssetId: "asset-id" },
+  ];
+
+  for (const body of invalidBodies) {
+    const response = await request(app)
+      .post("/api/posts")
+      .set("Cookie", authCookie)
+      .send(body)
+      .expect(400);
+    assert.equal(response.body.error.code, "validation_error");
+  }
+
+  await request(app).post("/api/posts").send({ text: "Unauthenticated", visibility: "public" }).expect(401);
+  assert.equal(data.posts.length, 3);
+});
+
+test("two accounts see newly created posts after reloading according to each selected audience", async () => {
+  const { data, tokens } = matrixFixture();
+  data.posts = [];
+  const app = createApp(data);
+
+  for (const visibility of ["public", "friends", "onlyMe"] as const) {
+    await request(app)
+      .post("/api/posts")
+      .set("Cookie", cookie(tokens.author))
+      .send({ text: `${visibility} update`, visibility })
+      .expect(201);
+  }
+
+  const authorFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.author)).expect(200);
+  const friendFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.friend)).expect(200);
+  const outsiderFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  assert.deepEqual(new Set(authorFeed.body.items.map((post: { text: string }) => post.text)), new Set([
+    "onlyMe update", "friends update", "public update",
+  ]));
+  assert.deepEqual(new Set(friendFeed.body.items.map((post: { text: string }) => post.text)), new Set([
+    "friends update", "public update",
+  ]));
+  assert.deepEqual(new Set(outsiderFeed.body.items.map((post: { text: string }) => post.text)), new Set([
+    "public update",
+  ]));
+
+  const friendTimeline = await request(app)
+    .get(`/api/users/${ids.author}/posts`)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.deepEqual(friendTimeline.body.items.map((post: { visibility: string }) => post.visibility), [
+    "friends", "public",
+  ]);
 });
 
 test("feed and author timeline paginate newest first without duplicates", async () => {
