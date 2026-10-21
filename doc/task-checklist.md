@@ -201,10 +201,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M6-L2 — Laica: Socket server
 
-- [ ] **M6-L2.1** Add one-use, 60-second socket-ticket issuance and consumption tied to a session user.
-- [ ] **M6-L2.2** Authenticate socket connections and bind them to that user; reject invalid origin or ticket.
-- [ ] **M6-L2.3** On `message:send`, validate text and current friendship, persist once by sender/client ID, then send ack/new events.
-- [ ] **M6-L2.4** Check invalid ticket, duplicate send, offline recipient, and friend removal during an open socket.
+- [x] **M6-L2.1** Add one-use, 60-second socket-ticket issuance and consumption tied to a session user. *(The authenticated endpoint returns a random 60-second ticket while MongoDB stores only its SHA-256 hash, user ID, and issuing session ID. Consumption atomically removes the ticket and requires its session and user to remain valid.)*
+- [x] **M6-L2.2** Authenticate socket connections and bind them to that user; reject invalid origin or ticket. *(Socket.IO accepts only exact `CLIENT_ORIGINS` origins; handshake middleware consumes the ticket and binds the connection to its session user. Integration tests cover a disallowed origin, random/reused and expired tickets, and a ticket whose session was revoked.)*
+- [x] **M6-L2.3** On `message:send`, validate text and current friendship, persist once by sender/client ID, then send ack/new events. *(The server trims and validates text (1–2,000 characters), rechecks the active session and friendship for each send, and persists before acknowledgement or recipient delivery. Matching retries return the original acknowledgement without another `message:new`; conflicting reuse is denied.)*
+- [x] **M6-L2.4** Check invalid ticket, duplicate send, offline recipient, and friend removal during an open socket. *(Real Socket.IO integration tests verify invalid/expired/reused tickets and origin rejection, concurrent duplicate sends persist and deliver once, offline recipients still have a stored message, and a friendship removed after connection blocks subsequent sends.)*
 
 ### M6-L3 — Laica: Chat client
 

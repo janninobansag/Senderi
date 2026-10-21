@@ -23,6 +23,7 @@ import {
   findUsablePasswordResetToken,
   storePasswordResetToken,
 } from "../auth/password-reset";
+import { createSocketTicketToken, issueSocketTicket } from "../auth/socket-ticket";
 import {
   createRateLimitId,
   createRateLimitKey,
@@ -61,6 +62,11 @@ export const resetPasswordSchema = z
   })
   .strict();
 
+const emptyBodySchema = z.preprocess(
+  (value: unknown) => value === undefined ? {} : value,
+  z.object({}).strict(),
+);
+
 type RegistrationInput = z.infer<typeof registrationSchema>;
 type LoginInput = z.infer<typeof loginSchema>;
 type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
@@ -89,6 +95,7 @@ export interface AuthRouterDependencies {
   hashPassword: (password: string) => Promise<string>;
   verifyPassword: (password: string, passwordHash: string) => Promise<boolean>;
   createSessionToken: () => string;
+  createSocketTicketToken: () => string;
   createPasswordResetToken: () => string;
   sendPasswordResetEmail: (input: { email: string; resetUrl: string }) => Promise<void>;
   getPublicAppUrl: () => string;
@@ -104,6 +111,7 @@ const defaultDependencies: AuthRouterDependencies = {
   hashPassword: hashArgon2idPassword,
   verifyPassword: verifyArgon2idPassword,
   createSessionToken,
+  createSocketTicketToken,
   createPasswordResetToken,
   sendPasswordResetEmail,
   getPublicAppUrl: () => process.env.PUBLIC_APP_URL ?? "",
@@ -439,6 +447,25 @@ export function createAuthRouter(
     getDatabase: dependencies.getDatabase,
     now: dependencies.now,
   });
+
+  router.post(
+    "/socket-ticket",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    validateBody(emptyBodySchema),
+    requireAuthenticatedSession,
+    async (_request, response) => {
+      const context = response.locals.authenticatedSession as AuthenticatedSessionContext;
+      const { ticket, document } = await issueSocketTicket(
+        dependencies.getDatabase(),
+        context.user._id,
+        context.sessionId,
+        dependencies.now(),
+        dependencies.createSocketTicketToken,
+      );
+
+      response.status(201).json({ ticket, expiresAt: document.expiresAt.toISOString() });
+    },
+  );
 
   router.get("/me", requireAuthenticatedSession, (_request, response) => {
     const context = response.locals.authenticatedSession as AuthenticatedSessionContext;

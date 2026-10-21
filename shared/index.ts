@@ -171,3 +171,29 @@ export interface Message {
 }
 
 export type MessageHistoryResponse = Page<Message>;
+
+export interface SocketTicketResponse {
+  ticket: string;
+  expiresAt: string;
+}
+
+export interface MessageSendRequest {
+  friendId: UserId;
+  clientId: string;
+  text: string;
+}
+
+export interface MessageAckEvent {
+  clientId: string;
+  message: Message;
+}
+
+export interface MessageNewEvent {
+  message: Message;
+}
+
+export interface MessageErrorEvent {
+  clientId?: string;
+  code: string;
+  message: string;
+}
