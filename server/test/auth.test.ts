@@ -516,6 +516,30 @@ test("logout deletes the session and clears its cookie", async () => {
   assert.equal(afterLogout.status, 401);
 });
 
+test("cross-origin logout is rejected without revoking the current session", async () => {
+  const database = createMemoryDatabase();
+  await addUser(database);
+  const agent = request.agent(createTestApp(database));
+  const login = await agent
+    .post("/api/auth/login")
+    .set("Origin", "http://localhost:5173")
+    .send({ email: "member@example.com", password: "correct horse battery staple" });
+  assert.equal(login.status, 200);
+  assert.equal(database.sessions.length, 1);
+
+  const rejectedLogout = await agent
+    .post("/api/auth/logout")
+    .set("Origin", "https://attacker.example");
+
+  assert.equal(rejectedLogout.status, 403);
+  assert.equal(rejectedLogout.body.error.code, "origin_not_allowed");
+  assert.equal(rejectedLogout.headers["set-cookie"], undefined);
+  assert.equal(database.sessions.length, 1);
+
+  const sessionStillWorks = await agent.get("/api/auth/me");
+  assert.equal(sessionStillWorks.status, 200);
+});
+
 test("forgot password gives known and unknown emails the same response and stores only a 15-minute token hash", async () => {
   const database = createMemoryDatabase();
   await addUser(database);
@@ -595,7 +619,8 @@ test("Brevo failure stays generic and removes the unsent reset token", async () 
     },
   });
   const originalError = console.error;
-  console.error = () => undefined;
+  const loggedArguments: unknown[][] = [];
+  console.error = (...args: unknown[]) => loggedArguments.push(args);
 
   try {
     const known = await request(app)
@@ -611,6 +636,10 @@ test("Brevo failure stays generic and removes the unsent reset token", async () 
     assert.equal(unknown.status, 202);
     assert.deepEqual(known.body, unknown.body);
     assert.equal(database.passwordResets.length, 0);
+    assert.deepEqual(loggedArguments, [["Password reset email delivery failed."]]);
+    assert.ok(loggedArguments.flat().every((value) =>
+      !String(value).includes("test-password-reset-token") && !String(value).includes("member@example.com"),
+    ));
   } finally {
     console.error = originalError;
   }
