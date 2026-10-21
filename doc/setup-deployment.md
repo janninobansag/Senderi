@@ -18,23 +18,22 @@ npm ci --prefix server
 
 Create `server/.env` from `server/.env.example` and set `MONGODB_URI` to your local MongoDB or Atlas connection string. Keep real credentials in ignored `.env` files or deployment settings; never commit them. On PowerShell, copy the example with `Copy-Item server/.env.example server/.env`; on macOS/Linux, use `cp server/.env.example server/.env`.
 
-Start the API in one terminal from the repository root:
+Start both the API and client together from the repository root:
 
 ```sh
-npm run dev --prefix server
+npm run dev
 ```
 
-The API connects to MongoDB and creates its indexes before listening on port 3000 by default. Verify it at `http://localhost:3000/api/health`. Press Ctrl+C to stop the API and close its database connection cleanly.
+This starts the API and Vite client in the same terminal. The API connects to MongoDB and creates its indexes before listening on port 3000; Vite serves the client on port 5173 and proxies `/api/*` to the API. Verify the API at `http://localhost:3000/api/health` and open the client at `http://localhost:5173`. Press Ctrl+C to stop both processes.
 
-Start the client in a second terminal:
+To run either service by itself, use these commands from the repository root:
 
 ```sh
-npm run dev --prefix client
+npm run dev:server
+npm run dev:client
 ```
 
-Vite serves the client at `http://localhost:5173` and proxies `/api/*` to `http://localhost:3000`. The current `client/.env.example` contains the public `VITE_SOCKET_URL` placeholder for the later Socket.IO feature; local REST requests do not need a backend URL variable.
-
-In Windows PowerShell, if the `npm` command is blocked by its script execution policy, use `npm.cmd` in the commands above (for example, `npm.cmd run dev --prefix server`).
+In Windows PowerShell, if the `npm` command is blocked by its script execution policy, use `npm.cmd` (for example, `npm.cmd run dev`). The current `client/.env.example` contains the public `VITE_SOCKET_URL` placeholder for the later Socket.IO feature; local REST requests do not need a backend URL variable.
 
 ## Local checks and CI
 

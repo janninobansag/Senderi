@@ -39,17 +39,44 @@ function Field({
   className = "",
   ...inputProps
 }: InputHTMLAttributes<HTMLInputElement> & { id: string; label: string; error?: string }) {
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const isPassword = inputProps.type === "password";
   const errorId = `${id}-error`;
   return (
     <div className="space-y-2">
       <label htmlFor={id} className="block text-sm font-semibold text-ink">{label}</label>
-      <input
-        id={id}
-        className={`form-input ${error ? "form-input-error" : ""} ${className}`}
-        aria-invalid={Boolean(error)}
-        aria-describedby={error ? errorId : undefined}
-        {...inputProps}
-      />
+      <div className={isPassword ? "password-field" : undefined}>
+        <input
+          {...inputProps}
+          id={id}
+          type={isPassword && passwordVisible ? "text" : inputProps.type}
+          className={`form-input ${error ? "form-input-error" : ""} ${isPassword ? "password-input" : ""} ${className}`}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? errorId : undefined}
+        />
+        {isPassword && (
+          <button
+            className="password-visibility-toggle"
+            type="button"
+            aria-label={passwordVisible ? "Hide password" : "Show password"}
+            aria-pressed={passwordVisible}
+            aria-controls={id}
+            onClick={() => setPasswordVisible((visible) => !visible)}
+          >
+            {passwordVisible ? (
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8" />
+                <path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a15.8 15.8 0 0 1-3.2 3.9M6.2 6.2C3.5 8 2 12 2 12s3.6 7 10 7a10.7 10.7 0 0 0 4.2-.9" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            )}
+          </button>
+        )}
+      </div>
       {error && <p id={errorId} className="field-error" role="alert">{error}</p>}
     </div>
   );
