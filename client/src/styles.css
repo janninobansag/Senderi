@@ -37,10 +37,24 @@ button { cursor: pointer; }
 .loading-dot { height: 8px; width: 8px; border-radius: 50%; background: var(--color-violet); box-shadow: 0 0 0 4px rgb(57 115 217 / 12%); }
 .api-status { display: inline-flex; align-items: center; gap: 8px; color: var(--color-violet-dark); font-size: 13px; font-weight: 700; }
 .status-indicator { height: 8px; width: 8px; border-radius: 50%; background: #3973d9; box-shadow: 0 0 0 4px rgb(57 115 217 / 12%); }
-.profile-cover { position: relative; min-height: 190px; overflow: hidden; border-radius: 24px; background: linear-gradient(120deg, #dceaff, #eee6ff 55%, #d9f2ea); }
-.profile-cover-image { position: absolute; inset: 0; height: 100%; width: 100%; object-fit: cover; }
-.profile-avatar { position: absolute; z-index: 1; bottom: -42px; left: 24px; display: grid; height: 84px; width: 84px; place-items: center; overflow: hidden; border: 6px solid var(--color-surface); border-radius: 50%; background: var(--color-violet); color: white; font-size: 30px; font-weight: 700; box-shadow: 0 8px 20px rgb(20 33 61 / 14%); }
+.profile-cover { position: relative; height: clamp(190px, 28vw, 320px); border-radius: 24px; background: linear-gradient(120deg, #dceaff, #eee6ff 55%, #d9f2ea); }
+.profile-cover-image { position: absolute; inset: 0; height: 100%; width: 100%; border-radius: inherit; object-fit: cover; }
+.profile-avatar-frame { position: absolute; z-index: 2; bottom: -42px; left: 24px; height: 84px; width: 84px; }
+.profile-avatar { position: relative; display: grid; height: 100%; width: 100%; place-items: center; overflow: hidden; border: 6px solid var(--color-surface); border-radius: 50%; background: var(--color-violet); color: white; font-size: 30px; font-weight: 700; box-shadow: 0 8px 20px rgb(20 33 61 / 14%); }
 .profile-avatar-image { height: 100%; width: 100%; border-radius: 50%; object-fit: cover; }
+.profile-image-picker { position: absolute; z-index: 3; display: inline-flex; min-height: 40px; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgb(255 255 255 / 72%); border-radius: 12px; background: rgb(20 33 61 / 82%); padding: 0 13px; color: white; font-size: 13px; font-weight: 700; cursor: pointer; transition: background .18s, transform .18s; }
+.profile-image-picker:hover { background: rgb(20 33 61 / 94%); transform: translateY(-1px); }
+.profile-image-picker:focus-within { outline: 3px solid var(--color-blue-light); outline-offset: 2px; }
+.profile-image-picker svg { height: 18px; width: 18px; flex: 0 0 auto; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.profile-image-picker-disabled { cursor: wait; opacity: .7; }
+.profile-image-picker-disabled:hover { transform: none; }
+.profile-cover-picker { top: 16px; right: 16px; }
+.profile-avatar-picker { right: -4px; bottom: -3px; height: 34px; width: 34px; min-height: 0; border: 2px solid white; border-radius: 50%; padding: 0; }
+.profile-avatar-picker svg { height: 16px; width: 16px; }
+.profile-image-feedback { display: flex; min-height: 44px; flex-direction: column; justify-content: center; gap: 7px; border-radius: 12px; background: var(--color-canvas); padding: 10px 14px; color: var(--color-ink); font-size: 13px; }
+.profile-image-feedback-success { background: #f3fbf7; color: #28643e; }
+.profile-image-feedback-error { background: #fff4f4; color: #9c3047; }
+.profile-image-feedback progress { width: min(100%, 340px); height: 8px; accent-color: var(--color-violet); }
 .profile-status { display: inline-flex; width: fit-content; border-radius: 999px; background: #edf3ff; padding: 8px 12px; color: var(--color-violet-dark); font-size: 12px; font-weight: 700; }
 .profile-info { display: grid; gap: 16px; border-radius: 16px; background: var(--color-canvas); padding: 18px; }
 .profile-info dt { color: var(--color-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
@@ -96,6 +110,10 @@ button { cursor: pointer; }
 
 @media (max-width: 640px) {
   .hero-card { min-height: 390px; }
+  .profile-avatar-frame { left: 16px; }
+  .profile-cover-picker { top: 12px; right: 12px; }
+  .profile-image-picker { min-height: 38px; padding: 0 11px; }
+  .profile-avatar-picker { min-height: 0; padding: 0; }
 }
 
 @media (max-width: 820px) {
