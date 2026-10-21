@@ -49,9 +49,9 @@ npm run build --prefix server
 npm test --prefix server
 ```
 
-The current automated test suite is in `server/test/`; there are no client tests yet. GitHub Actions runs the lint, type-check, build, and available server tests for every pull request. M0-J3.4 is complete only after a pull request has triggered the workflow and its check reports success or a clear failure. M0-J3 adds no environment variables.
+Server tests are in `server/test/`; client state tests are in `client/test/`. GitHub Actions runs lint, type-check, build, and server tests for every pull request. M0-J3.4 is complete only after a pull request has triggered the workflow and its check reports success or a clear failure. M0-J3 adds no environment variables.
 
-The MongoDB media persistence tests are optional and run only when `MONGODB_TEST_URI` is set. Point it to a dedicated test MongoDB instance or cluster, not production. Profile-image tests use `senderi_m2_l3_test`; post-photo tests use `senderi_m4_l3_test`. Each creates uniquely identified records, closes the first connection, reconnects with a new API app instance, and removes only its records. Post-photo restart coverage uses a storage stub to verify the MongoDB asset ID and protected API stream; it does not upload to Cloudinary. Without this variable, those restart tests are skipped; validation, authorization, and cleanup tests still run.
+The MongoDB persistence tests are optional and run only when `MONGODB_TEST_URI` is set. Point it to a dedicated test MongoDB instance or cluster, never production. Profile-image tests use `senderi_m2_l3_test`, post-photo tests use `senderi_m4_l3_test`, and chat resilience uses `senderi_m6_l4_test`. Each test creates uniquely identified records, closes its first connection, reconnects with a new API app instance, and removes only its own records. Post-photo restart coverage uses a storage stub; chat resilience exchanges real Socket.IO messages and compares both users' restarted history responses with MongoDB records. Without this variable, restart tests are skipped; unit, socket, authorization, and cleanup tests still run.
 
 For Atlas, create a MongoDB Atlas Free cluster and database user. Keep the connection string in `server/.env` or the deployment environment; do not commit it. Atlas Free has a 0.5 GB data limit, so keep image bytes in Cloudinary. [Atlas Free limits](https://www.mongodb.com/docs/atlas/reference/free-shared-limitations/)
 
@@ -68,7 +68,7 @@ The committed `server/.env.example` and `client/.env.example` contain placeholde
 | `NODE_ENV` | Server | Development or production behavior. |
 | `PORT` | Server | Render-provided listening port; local default documented by M0. |
 | `MONGODB_URI` | Server | Atlas connection string. |
-| `MONGODB_TEST_URI` | Server test only | Optional connection string for isolated profile-image and post-photo persistence tests; use a dedicated test database/cluster, never production. |
+| `MONGODB_TEST_URI` | Server test only | Optional connection string for isolated persistence tests, including chat restart checks; use a dedicated test database/cluster, never production. |
 | `CLIENT_ORIGINS` | Server | Comma-separated exact Vercel or local client origins allowed for mutation and socket checks. Add a preview URL only while testing that preview. |
 | `TRUST_PROXY_HOPS` | Server | Number of trusted reverse-proxy hops before Express; `0` locally. Set the Render value to the verified request path's hop count so per-IP limits use the client address. |
 | `SESSION_SECRET` | Server | Random secret for session-token hashing or signing support. |
@@ -92,4 +92,4 @@ Do not put secrets in `VITE_*` variables: Vite embeds them in browser assets. Th
 
 ## Deployment acceptance
 
-On the deployed URLs, register two accounts, reset one password, upload profile and post images, verify all post audiences through direct media requests, accept and remove a friendship, interact with a Public post, and exchange chat messages. Repeat chat after Render has restarted or slept to verify ticket renewal and history recovery.
+On the deployed URLs, register two accounts, reset one password, upload profile and post images, verify all post audiences through direct media requests, accept and remove a friendship, interact with a Public post, and exchange chat messages. Repeat chat after Render has restarted or slept to verify ticket renewal and history recovery. Record the observed free-tier reconnect delay and whether the recovered browser history matches the conversation records in [chat resilience acceptance](chat-resilience-acceptance.md).

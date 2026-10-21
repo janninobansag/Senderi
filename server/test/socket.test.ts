@@ -18,6 +18,7 @@ import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
 import { orderedUserPair } from "../src/friends/are-friends";
 import { createAuthRouter } from "../src/routes/auth";
+import { createChatsRouter } from "../src/routes/chats";
 import type { MessageAckEvent, MessageErrorEvent, MessageNewEvent, MessageSendRequest } from "../src/socket/contracts";
 import { createSocketServer } from "../src/socket/server";
 
@@ -176,6 +177,10 @@ async function createFixture(): Promise<SocketFixture> {
     createSocketTicketToken: () => `${"A".repeat(42)}${ALPHABET[ticketSequence++ % ALPHABET.length]}`,
     now: () => now,
     getAllowedOrigins: () => [CLIENT_ORIGIN],
+  }));
+  app.use("/api/chats", createChatsRouter({
+    getDatabase: () => database,
+    now: () => now,
   }));
   app.use(notFoundHandler);
   app.use(errorHandler);
@@ -427,7 +432,7 @@ test("message sends persist once before ack and new events, including duplicate 
   }
 });
 
-test("offline recipients still get persisted messages and open sockets recheck friendship", async () => {
+test("offline delivery persists and removing a friend blocks open-socket sends and history reads", async () => {
   const fixture = await createFixture();
   let alice: TestClient | undefined;
   try {
@@ -449,6 +454,12 @@ test("offline recipients still get persisted messages and open sockets recheck f
     assert.equal(ack.message.recipientId, fixture.data.users[1]!._id.toHexString());
 
     fixture.data.friendships.splice(0, 1);
+    const history = await request(fixture.app)
+      .get(`/api/chats/${fixture.data.users[1]!._id.toHexString()}/messages`)
+      .set("Cookie", `${SESSION_COOKIE_NAME}=alice-session`);
+    assert.equal(history.status, 404, "removed friends cannot load prior conversation history");
+    assert.equal(history.body.error.code, "conversation_not_found");
+
     const deniedPromise = waitForMessageError(alice);
     alice.emit("message:send", { ...payload, clientId: "after-removal-0001" });
     const denied = await deniedPromise;
@@ -456,6 +467,64 @@ test("offline recipients still get persisted messages and open sockets recheck f
     assert.equal(fixture.data.messages.length, 1, "friendship removal blocks sends on an already-open socket");
   } finally {
     closeClients(...(alice ? [alice] : []));
+    await fixture.close();
+  }
+});
+
+test("multiple sockets for one user receive one delivery and retries persist only once", async () => {
+  const fixture = await createFixture();
+  let aliceTabOne: TestClient | undefined;
+  let aliceTabTwo: TestClient | undefined;
+  let bob: TestClient | undefined;
+  try {
+    const [firstTicket, secondTicket, bobTicket] = await Promise.all([
+      issueTicket(fixture, "alice-session"),
+      issueTicket(fixture, "alice-session"),
+      issueTicket(fixture, "bob-session"),
+    ]);
+    aliceTabOne = openClient(fixture, firstTicket.body.ticket as string);
+    aliceTabTwo = openClient(fixture, secondTicket.body.ticket as string);
+    bob = openClient(fixture, bobTicket.body.ticket as string);
+    await Promise.all([
+      waitForConnect(aliceTabOne),
+      waitForConnect(aliceTabTwo),
+      waitForConnect(bob),
+    ]);
+
+    let tabOneDeliveries = 0;
+    let tabTwoDeliveries = 0;
+    aliceTabOne.on("message:new", () => { tabOneDeliveries += 1; });
+    aliceTabTwo.on("message:new", () => { tabTwoDeliveries += 1; });
+
+    const payload: MessageSendRequest = {
+      friendId: fixture.data.users[0]!._id.toHexString(),
+      clientId: "multi-tab-0001",
+      text: "One stored message for both tabs",
+    };
+    const firstAck = waitForAck(bob);
+    const firstTabDelivery = waitForNewMessage(aliceTabOne);
+    const secondTabDelivery = waitForNewMessage(aliceTabTwo);
+    bob.emit("message:send", payload);
+    const [ack, deliveredToTabOne, deliveredToTabTwo] = await Promise.all([
+      firstAck,
+      firstTabDelivery,
+      secondTabDelivery,
+    ]);
+
+    assert.equal(fixture.data.messages.length, 1);
+    assert.equal(deliveredToTabOne.message.id, ack.message.id);
+    assert.equal(deliveredToTabTwo.message.id, ack.message.id);
+
+    const retryAck = waitForAck(bob);
+    bob.emit("message:send", payload);
+    const retry = await retryAck;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(retry.message.id, ack.message.id);
+    assert.equal(fixture.data.messages.length, 1, "retrying the same client ID must not persist another message");
+    assert.equal(tabOneDeliveries, 1, "a retry must not broadcast a duplicate to the first tab");
+    assert.equal(tabTwoDeliveries, 1, "a retry must not broadcast a duplicate to the second tab");
+  } finally {
+    closeClients(...[aliceTabOne, aliceTabTwo, bob].filter((socket): socket is TestClient => socket !== undefined));
     await fixture.close();
   }
 });
