@@ -155,10 +155,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M4-L4 — Laica: Photo composer and privacy edits
 
-- [ ] **M4-L4.1** Add a photo picker, preview, upload feedback, and text-plus-photo publishing.
-- [ ] **M4-L4.2** Add an author-only audience edit control and persist changes.
-- [ ] **M4-L4.3** Refresh feed and post cards after an audience change.
-- [ ] **M4-L4.4** Recheck feed, direct post, and old photo URL access after switching each audience.
+- [x] **M4-L4.1** Add a photo picker, preview, upload feedback, and text-plus-photo publishing. *(The composer validates JPEG/PNG/WebP and the 5 MB limit, previews the selected photo, shows upload progress and errors, and submits text, audience, and photo together. The server inspects the image and removes an uploaded asset if post insertion fails; tests cover valid, invalid, oversized, and failed-insert cases.)*
+- [x] **M4-L4.2** Add an author-only audience edit control and persist changes. *(Only the author sees the audience selector; `PATCH /api/posts/:postId` filters updates by the authenticated author, validates the audience, and rejects missing/unauthorized posts.)*
+- [x] **M4-L4.3** Refresh feed and post cards after an audience change. *(On success, the updated card is replaced and the first feed page is reloaded while retaining already loaded later pages.)*
+- [x] **M4-L4.4** Recheck feed, direct post, and old photo URL access after switching each audience. *(Server integration tests switch the same post through Only me, Friends, and Public, then check the feed, direct-post route, and unchanged photo URL for the author, friend, and unrelated account. Photo delivery reruns the current visibility check and remains `private, no-store`.)*
 
 ## M5 — Interactions
 

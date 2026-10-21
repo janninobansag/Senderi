@@ -41,14 +41,17 @@ export async function apiFetch<T>(path: string, options: ApiRequestInit = {}): P
   const { body, headers, ...requestInit } = options;
   const requestHeaders = new Headers(headers);
   requestHeaders.set("Accept", "application/json");
+  const isFormData = body instanceof FormData;
 
-  if (body !== undefined) {
+  if (isFormData) {
+    requestHeaders.delete("Content-Type");
+  } else if (body !== undefined) {
     requestHeaders.set("Content-Type", "application/json");
   }
 
   const response = await fetch(path, {
     ...requestInit,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : isFormData ? body : JSON.stringify(body),
     credentials: "include",
     headers: requestHeaders,
   });
@@ -73,10 +76,15 @@ export async function apiFetch<T>(path: string, options: ApiRequestInit = {}): P
   return responseBody as T;
 }
 
-export function apiUpload<T>(path: string, file: File, onProgress: (percent: number) => void): Promise<T> {
+function sendUpload<T>(
+  method: "POST" | "PUT",
+  path: string,
+  body: FormData,
+  onProgress: (percent: number) => void,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open("PUT", path);
+    request.open(method, path);
     request.withCredentials = true;
     request.setRequestHeader("Accept", "application/json");
     request.upload.addEventListener("progress", (event) => {
@@ -117,8 +125,16 @@ export function apiUpload<T>(path: string, file: File, onProgress: (percent: num
       reject(new ApiError("The upload was canceled.", 0, "upload_aborted"));
     });
 
-    const body = new FormData();
-    body.append("file", file);
     request.send(body);
   });
+}
+
+export function apiUpload<T>(path: string, file: File, onProgress: (percent: number) => void): Promise<T> {
+  const body = new FormData();
+  body.append("file", file);
+  return sendUpload("PUT", path, body, onProgress);
+}
+
+export function apiSubmitPost<T>(path: string, body: FormData, onProgress: (percent: number) => void): Promise<T> {
+  return sendUpload("POST", path, body, onProgress);
 }

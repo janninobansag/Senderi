@@ -23,6 +23,10 @@ const createPostSchema = z.object({
   visibility: z.enum(["public", "friends", "onlyMe"]),
 }).strict();
 
+const updatePostSchema = z.object({
+  visibility: z.enum(["public", "friends", "onlyMe"]),
+}).strict();
+
 interface PostResponseItem {
   id: string;
   author: ReturnType<typeof toPublicUserResponse>;
@@ -127,6 +131,10 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 },
   }).single("file");
+  const uploadPost = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 2 },
+  }).single("file");
 
   const requirePostOwner = async (request: Parameters<typeof authenticated>[0], response: Response, next: Parameters<typeof authenticated>[2]) => {
     const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
@@ -220,30 +228,85 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     await pipeline(photo.stream, response);
   });
 
-  router.post("/", authenticated, async (request, response) => {
-    const parsed = createPostSchema.safeParse(request.body);
-    if (!parsed.success) {
-      throw new HttpError(400, "validation_error", "Post text or audience is invalid.");
-    }
+  router.patch(
+    "/:postId",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const parsed = updatePostSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new HttpError(400, "validation_error", "Post audience is invalid.");
+      }
 
-    const session = getAuthenticatedSession(response);
-    const database = dependencies.getDatabase();
-    const now = new Date();
-    const post: PostDocument = {
-      _id: new ObjectId(),
-      authorId: session.user._id,
-      text: parsed.data.text,
-      visibility: parsed.data.visibility,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await database.collection<PostDocument>(collectionNames.posts).insertOne(post);
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const session = getAuthenticatedSession(response);
+      const updated = await dependencies.getDatabase()
+        .collection<PostDocument>(collectionNames.posts)
+        .findOneAndUpdate(
+          { _id: postId, authorId: session.user._id },
+          { $set: { visibility: parsed.data.visibility, updatedAt: new Date() } },
+          { returnDocument: "after" },
+        );
 
-    response.setHeader("Cache-Control", "private, no-store");
-    response.status(201).json({
-      post: toPostResponse(post, session.user, dependencies.getCloudinaryCloudName()),
-    } satisfies PostResponse);
-  });
+      if (!updated) throw new HttpError(404, "not_found", "Post was not found.");
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json({
+        post: toPostResponse(updated, session.user, dependencies.getCloudinaryCloudName()),
+      } satisfies PostResponse);
+    },
+  );
+
+  router.post(
+    "/",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    uploadPost,
+    async (request, response) => {
+      const parsed = createPostSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new HttpError(400, "validation_error", "Post text or audience is invalid.");
+      }
+
+      if (request.file) await validatePostPhoto(request.file);
+
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const now = new Date();
+      const post: PostDocument = {
+        _id: new ObjectId(),
+        authorId: session.user._id,
+        text: parsed.data.text,
+        visibility: parsed.data.visibility,
+        createdAt: now,
+        updatedAt: now,
+      };
+      let uploadedAssetId: string | undefined;
+
+      if (request.file) {
+        const assetName = `${post._id.toHexString()}-${randomUUID()}`;
+        const uploaded = await dependencies.photoStorage.upload(request.file.buffer, assetName);
+        uploadedAssetId = uploaded.assetId;
+        post.photoAssetId = uploaded.assetId;
+      }
+
+      try {
+        await database.collection<PostDocument>(collectionNames.posts).insertOne(post);
+      } catch (error) {
+        if (uploadedAssetId) {
+          await dependencies.photoStorage.destroy(uploadedAssetId).catch(() => {
+            console.error("Failed to clean up abandoned post photo.");
+          });
+        }
+        throw error;
+      }
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(201).json({
+        post: toPostResponse(post, session.user, dependencies.getCloudinaryCloudName()),
+      } satisfies PostResponse);
+    },
+  );
 
   router.get("/", authenticated, async (request, response) => {
     const query = parsePageQuery(request.query as Record<string, unknown>);

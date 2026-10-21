@@ -100,7 +100,7 @@ export interface PostResponse {
   post: Post;
 }
 
-/** Text-only post fields accepted from an authenticated author. */
+/** Text and audience fields accepted for a post; multipart requests may add one photo. */
 export interface CreatePostRequest {
   text: string;
   visibility: Visibility;
@@ -108,4 +108,9 @@ export interface CreatePostRequest {
 
 export interface CreatePostResponse {
   post: Post;
+}
+
+/** Audience changes are accepted only from the post author. */
+export interface UpdatePostRequest {
+  visibility: Visibility;
 }
