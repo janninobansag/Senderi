@@ -1,4 +1,4 @@
-import type { Db, IndexSpecification } from "mongodb";
+import type { Db, Document, IndexSpecification } from "mongodb";
 import { collectionNames } from "./documents";
 
 interface DatabaseIndexDefinition {
@@ -8,6 +8,7 @@ interface DatabaseIndexDefinition {
     name: string;
     unique?: boolean;
     expireAfterSeconds?: number;
+    partialFilterExpression?: Document;
   };
 }
 
@@ -29,6 +30,25 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     collection: collectionNames.friendships,
     keys: { userIdLow: 1, userIdHigh: 1 },
     options: { name: "friendships_pair_unique", unique: true },
+  },
+  {
+    collection: collectionNames.friendRequests,
+    keys: { userIdLow: 1, userIdHigh: 1 },
+    options: {
+      name: "friend_requests_pending_pair_unique",
+      unique: true,
+      partialFilterExpression: { status: "pending" },
+    },
+  },
+  {
+    collection: collectionNames.friendRequests,
+    keys: { recipientId: 1, status: 1, createdAt: -1, _id: -1 },
+    options: { name: "friend_requests_incoming_pending" },
+  },
+  {
+    collection: collectionNames.friendRequests,
+    keys: { senderId: 1, status: 1, createdAt: -1, _id: -1 },
+    options: { name: "friend_requests_outgoing_pending" },
   },
   {
     collection: collectionNames.likes,

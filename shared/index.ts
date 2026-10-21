@@ -49,3 +49,28 @@ export interface Page<T> {
   items: T[];
   nextCursor: string | null;
 }
+
+/** Public profile results returned by paged user search. */
+export type UserSearchResponse = Page<User>;
+
+/** Lifecycle states for a request; only pending requests are created here. */
+export type FriendRequestStatus = "pending" | "accepted" | "declined";
+
+/** Public representation of a friend request. */
+export interface FriendRequest {
+  id: string;
+  senderId: UserId;
+  recipientId: UserId;
+  status: FriendRequestStatus;
+  createdAt: string;
+}
+
+/** Pending requests that involve the signed-in user. */
+export interface FriendRequestsResponse {
+  incoming: FriendRequest[];
+  outgoing: FriendRequest[];
+}
+
+export interface CreateFriendRequestResponse {
+  request: FriendRequest;
+}

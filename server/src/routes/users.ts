@@ -1,4 +1,4 @@
-import { ObjectId, type Db } from "mongodb";
+import { ObjectId, type Db, type Filter } from "mongodb";
 import { randomUUID } from "node:crypto";
 import { Router, type Response } from "express";
 import multer from "multer";
@@ -28,6 +28,48 @@ const websiteSchema = z
       return false;
     }
   }, "Website must be a valid HTTPS URL.");
+
+const userSearchQuerySchema = z.object({
+  query: z.string().trim().min(1).max(80),
+  cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+}).strict();
+
+type UserSearchCursor = { createdAt: Date; userId: ObjectId };
+
+function encodeUserSearchCursor(user: Pick<UserDocument, "_id" | "createdAt">): string {
+  return Buffer.from(JSON.stringify({
+    createdAt: user.createdAt.toISOString(),
+    id: user._id.toHexString(),
+  })).toString("base64url");
+}
+
+function decodeUserSearchCursor(cursor: string): UserSearchCursor {
+  try {
+    const value: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (
+      typeof value !== "object" || value === null ||
+      !("createdAt" in value) || typeof value.createdAt !== "string" ||
+      !("id" in value) || typeof value.id !== "string" ||
+      !/^[a-f\d]{24}$/i.test(value.id)
+    ) {
+      throw new Error("Invalid cursor payload.");
+    }
+
+    const createdAt = new Date(value.createdAt);
+    if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== value.createdAt) {
+      throw new Error("Invalid cursor date.");
+    }
+
+    return { createdAt, userId: new ObjectId(value.id) };
+  } catch {
+    throw new HttpError(400, "invalid_cursor", "Search cursor is invalid.");
+  }
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 export const profilePatchSchema = z
   .object({
@@ -86,6 +128,54 @@ export function createUsersRouter(
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024 },
+  });
+
+  router.get("/", authenticated, async (request, response) => {
+    const parsedQuery = userSearchQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) {
+      throw new HttpError(400, "validation_error", "User search query is invalid.");
+    }
+
+    const { query, cursor: cursorToken, limit } = parsedQuery.data;
+    const cursor = cursorToken ? decodeUserSearchCursor(cursorToken) : undefined;
+    const session = getAuthenticatedSession(response);
+    const filter: Filter<UserDocument> = {
+      displayName: { $regex: escapeRegularExpression(query), $options: "i" },
+      _id: { $ne: session.user._id },
+      ...(cursor ? {
+        $or: [
+          { createdAt: { $lt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, _id: { $lt: cursor.userId } },
+        ],
+      } : {}),
+    };
+    const users = await dependencies.getDatabase()
+      .collection<UserDocument>(collectionNames.users)
+      .find(filter, {
+        projection: {
+          _id: 1,
+          displayName: 1,
+          bio: 1,
+          info: 1,
+          avatarId: 1,
+          coverId: 1,
+          createdAt: 1,
+        },
+      })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit + 1)
+      .toArray();
+
+    const hasMore = users.length > limit;
+    const pageUsers = users.slice(0, limit);
+    const lastUser = pageUsers.at(-1);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({
+      items: pageUsers.map((user) =>
+        toPublicUserResponse(user, dependencies.getCloudinaryCloudName()),
+      ),
+      nextCursor: hasMore && lastUser ? encodeUserSearchCursor(lastUser) : null,
+    });
   });
 
   router.get("/:userId", authenticated, async (request, response) => {
