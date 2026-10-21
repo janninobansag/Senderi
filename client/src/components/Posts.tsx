@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, Visibility } from "../../../shared";
+import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, Visibility } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
 import { EmptyState, LoadingState, RequestErrorState } from "./AsyncState";
@@ -197,6 +197,67 @@ function CommentsPanel({ postId }: { postId: string }) {
   );
 }
 
+function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) {
+  const shareAudienceId = useId();
+  const [visibility, setVisibility] = useState<Visibility>("public");
+  const [isSharing, setIsSharing] = useState(false);
+  const [message, setMessage] = useState<{ text: string; isError: boolean } | null>(null);
+
+  if (post.visibility !== "public") return null;
+
+  async function submitShare(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isSharing) return;
+
+    setIsSharing(true);
+    setMessage(null);
+    try {
+      const body: CreateShareRequest = { visibility };
+      await apiFetch<CreateShareResponse>(`/api/posts/${post.id}/shares`, {
+        method: "POST",
+        body,
+      });
+      setMessage({ text: "Post shared.", isError: false });
+      onShared();
+    } catch (error: unknown) {
+      setMessage({
+        text: error instanceof ApiError ? error.message : "We couldn’t share this post. Try again.",
+        isError: true,
+      });
+    } finally {
+      setIsSharing(false);
+    }
+  }
+
+  return (
+    <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => void submitShare(event)}>
+      <label className="sr-only" htmlFor={shareAudienceId}>
+        Share audience
+      </label>
+      <select
+        id={shareAudienceId}
+        className="rounded-xl border border-line bg-canvas px-2 py-2 text-xs font-semibold text-ink outline-none focus:border-violet disabled:opacity-60"
+        value={visibility}
+        onChange={(event) => setVisibility(event.target.value as Visibility)}
+        aria-label="Share audience"
+        disabled={isSharing}
+      >
+        {audienceOptions.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+      <button className="button-secondary disabled:opacity-60" type="submit" disabled={isSharing}>
+        {isSharing ? "Sharing…" : "Share"}
+      </button>
+      {message && (
+        <span className={message.isError ? "form-error" : "form-success"} role={message.isError ? "alert" : "status"}>
+          {message.text}
+        </span>
+      )}
+    </form>
+  );
+}
+
 export function PostComposer({ onCreated }: { onCreated: (post: Post) => void }) {
   const [text, setText] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("friends");
@@ -378,7 +439,15 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
   );
 }
 
-function PostCard({ post, onUpdated }: { post: Post; onUpdated: (updated: Post) => void }) {
+function PostCard({
+  post,
+  onUpdated,
+  onShared,
+}: {
+  post: Post;
+  onUpdated: (updated: Post) => void;
+  onShared: () => void;
+}) {
   const { user } = useAuth();
   const [isUpdating, setIsUpdating] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<{ text: string; isError: boolean } | null>(null);
@@ -441,6 +510,21 @@ function PostCard({ post, onUpdated }: { post: Post; onUpdated: (updated: Post) 
 
   return (
     <article className="surface-card p-5 sm:p-6">
+      {post.share && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+          <Link className="font-semibold text-ink hover:text-violet" to={`/profile/${post.share.author.id}`}>
+            {post.share.author.displayName}
+          </Link>
+          <span>shared this post</span>
+          <span>· {audienceLabel(post.share.visibility)} audience</span>
+          <time dateTime={post.share.createdAt}>
+            {Number.isNaN(new Date(post.share.createdAt).getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            }).format(new Date(post.share.createdAt))}
+          </time>
+        </div>
+      )}
       <header className="flex items-center gap-3">
         <Link
           className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-violet/10 text-sm font-bold text-violet"
@@ -519,6 +603,7 @@ function PostCard({ post, onUpdated }: { post: Post; onUpdated: (updated: Post) 
             {likeMessage.text}
           </p>
         )}
+        <ShareControl post={post} onShared={onShared} />
       </div>
       <CommentsPanel postId={post.id} />
     </article>
@@ -586,19 +671,41 @@ export function PostList({ path, refreshKey = 0 }: { path: string; refreshKey?: 
   }
 
   async function refreshAfterEdit(updatedPost: Post) {
-    const version = requestVersion.current;
-    setItems((current) => current.map((post) => post.id === updatedPost.id ? updatedPost : post));
+    const version = ++requestVersion.current;
+    setIsLoadingMore(true);
+    setItems((current) => current.flatMap((post) => {
+      if (post.id !== updatedPost.id) return [post];
+      if (post.share && updatedPost.visibility !== "public") return [];
+      return [{ ...updatedPost, ...(post.share ? { share: post.share } : {}) }];
+    }));
     try {
       const page = await apiFetch<PostListResponse>(path);
       if (requestVersion.current !== version) return;
-      setItems((current) => {
-        const refreshedById = new Map(page.items.map((post) => [post.id, post]));
-        return current.map((post) => refreshedById.get(post.id) ?? post);
-      });
+      setItems(page.items);
+      setNextCursor(page.nextCursor);
       setNextPageError(null);
     } catch (requestError: unknown) {
       if (requestVersion.current !== version) return;
       setNextPageError(requestError instanceof ApiError ? requestError.message : "We couldn’t refresh posts.");
+    } finally {
+      if (requestVersion.current === version) setIsLoadingMore(false);
+    }
+  }
+
+  async function refreshAfterShare() {
+    const version = ++requestVersion.current;
+    setIsLoadingMore(true);
+    try {
+      const page = await apiFetch<PostListResponse>(path);
+      if (requestVersion.current !== version) return;
+      setItems(page.items);
+      setNextCursor(page.nextCursor);
+      setNextPageError(null);
+    } catch (requestError: unknown) {
+      if (requestVersion.current !== version) return;
+      setNextPageError(requestError instanceof ApiError ? requestError.message : "We couldn’t refresh posts.");
+    } finally {
+      if (requestVersion.current === version) setIsLoadingMore(false);
     }
   }
 
@@ -617,7 +724,14 @@ export function PostList({ path, refreshKey = 0 }: { path: string; refreshKey?: 
 
   return (
     <div className="space-y-4">
-      {items.map((post) => <PostCard key={post.id} post={post} onUpdated={(updated) => void refreshAfterEdit(updated)} />)}
+      {items.map((post) => (
+        <PostCard
+          key={post.share?.id ?? post.id}
+          post={post}
+          onUpdated={(updated) => void refreshAfterEdit(updated)}
+          onShared={() => void refreshAfterShare()}
+        />
+      ))}
       {nextPageError && <RequestErrorState title="Unable to load more posts" message={nextPageError} />}
       {nextCursor && (
         <div className="flex justify-center">

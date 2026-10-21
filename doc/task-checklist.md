@@ -178,10 +178,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M5-J3 — Jan: Shares
 
-- [ ] **M5-J3.1** Define share records with author, source post, audience, and timestamp.
-- [ ] **M5-J3.2** Add a share route that accepts only a currently Public source.
-- [ ] **M5-J3.3** Include share cards in feed/profile reads only when both share audience and source Public status pass.
-- [ ] **M5-J3.4** Add the share UI and check source-audience changes do not leak content.
+- [x] **M5-J3.1** Define share records with author, source post, audience, and timestamp. *(Added the MongoDB `ShareDocument`, shared response types, and author/source/audience indexes.)*
+- [x] **M5-J3.2** Add a share route that accepts only a currently Public source. *(The authenticated, Origin-checked route validates the share audience, derives the author from the session, and returns 404 for a source that is not Public.)*
+- [x] **M5-J3.3** Include share cards in feed/profile reads only when both share audience and source Public status pass. *(Feed and profile timeline merge shares with posts using stable newest-first cursors; tests cover author, friend, and outsider visibility and exclude shares whose source is Friends or Only me.)*
+- [x] **M5-J3.4** Add the share UI and check source-audience changes do not leak content. *(Post cards can share a Public post with a selected audience and show success/failure feedback. Integration tests confirm existing share cards disappear from feed and profile reads immediately after the source changes away from Public.)*
 
 ### M5-J4 — Jan: Interaction authorization regression
 

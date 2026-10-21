@@ -97,6 +97,8 @@ export interface Post extends PostLikeState {
   photoUrl?: string;
   visibility: Visibility;
   createdAt: string;
+  /** Present on feed/timeline items that wrap this post in a share card. */
+  share?: Share;
 }
 
 export type PostListResponse = Page<Post>;
@@ -121,6 +123,23 @@ export interface CreatePostResponse {
 /** Audience changes are accepted only from the post author. */
 export interface UpdatePostRequest {
   visibility: Visibility;
+}
+
+/** The public share context attached to a source post in a feed. */
+export interface Share {
+  id: string;
+  author: User;
+  sourcePostId: string;
+  visibility: Visibility;
+  createdAt: string;
+}
+
+export interface CreateShareRequest {
+  visibility: Visibility;
+}
+
+export interface CreateShareResponse {
+  share: Share;
 }
 
 /** Public comment data attached to a post; private account fields are excluded. */

@@ -21,6 +21,8 @@ MongoDB collections: `users`, `sessions`, `friendRequests`, `friendships`, `post
 
 Comment records contain `postId`, `authorId`, trimmed text (1–2,000 characters), and `createdAt`. The `{ postId: 1, createdAt: -1, _id: -1 }` index supports stable newest-first cursor pagination.
 
+Share records contain `authorId`, `sourcePostId`, their own `visibility`, and `createdAt`; share feed items carry this context around the source post. Feed and profile-timeline pagination merge posts and shares newest first with an opaque cursor. A share is returned only while its own audience permits the viewer and the source post remains Public.
+
 ## Shared HTTP rules
 
 - All routes use `/api`. JSON is the default; image uploads use `multipart/form-data`. Dates are UTC ISO 8601 strings; IDs are opaque strings. Errors use `{ "error": { "code": string, "message": string } }` and appropriate HTTP status (`400`, `401`, `403`, `404`, `409`, `413`, `429`, `500`).
@@ -49,8 +51,8 @@ Comment records contain `postId`, `authorId`, trimmed text (1–2,000 characters
 | `PATCH /api/friend-requests/:requestId` | `{ action: "accept" | "decline" }` -> `{ request: FriendRequest }` | Recipient only; only pending requests can be resolved. The pending-to-resolved transition is conditional, so concurrent responses have one winner; acceptance creates one canonical mutual-friendship record. |
 | `GET /api/friends?cursor=&limit=` | `{ items: User[], nextCursor }`, newest friendships first; defaults to 20 and caps at 50 | Current user; returns public profile fields only. |
 | `DELETE /api/friends/:userId` | `204` | Either friend may remove the canonical friendship record; repeated removal is safe. |
-| `GET /api/posts` | Paged feed of visible posts and shares, including `likeCount` and `isLikedByViewer` for each post | Signed in; filter in the database and recheck before returning. |
-| `GET /api/users/:userId/posts` | Paged visible posts and shares by user, including `likeCount` and `isLikedByViewer` | Signed in; apply current audience. |
+| `GET /api/posts` | Paged feed of visible posts and shares, including `likeCount` and `isLikedByViewer` for each source post | Signed in; merge newest-first post and share records; each share must pass its audience check and the source must still be Public. |
+| `GET /api/users/:userId/posts` | Paged visible posts and shares by user, including `likeCount` and `isLikedByViewer` | Signed in; apply current post and share audiences and require Public source posts for shares. |
 | `GET /api/posts/:postId` | Post detail with Like count and viewer state | Viewer must pass current audience check. |
 | `POST /api/posts` | JSON `{ text, visibility }` or multipart `text`, `visibility`, and optional `file` -> post | Signed in; derives the author from the current session. Multipart photos are inspected and uploaded as authenticated assets before inserting the post; failed inserts clean up the uploaded asset. |
 | `PATCH /api/posts/:postId` | `{ visibility }` -> post | Author only; requires an allowed Origin and persists the new audience. Feed, direct reads, and photo reads apply it immediately. |
@@ -59,7 +61,7 @@ Comment records contain `postId`, `authorId`, trimmed text (1–2,000 characters
 | `PUT /api/posts/:postId/like`, `DELETE /api/posts/:postId/like` | `{ likeCount, isLikedByViewer }` | Signed in; exact allowed Origin and current post visibility required. A unique user/post index makes repeated Like requests idempotent; repeated unlike is also safe. |
 | `GET /api/posts/:postId/comments?cursor=&limit=` | `{ items: Comment[], nextCursor }`, newest first; defaults to 20 and caps at 50 | Signed in; rechecks the post's current audience and returns public author fields only. |
 | `POST /api/posts/:postId/comments` | `{ text }` -> `{ comment }`; trimmed text must contain 1–2,000 characters | Signed in; exact allowed Origin and current post audience required. The author comes from the session. |
-| `POST /api/posts/:postId/shares` | `{ visibility }` -> share | Source post must currently be Public; share author is current user. |
+| `POST /api/posts/:postId/shares` | `{ visibility }` -> `{ share }` with `201` | Signed in with an allowed Origin; source post must currently be Public, and share author is derived from the session. |
 | `GET /api/chats/:friendId/messages` | Paged message history | Current accepted friends only. |
 | `GET /api/health` | `{ status: "ok" }` | Public; no secrets or account data. |
 

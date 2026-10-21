@@ -7,11 +7,12 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type CommentDocument, type LikeDocument, type PostDocument, type PostVisibility, type UserDocument } from "../db/documents";
+import { collectionNames, type CommentDocument, type LikeDocument, type PostDocument, type PostVisibility, type ShareDocument, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { cloudinaryPostPhotoStorage, validatePostPhoto, type PostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
-import { canViewPost, decodePostCursor, listVisiblePostDocuments } from "../post-access";
+import { canViewPost, decodePostCursor } from "../post-access";
+import { listVisibleFeedRecords, type FeedRecord } from "../feed-access";
 
 const postPageQuerySchema = z.object({
   cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
@@ -36,6 +37,10 @@ const createCommentSchema = z.object({
   text: z.string().trim().min(1).max(2_000),
 }).strict();
 
+const createShareSchema = z.object({
+  visibility: z.enum(["public", "friends", "onlyMe"]),
+}).strict();
+
 interface PostResponseItem {
   id: string;
   author: ReturnType<typeof toPublicUserResponse>;
@@ -45,6 +50,15 @@ interface PostResponseItem {
   createdAt: string;
   likeCount: number;
   isLikedByViewer: boolean;
+  share?: ShareResponseItem;
+}
+
+interface ShareResponseItem {
+  id: string;
+  author: ReturnType<typeof toPublicUserResponse>;
+  sourcePostId: string;
+  visibility: PostVisibility;
+  createdAt: string;
 }
 
 interface LikeSummary {
@@ -65,6 +79,10 @@ interface PostListResponse {
 
 interface PostResponse {
   post: PostResponseItem;
+}
+
+interface CreateShareResponse {
+  share: ShareResponseItem;
 }
 
 interface CommentResponseItem {
@@ -261,6 +279,62 @@ async function toPostResponses(
       likesByPostId.get(post._id.toHexString()) ?? { likeCount: 0, isLikedByViewer: false },
       cloudName,
     )] : [];
+  });
+}
+
+function toShareResponse(share: ShareDocument, author: UserDocument, cloudName?: string): ShareResponseItem {
+  return {
+    id: share._id.toHexString(),
+    author: toPublicUserResponse(author, cloudName),
+    sourcePostId: share.sourcePostId.toHexString(),
+    visibility: share.visibility,
+    createdAt: share.createdAt.toISOString(),
+  };
+}
+
+async function toFeedResponses(
+  database: Db,
+  records: FeedRecord[],
+  viewerId: ObjectId,
+  cloudName?: string,
+): Promise<PostResponseItem[]> {
+  if (records.length === 0) return [];
+  const posts = records.map((record) => record.kind === "post" ? record.post : record.sourcePost);
+  const shares = records.flatMap((record) => record.kind === "share" ? [record.share] : []);
+  const [postResponses, shareAuthors] = await Promise.all([
+    toPostResponses(database, posts, viewerId, cloudName),
+    shares.length > 0
+      ? database
+        .collection<UserDocument>(collectionNames.users)
+        .find({ _id: { $in: [...new Map(shares.map((share) => [
+          share.authorId.toHexString(),
+          share.authorId,
+        ])).values()] } }, {
+          projection: {
+            _id: 1,
+            displayName: 1,
+            bio: 1,
+            info: 1,
+            avatarId: 1,
+            coverId: 1,
+            createdAt: 1,
+          },
+        })
+        .toArray()
+      : Promise.resolve([] as UserDocument[]),
+  ]);
+  const postResponsesById = new Map(postResponses.map((post) => [post.id, post]));
+  const shareAuthorsById = new Map(shareAuthors.map((author) => [author._id.toHexString(), author]));
+
+  return records.flatMap((record) => {
+    const sourcePost = record.kind === "post" ? record.post : record.sourcePost;
+    const postResponse = postResponsesById.get(sourcePost._id.toHexString());
+    if (!postResponse) return [];
+    if (record.kind === "post") return [postResponse];
+    const shareAuthor = shareAuthorsById.get(record.share.authorId.toHexString());
+    return shareAuthor
+      ? [{ ...postResponse, share: toShareResponse(record.share, shareAuthor, cloudName) }]
+      : [];
   });
 }
 
@@ -553,6 +627,40 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
   );
 
   router.post(
+    "/:postId/shares",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const sourcePost = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+      if (!sourcePost || sourcePost.visibility !== "public") {
+        throw new HttpError(404, "not_found", "Post was not found.");
+      }
+
+      const parsed = createShareSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new HttpError(400, "validation_error", "Share audience is invalid.");
+      }
+
+      const share: ShareDocument = {
+        _id: new ObjectId(),
+        authorId: session.user._id,
+        sourcePostId: sourcePost._id,
+        visibility: parsed.data.visibility,
+        createdAt: new Date(),
+      };
+      await database.collection<ShareDocument>(collectionNames.shares).insertOne(share);
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(201).json({
+        share: toShareResponse(share, session.user, dependencies.getCloudinaryCloudName()),
+      } satisfies CreateShareResponse);
+    },
+  );
+
+  router.post(
     "/",
     requireClientOrigin(dependencies.getAllowedOrigins),
     authenticated,
@@ -607,8 +715,8 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     const query = parsePageQuery(request.query as Record<string, unknown>);
     const database = dependencies.getDatabase();
     const viewerId = getAuthenticatedSession(response).user._id;
-    const page = await listVisiblePostDocuments(database, viewerId, query);
-    const items = await toPostResponses(database, page.items, viewerId, dependencies.getCloudinaryCloudName());
+    const page = await listVisibleFeedRecords(database, viewerId, query);
+    const items = await toFeedResponses(database, page.items, viewerId, dependencies.getCloudinaryCloudName());
 
     response.setHeader("Cache-Control", "private, no-store");
     response.json(toPostListResponse(items, page.nextCursor));
@@ -653,8 +761,8 @@ export function createUserPostsRouter(overrides: Partial<PostsRouterDependencies
 
     const query = parsePageQuery(request.query as Record<string, unknown>);
     const viewerId = getAuthenticatedSession(response).user._id;
-    const page = await listVisiblePostDocuments(database, viewerId, { ...query, authorId });
-    const items = await toPostResponses(database, page.items, viewerId, dependencies.getCloudinaryCloudName());
+    const page = await listVisibleFeedRecords(database, viewerId, { ...query, authorId });
+    const items = await toFeedResponses(database, page.items, viewerId, dependencies.getCloudinaryCloudName());
 
     response.setHeader("Cache-Control", "private, no-store");
     response.json(toPostListResponse(items, page.nextCursor));

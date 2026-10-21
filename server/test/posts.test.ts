@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { ObjectId, type Db, type Document } from "mongodb";
 import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
-import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type PostDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
+import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type PostDocument, type SessionDocument, type ShareDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
 import type { PostPhotoStorage } from "../src/media/post-photo";
@@ -17,6 +17,7 @@ interface PostTestData {
   friendships: FriendshipDocument[];
   likes: LikeDocument[];
   comments: CommentDocument[];
+  shares: ShareDocument[];
   posts: PostDocument[];
   failPostInsert?: boolean;
   failPostUpdate?: boolean;
@@ -83,6 +84,29 @@ function matchesComment(comment: CommentDocument, filter: MongoFilter): boolean 
     if (field === "authorId") return matchesObjectId(comment.authorId, expected);
     if (field === "_id") return matchesObjectId(comment._id, expected);
     if (field === "createdAt") return matchesDate(comment.createdAt, expected);
+    return false;
+  });
+}
+
+function matchesShare(share: ShareDocument, filter: MongoFilter): boolean {
+  if ("$and" in filter) {
+    return (filter.$and as MongoFilter[]).every((condition) => matchesShare(share, condition));
+  }
+  if ("$or" in filter) {
+    return (filter.$or as MongoFilter[]).some((condition) => matchesShare(share, condition));
+  }
+
+  return Object.entries(filter).every(([field, expected]) => {
+    if (field === "authorId") return matchesObjectId(share.authorId, expected);
+    if (field === "sourcePostId") return matchesObjectId(share.sourcePostId, expected);
+    if (field === "_id") return matchesObjectId(share._id, expected);
+    if (field === "createdAt") return matchesDate(share.createdAt, expected);
+    if (field === "visibility") {
+      if (typeof expected === "object" && expected !== null && "$in" in expected) {
+        return (expected.$in as ShareDocument["visibility"][]).includes(share.visibility);
+      }
+      return share.visibility === expected;
+    }
     return false;
   });
 }
@@ -199,6 +223,34 @@ function createDatabase(data: PostTestData): Db {
         };
       }
 
+      if (name === collectionNames.shares) {
+        return {
+          insertOne: async (share: ShareDocument) => {
+            data.shares.push(share);
+            return { acknowledged: true, insertedId: share._id };
+          },
+          find: (filter: MongoFilter) => {
+            let result = data.shares.filter((share) => matchesShare(share, filter));
+            let maximum = Number.POSITIVE_INFINITY;
+            const cursor = {
+              sort: () => {
+                result = result.toSorted((left, right) =>
+                  right.createdAt.getTime() - left.createdAt.getTime() ||
+                  right._id.toHexString().localeCompare(left._id.toHexString()),
+                );
+                return cursor;
+              },
+              limit: (limit: number) => {
+                maximum = limit;
+                return cursor;
+              },
+              toArray: async () => result.slice(0, maximum),
+            };
+            return cursor;
+          },
+        };
+      }
+
       if (name === collectionNames.posts) {
         return {
           insertOne: async (post: PostDocument) => {
@@ -282,6 +334,16 @@ function makePost(
   };
 }
 
+function makeShare(
+  id: string,
+  authorId: ObjectId,
+  sourcePostId: ObjectId,
+  visibility: ShareDocument["visibility"],
+  createdAt: Date,
+): ShareDocument {
+  return { _id: new ObjectId(id), authorId, sourcePostId, visibility, createdAt };
+}
+
 function sessionFor(user: UserDocument, token: string): SessionDocument {
   const createdAt = new Date();
   return {
@@ -352,6 +414,7 @@ function matrixFixture(): { data: PostTestData; tokens: Record<"author" | "frien
     }],
     likes: [],
     comments: [],
+    shares: [],
     posts: [
       makePost(ids.onlyMe, author._id, "onlyMe", new Date(now + 3)),
       makePost(ids.friends, author._id, "friends", new Date(now + 2)),
@@ -410,6 +473,242 @@ test("feed, author timeline, and direct URLs enforce every audience for author, 
     .set("Cookie", cookie(tokens.outsider));
   assert.equal(hidden.status, nonexistent.status);
   assert.deepEqual(hidden.body, nonexistent.body);
+});
+
+test("share creation accepts only a Public source and returns its public author context", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const sharesPath = `/api/posts/${ids.public}/shares`;
+
+  await request(app)
+    .post(sharesPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.friend))
+    .send({ visibility: "public" })
+    .expect(201)
+    .then((response) => {
+      assert.equal(response.body.share.author.id, ids.friend);
+      assert.equal(response.body.share.sourcePostId, ids.public);
+      assert.equal(response.body.share.visibility, "public");
+      assert.equal("email" in response.body.share.author, false);
+      assert.equal("passwordHash" in response.body.share.author, false);
+      assert.equal(response.headers["cache-control"], "private, no-store");
+    });
+  assert.equal(data.shares.length, 1);
+  assert.equal(data.shares[0]!.authorId.toHexString(), ids.friend);
+  assert.equal(data.shares[0]!.sourcePostId.toHexString(), ids.public);
+
+  for (const sourceId of [ids.friends, ids.onlyMe]) {
+    await request(app)
+      .post(`/api/posts/${sourceId}/shares`)
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", cookie(tokens.outsider))
+      .send({ visibility: "public" })
+      .expect(404);
+  }
+  await request(app)
+    .post(sharesPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.friend))
+    .send({ visibility: "invalid" })
+    .expect(400);
+  await request(app)
+    .post(sharesPath)
+    .set("Cookie", cookie(tokens.friend))
+    .send({ visibility: "public" })
+    .expect(403);
+  await request(app)
+    .post(sharesPath)
+    .set("Origin", "http://localhost:5173")
+    .send({ visibility: "public" })
+    .expect(401);
+  assert.equal(data.shares.length, 1, "rejected requests must not create share records");
+});
+
+test("feed and profile timelines require both visible share audience and a currently Public source", async () => {
+  const { data, tokens } = matrixFixture();
+  const publicSource = new ObjectId(ids.public);
+  const friendsSource = new ObjectId(ids.friends);
+  const authorId = new ObjectId(ids.author);
+  const friendId = new ObjectId(ids.friend);
+  const now = new Date("2026-10-10T12:00:00.000Z");
+  data.shares = [
+    makeShare("000000000000000000000021", friendId, publicSource, "public", new Date(now.getTime() + 5)),
+    makeShare("000000000000000000000022", friendId, publicSource, "friends", new Date(now.getTime() + 4)),
+    makeShare("000000000000000000000023", friendId, publicSource, "onlyMe", new Date(now.getTime() + 3)),
+    makeShare("000000000000000000000024", authorId, publicSource, "onlyMe", new Date(now.getTime() + 2)),
+    makeShare("000000000000000000000025", friendId, friendsSource, "public", new Date(now.getTime() + 1)),
+  ];
+  const app = createApp(data);
+  const shareIds = async (path: string, viewer: "author" | "friend" | "outsider") => {
+    const page = await request(app).get(path).set("Cookie", cookie(tokens[viewer])).expect(200);
+    return page.body.items.flatMap((item: { share?: { id: string } }) => item.share ? [item.share.id] : []);
+  };
+
+  assert.deepEqual(await shareIds("/api/posts", "author"), [
+    "000000000000000000000021",
+    "000000000000000000000022",
+    "000000000000000000000024",
+  ]);
+  assert.deepEqual(await shareIds("/api/posts", "friend"), [
+    "000000000000000000000021",
+    "000000000000000000000022",
+    "000000000000000000000023",
+  ]);
+  assert.deepEqual(await shareIds("/api/posts", "outsider"), [
+    "000000000000000000000021",
+  ]);
+
+  assert.deepEqual(await shareIds(`/api/users/${ids.friend}/posts`, "friend"), [
+    "000000000000000000000021",
+    "000000000000000000000022",
+    "000000000000000000000023",
+  ]);
+  assert.deepEqual(await shareIds(`/api/users/${ids.friend}/posts`, "author"), [
+    "000000000000000000000021",
+    "000000000000000000000022",
+  ]);
+  assert.deepEqual(await shareIds(`/api/users/${ids.friend}/posts`, "outsider"), [
+    "000000000000000000000021",
+  ]);
+
+  const outsiderFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  const outsiderShare = outsiderFeed.body.items.find((item: { share?: { id: string } }) =>
+    item.share?.id === "000000000000000000000021");
+  assert.equal(outsiderShare.text, "public post", "a visible share card contains the public source post");
+  assert.equal(outsiderFeed.body.items.some((item: { share?: { id: string } }) =>
+    item.share?.id === "000000000000000000000025"), false,
+  "a Public share must not expose a source whose current audience is Friends");
+});
+
+test("mixed post and share feed pages stay newest-first without duplicates", async () => {
+  const { data, tokens } = matrixFixture();
+  const authorId = new ObjectId(ids.author);
+  const friendId = new ObjectId(ids.friend);
+  const base = Date.UTC(2026, 9, 10, 12, 0, 0);
+  data.posts = [
+    makePost("000000000000000000000401", authorId, "public", new Date(base + 10_000)),
+    makePost("000000000000000000000402", authorId, "public", new Date(base + 8_000)),
+    makePost("000000000000000000000403", authorId, "public", new Date(base + 6_000)),
+  ];
+  data.shares = [
+    makeShare("000000000000000000000404", friendId, data.posts[0]!._id, "public", new Date(base + 9_000)),
+    makeShare("000000000000000000000405", friendId, data.posts[0]!._id, "public", new Date(base + 7_000)),
+    makeShare("000000000000000000000406", friendId, data.posts[0]!._id, "public", new Date(base + 5_000)),
+  ];
+  const app = createApp(data);
+  const collected: string[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await request(app)
+      .get("/api/posts")
+      .query({ limit: 2, ...(cursor ? { cursor } : {}) })
+      .set("Cookie", cookie(tokens.outsider))
+      .expect(200);
+    collected.push(...page.body.items.map((item: { id: string; share?: { id: string } }) =>
+      item.share?.id ?? item.id));
+    cursor = page.body.nextCursor;
+  } while (cursor);
+
+  assert.deepEqual(collected, [
+    "000000000000000000000401",
+    "000000000000000000000404",
+    "000000000000000000000402",
+    "000000000000000000000405",
+    "000000000000000000000403",
+    "000000000000000000000406",
+  ]);
+  assert.equal(new Set(collected).size, 6);
+});
+
+test("feed cursor keeps a share after an equally dated post with the same record ID", async () => {
+  const { data, tokens } = matrixFixture();
+  const sharedId = "000000000000000000000501";
+  const authorId = new ObjectId(ids.author);
+  const friendId = new ObjectId(ids.friend);
+  const createdAt = new Date("2026-10-10T12:00:00.000Z");
+  data.posts = [makePost(sharedId, authorId, "public", createdAt)];
+  data.shares = [makeShare(sharedId, friendId, data.posts[0]!._id, "public", createdAt)];
+  const app = createApp(data);
+
+  const first = await request(app)
+    .get("/api/posts?limit=1")
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(first.body.items[0].share, undefined);
+  assert.ok(first.body.nextCursor);
+
+  const second = await request(app)
+    .get("/api/posts")
+    .query({ limit: 1, cursor: first.body.nextCursor })
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(second.body.items[0].share.id, sharedId);
+  assert.equal(second.body.nextCursor, null);
+});
+
+test("existing share cards stop exposing source content as soon as its audience is no longer Public", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const shareResponse = await request(app)
+    .post(`/api/posts/${ids.public}/shares`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ visibility: "public" })
+    .expect(201);
+  const shareId = shareResponse.body.share.id as string;
+
+  const assertShareVisibility = async (expectedViewers: Array<"author" | "friend" | "outsider">) => {
+    for (const viewer of ["author", "friend", "outsider"] as const) {
+      const feed = await request(app).get("/api/posts").set("Cookie", cookie(tokens[viewer])).expect(200);
+      assert.equal(
+        feed.body.items.some((item: { share?: { id: string } }) => item.share?.id === shareId),
+        expectedViewers.includes(viewer),
+        `${viewer} share visibility`,
+      );
+    }
+  };
+
+  await assertShareVisibility(["author", "friend", "outsider"]);
+  await request(app)
+    .patch(`/api/posts/${ids.public}`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "friends" })
+    .expect(200);
+  await assertShareVisibility([]);
+
+  const outsiderFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  assert.equal(outsiderFeed.body.items.some((item: { id: string }) => item.id === ids.public), false,
+    "source text must not remain in a share wrapper or regular feed item for an unauthorized viewer");
+  await request(app)
+    .post(`/api/posts/${ids.public}/shares`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.friend))
+    .send({ visibility: "public" })
+    .expect(404);
+
+  await request(app)
+    .patch(`/api/posts/${ids.public}`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "public" })
+    .expect(200);
+  await assertShareVisibility(["author", "friend", "outsider"]);
+  await request(app)
+    .patch(`/api/posts/${ids.public}`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "onlyMe" })
+    .expect(200);
+  await assertShareVisibility([]);
+
+  const sharerTimeline = await request(app)
+    .get(`/api/users/${ids.outsider}/posts`)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(sharerTimeline.body.items.some((item: { share?: { id: string } }) => item.share?.id === shareId), false,
+    "the sharer's own profile must also hide a share when its source is not Public");
 });
 
 test("visible post responses include the Like count and viewer-specific Like state", async () => {

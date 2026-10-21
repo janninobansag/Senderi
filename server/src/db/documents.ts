@@ -83,6 +83,15 @@ export interface CommentDocument {
   createdAt: Date;
 }
 
+/** A share points to a source post and has its own author and audience. */
+export interface ShareDocument {
+  _id: ObjectId;
+  authorId: ObjectId;
+  sourcePostId: ObjectId;
+  visibility: PostVisibility;
+  createdAt: Date;
+}
+
 export interface MessageDocument {
   _id: ObjectId;
   senderId: ObjectId;
