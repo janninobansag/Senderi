@@ -23,6 +23,8 @@ Comment records contain `postId`, `authorId`, trimmed text (1–2,000 characters
 
 Share records contain `authorId`, `sourcePostId`, their own `visibility`, and `createdAt`; share feed items carry this context around the source post. Feed and profile-timeline pagination merge posts and shares newest first with an opaque cursor. A share is returned only while its own audience permits the viewer and the source post remains Public.
 
+Message records contain `senderId`, `recipientId`, `text`, `createdAt`, and a sender-generated `clientId`; the unique `{ senderId: 1, clientId: 1 }` index supports send retries. The `{ senderId: 1, recipientId: 1, createdAt: -1, _id: -1 }` index supports conversation history in both directions. History uses stable newest-first cursor pages, ordered by `createdAt` and then `_id`; each request rechecks the current accepted friendship. REST message responses omit the retry-only `clientId`.
+
 ## Shared HTTP rules
 
 - All routes use `/api`. JSON is the default; image uploads use `multipart/form-data`. Dates are UTC ISO 8601 strings; IDs are opaque strings. Errors use `{ "error": { "code": string, "message": string } }` and appropriate HTTP status (`400`, `401`, `403`, `404`, `409`, `413`, `429`, `500`).
@@ -62,7 +64,7 @@ Share records contain `authorId`, `sourcePostId`, their own `visibility`, and `c
 | `GET /api/posts/:postId/comments?cursor=&limit=` | `{ items: Comment[], nextCursor }`, newest first; defaults to 20 and caps at 50 | Signed in; rechecks the post's current audience and returns public author fields only. |
 | `POST /api/posts/:postId/comments` | `{ text }` -> `{ comment }`; trimmed text must contain 1–2,000 characters | Signed in; exact allowed Origin and current post audience required. The author comes from the session. |
 | `POST /api/posts/:postId/shares` | `{ visibility }` -> `{ share }` with `201` | Signed in with an allowed Origin; source post must currently be Public, and share author is derived from the session. |
-| `GET /api/chats/:friendId/messages` | Paged message history | Current accepted friends only. |
+| `GET /api/chats/:friendId/messages?cursor=&limit=` | `{ items: Message[], nextCursor }`, newest first; defaults to 20 and caps at 50 | Signed in; the current accepted friendship is checked for every request. Invalid IDs, cursors, or limits return `400`; non-friends receive `404`. |
 | `GET /api/health` | `{ status: "ok" }` | Public; no secrets or account data. |
 
 Profile and cover photos are ordinary profile media; post photos use authenticated Cloudinary delivery because audience can change. Profile image delivery URLs use the configured Cloudinary cloud name with optimized `f_auto`/`q_auto` transformations. The client shows a default avatar or cover if an image ID or usable URL is absent. Uploads accept JPEG, PNG, or WebP up to 5 MB after server-side file inspection. Delete replaced assets and abandoned uploads. Cloudinary documents that default `upload` delivery is public, whereas `authenticated` protects originals and derivatives: [Cloudinary access control](https://cloudinary.com/documentation/control_access_to_media).

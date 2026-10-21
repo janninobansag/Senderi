@@ -96,6 +96,11 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "messages_sender_client_unique", unique: true },
   },
   {
+    collection: collectionNames.messages,
+    keys: { senderId: 1, recipientId: 1, createdAt: -1, _id: -1 },
+    options: { name: "messages_conversation_newest_first" },
+  },
+  {
     collection: collectionNames.sessions,
     keys: { expiresAt: 1 },
     options: { name: "sessions_expires_at_ttl", expireAfterSeconds: 0 },
