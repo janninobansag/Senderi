@@ -9,7 +9,7 @@ import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
 import { collectionNames, type CommentDocument, type LikeDocument, type PostDocument, type PostVisibility, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
-import { cloudinaryPostPhotoStorage, validatePostPhoto, type PostPhotoStorage } from "../media/post-photo";
+import { cloudinaryPostPhotoStorage, optimizePostPhoto, type PostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
 import { canViewPost, decodePostCursor } from "../post-access";
 import { listVisibleFeedRecords, type FeedRecord } from "../feed-access";
@@ -445,10 +445,10 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const post = response.locals.postPhotoPost as PostDocument;
       const file = request.file;
       if (!file) throw new HttpError(400, "missing_file", "Choose one photo to upload.");
-      await validatePostPhoto(file);
+      const optimizedPhoto = await optimizePostPhoto(file);
 
       const assetName = `${post._id.toHexString()}-${randomUUID()}`;
-      const uploaded = await dependencies.photoStorage.upload(file.buffer, assetName);
+      const uploaded = await dependencies.photoStorage.upload(optimizedPhoto, assetName);
       const database = dependencies.getDatabase();
       const previousAssetId = post.photoAssetId;
       let updated: PostDocument | null;
@@ -919,7 +919,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         throw new HttpError(400, "validation_error", "Post text or audience is invalid.");
       }
 
-      if (request.file) await validatePostPhoto(request.file);
+      const optimizedPhoto = request.file ? await optimizePostPhoto(request.file) : undefined;
 
       const session = getAuthenticatedSession(response);
       const database = dependencies.getDatabase();
@@ -934,9 +934,9 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       };
       let uploadedAssetId: string | undefined;
 
-      if (request.file) {
+      if (optimizedPhoto) {
         const assetName = `${post._id.toHexString()}-${randomUUID()}`;
-        const uploaded = await dependencies.photoStorage.upload(request.file.buffer, assetName);
+        const uploaded = await dependencies.photoStorage.upload(optimizedPhoto, assetName);
         uploadedAssetId = uploaded.assetId;
         post.photoAssetId = uploaded.assetId;
       }

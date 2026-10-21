@@ -2,10 +2,13 @@ import { v2 as cloudinary } from "cloudinary";
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { fileTypeFromBuffer } from "file-type";
+import sharp from "sharp";
 import { HttpError } from "../errors/http-error";
 
 export const POST_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
 export const POST_PHOTO_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+export const POST_PHOTO_MAX_DIMENSION = 2048;
+const POST_PHOTO_MAX_INPUT_PIXELS = 60_000_000;
 
 export interface UploadedPostPhoto {
   /** Cloudinary public ID, used only by the server to retrieve the authenticated asset. */
@@ -24,7 +27,7 @@ export interface PostPhotoStorage {
   download(assetId: string): Promise<DownloadedPostPhoto>;
 }
 
-export async function validatePostPhoto(file: { buffer: Buffer; size: number }): Promise<void> {
+export async function optimizePostPhoto(file: { buffer: Buffer; size: number }): Promise<Buffer> {
   if (file.size > POST_PHOTO_MAX_BYTES) {
     throw new HttpError(413, "file_too_large", "Post photos must be 5 MB or smaller.");
   }
@@ -32,6 +35,29 @@ export async function validatePostPhoto(file: { buffer: Buffer; size: number }):
   const detected = await fileTypeFromBuffer(file.buffer);
   if (!detected || !POST_PHOTO_MIME_TYPES.includes(detected.mime as (typeof POST_PHOTO_MIME_TYPES)[number])) {
     throw new HttpError(400, "invalid_file_type", "Post photos must be JPEG, PNG, or WebP files.");
+  }
+
+  try {
+    const metadata = await sharp(file.buffer, { limitInputPixels: POST_PHOTO_MAX_INPUT_PIXELS }).metadata();
+
+    // Keep animated WebP files intact; Sharp would otherwise process only their first frame.
+    if (metadata.pages && metadata.pages > 1) return file.buffer;
+
+    const optimized = await sharp(file.buffer, { limitInputPixels: POST_PHOTO_MAX_INPUT_PIXELS })
+      .rotate()
+      .resize({
+        width: POST_PHOTO_MAX_DIMENSION,
+        height: POST_PHOTO_MAX_DIMENSION,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .webp({ quality: 82, effort: 4 })
+      .toBuffer();
+
+    // Avoid increasing storage for already-small or highly compressed images.
+    return optimized.length < file.buffer.length ? optimized : file.buffer;
+  } catch {
+    throw new HttpError(400, "invalid_file_type", "Post photos must be valid JPEG, PNG, or WebP images.");
   }
 }
 
