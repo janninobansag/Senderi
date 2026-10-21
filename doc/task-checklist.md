@@ -148,10 +148,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M4-L3 — Laica: Protected post photos
 
-- [ ] **M4-L3.1** Accept one JPEG/PNG/WebP photo up to 5 MB after server-side inspection.
-- [ ] **M4-L3.2** Upload as a Cloudinary `authenticated` asset and save only its asset ID in MongoDB.
-- [ ] **M4-L3.3** Stream photo bytes from the API only after the same current post-view check; disable shared caching.
-- [ ] **M4-L3.4** Clean up failed uploads and check blocked direct photo requests and restart persistence.
+- [x] **M4-L3.1** Accept one JPEG/PNG/WebP photo up to 5 MB after server-side inspection. *(The owner-only multipart endpoint accepts exactly one file, enforces the 5 MB limit in Multer, and checks the file signature with `file-type` before storage.)*
+- [x] **M4-L3.2** Upload as a Cloudinary `authenticated` asset and save only its asset ID in MongoDB. *(Cloudinary upload uses `type: authenticated`; the post stores only `photoAssetId`, and API responses expose only the same-origin protected photo route.)*
+- [x] **M4-L3.3** Stream photo bytes from the API only after the same current post-view check; disable shared caching. *(`GET /api/posts/:postId/photo` reruns `canViewPost` on each request, streams the allowlisted image type, and sets `private, no-store` and `Vary: Cookie`.)*
+- [x] **M4-L3.4** Clean up failed uploads and check blocked direct photo requests and restart persistence. *(Supertest verifies successful upload/replacement, invalid and oversized files, failed-write cleanup, and current-audience denial for direct API photo requests. The MongoDB restart test passed with zero skips and confirmed the stored asset ID and protected API stream after reconnecting; its storage adapter is stubbed, so live Cloudinary provider verification remains for deployment acceptance.)*
 
 ### M4-L4 — Laica: Photo composer and privacy edits
 

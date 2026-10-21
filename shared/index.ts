@@ -88,6 +88,8 @@ export interface Post {
   id: string;
   author: User;
   text?: string;
+  /** Same-origin API route; photo bytes remain protected by the post audience check. */
+  photoUrl?: string;
   visibility: Visibility;
   createdAt: string;
 }

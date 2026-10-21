@@ -60,7 +60,7 @@ export interface PostDocument {
   _id: ObjectId;
   authorId: ObjectId;
   text?: string;
-  /** Cloudinary asset identifier; protected delivery is implemented separately. */
+  /** Cloudinary authenticated asset public ID; never return it to clients. */
   photoAssetId?: string;
   visibility: PostVisibility;
   createdAt: Date;

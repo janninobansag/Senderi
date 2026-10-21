@@ -36,7 +36,7 @@ export const errorHandler: ErrorRequestHandler = (error, _request, response, nex
     response.status(tooLarge ? 413 : 400).json({
       error: {
         code: tooLarge ? "file_too_large" : "invalid_multipart",
-        message: tooLarge ? "Profile images must be 5 MB or smaller." : "Invalid image upload.",
+        message: tooLarge ? "Images must be 5 MB or smaller." : "Invalid image upload.",
       },
     });
     return;
