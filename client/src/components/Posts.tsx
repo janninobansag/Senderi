@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { CreatePostRequest, CreatePostResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, Visibility } from "../../../shared";
+import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, Visibility } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
 import { EmptyState, LoadingState, RequestErrorState } from "./AsyncState";
@@ -15,6 +15,186 @@ const audienceOptions: Array<{ value: Visibility; label: string }> = [
 
 function audienceLabel(visibility: Visibility): string {
   return audienceOptions.find((option) => option.value === visibility)?.label ?? "Friends";
+}
+
+const MAX_COMMENT_LENGTH = 2_000;
+
+function CommentsPanel({ postId }: { postId: string }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
+  const [text, setText] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const commentsPath = `/api/posts/${postId}/comments`;
+
+  async function loadFirstPage() {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const page = await apiFetch<CommentListResponse>(commentsPath);
+      setComments(page.items);
+      setNextCursor(page.nextCursor);
+      setHasLoaded(true);
+    } catch (error: unknown) {
+      setLoadError(error instanceof ApiError ? error.message : "We couldn’t load comments. Try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function loadNextPage() {
+    if (!nextCursor || isLoadingMore) return;
+    setIsLoadingMore(true);
+    setLoadError(null);
+    try {
+      const page = await apiFetch<CommentListResponse>(pageUrl(commentsPath, nextCursor));
+      setComments((current) => [...current, ...page.items]);
+      setNextCursor(page.nextCursor);
+    } catch (error: unknown) {
+      setLoadError(error instanceof ApiError ? error.message : "We couldn’t load more comments. Try again.");
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }
+
+  async function submitComment(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedText = text.trim();
+    if (!trimmedText || isSubmitting) return;
+
+    setIsSubmitting(true);
+    setSubmitError(null);
+    setSubmitMessage(null);
+    try {
+      const body: CreateCommentRequest = { text: trimmedText };
+      const response = await apiFetch<CreateCommentResponse>(commentsPath, { method: "POST", body });
+      setComments((current) => [response.comment, ...current.filter((comment) => comment.id !== response.comment.id)]);
+      setText("");
+      setSubmitMessage("Comment added.");
+      setHasLoaded(true);
+    } catch (error: unknown) {
+      setSubmitError(error instanceof ApiError ? error.message : "We couldn’t add your comment. Try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function toggleComments() {
+    if (isOpen) {
+      setIsOpen(false);
+      return;
+    }
+    setIsOpen(true);
+    if (!hasLoaded && !isLoading) void loadFirstPage();
+  }
+
+  return (
+    <div className="mt-4 border-t border-line pt-4">
+      <button
+        className="button-secondary"
+        type="button"
+        aria-expanded={isOpen}
+        onClick={toggleComments}
+      >
+        {isOpen ? "Hide comments" : comments.length ? `Comments (${comments.length}${nextCursor ? "+" : ""})` : "Comments"}
+      </button>
+      {isOpen && (
+        <section className="mt-4 space-y-4" aria-label="Post comments">
+          {isLoading ? (
+            <p className="text-sm text-muted" role="status">Loading comments…</p>
+          ) : loadError && !hasLoaded ? (
+            <div className="space-y-2">
+              <RequestErrorState title="Unable to load comments" message={loadError} />
+              <button className="button-secondary" type="button" onClick={() => void loadFirstPage()}>Try again</button>
+            </div>
+          ) : (
+            <>
+              {comments.length === 0 ? (
+                <p className="text-sm text-muted">No comments yet. Start the conversation.</p>
+              ) : (
+                <ul className="space-y-3">
+                  {comments.map((comment) => {
+                    const initial = comment.author.displayName.trim().charAt(0).toUpperCase() || "S";
+                    const createdAt = new Date(comment.createdAt);
+                    return (
+                      <li className="flex gap-3 rounded-2xl bg-canvas p-3" key={comment.id}>
+                        <Link
+                          className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-violet/10 text-xs font-bold text-violet"
+                          to={`/profile/${comment.author.id}`}
+                          aria-label={`${comment.author.displayName}’s profile`}
+                        >
+                          {comment.author.avatarUrl
+                            ? <img className="h-full w-full object-cover" src={comment.author.avatarUrl} alt="" />
+                            : initial}
+                        </Link>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                            <Link className="text-xs font-bold text-ink hover:text-violet" to={`/profile/${comment.author.id}`}>
+                              {comment.author.displayName}
+                            </Link>
+                            <time className="text-[11px] text-muted" dateTime={comment.createdAt}>
+                              {Number.isNaN(createdAt.getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
+                                dateStyle: "medium",
+                                timeStyle: "short",
+                              }).format(createdAt)}
+                            </time>
+                          </div>
+                          <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-ink/85">{comment.text}</p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {loadError && <RequestErrorState title="Unable to load more comments" message={loadError} />}
+              {nextCursor && (
+                <button
+                  className="button-secondary w-full"
+                  type="button"
+                  onClick={() => void loadNextPage()}
+                  disabled={isLoadingMore}
+                >
+                  {isLoadingMore ? "Loading more comments…" : loadError ? "Try again" : "Load more comments"}
+                </button>
+              )}
+            </>
+          )}
+          <form className="space-y-2" onSubmit={(event) => void submitComment(event)}>
+            <label className="block">
+              <span className="sr-only">Write a comment</span>
+              <textarea
+                className="min-h-20 w-full resize-y rounded-2xl border border-line bg-canvas px-4 py-3 text-sm leading-6 text-ink outline-none transition placeholder:text-muted focus:border-violet disabled:opacity-60"
+                aria-label="Write a comment"
+                placeholder="Write a comment…"
+                value={text}
+                maxLength={MAX_COMMENT_LENGTH}
+                onChange={(event) => {
+                  setText(event.target.value);
+                  setSubmitError(null);
+                  setSubmitMessage(null);
+                }}
+                disabled={isSubmitting}
+              />
+            </label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-xs text-muted">{text.length}/{MAX_COMMENT_LENGTH}</span>
+              <button className="button-accent" type="submit" disabled={isSubmitting || !text.trim()}>
+                {isSubmitting ? "Posting comment…" : "Comment"}
+              </button>
+            </div>
+            {submitError && <p className="form-error" role="alert">{submitError}</p>}
+            {submitMessage && <p className="form-success" role="status">{submitMessage}</p>}
+          </form>
+        </section>
+      )}
+    </div>
+  );
 }
 
 export function PostComposer({ onCreated }: { onCreated: (post: Post) => void }) {
@@ -340,6 +520,7 @@ function PostCard({ post, onUpdated }: { post: Post; onUpdated: (updated: Post) 
           </p>
         )}
       </div>
+      <CommentsPanel postId={post.id} />
     </article>
   );
 }
