@@ -231,10 +231,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M7-L1 — Laica: Client deployment
 
-- [ ] **M7-L1.1** Deploy the Vite build to Vercel and configure the versioned `/api` rewrite to Render.
-- [ ] **M7-L1.2** Configure the public socket endpoint and verify cookie-based REST through the Vercel origin.
-- [ ] **M7-L1.3** Verify profile and protected post image flows against Cloudinary from the deployed browser.
-- [ ] **M7-L1.4** Check primary screens on mobile and desktop widths and fix blocked interactions.
+- [x] **M7-L1.1** Deploy the Vite build to Vercel and configure the versioned `/api` rewrite to Render.
+- [x] **M7-L1.2** Configure the public socket endpoint and verify cookie-based REST through the Vercel origin.
+- [x] **M7-L1.3** Verify profile and protected post image flows against Cloudinary from the deployed browser.
+- [x] **M7-L1.4** Check primary screens on mobile and desktop widths and fix blocked interactions. *(User confirmed the deployed acceptance checks passed.)*
 
 ### M7-J2 — Jan: Deployed security checks
 
