@@ -41,6 +41,18 @@ export interface FriendshipDocument {
   createdAt: Date;
 }
 
+/** A friend request keeps its direction and a canonical pair for deduplication. */
+export interface FriendRequestDocument {
+  _id: ObjectId;
+  senderId: ObjectId;
+  recipientId: ObjectId;
+  userIdLow: ObjectId;
+  userIdHigh: ObjectId;
+  status: "pending" | "accepted" | "declined";
+  createdAt: Date;
+  respondedAt?: Date;
+}
+
 export interface LikeDocument {
   _id: ObjectId;
   userId: ObjectId;

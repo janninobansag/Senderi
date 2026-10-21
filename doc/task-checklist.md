@@ -111,10 +111,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M3-J1 — Jan: Search and requests
 
-- [ ] **M3-J1.1** Add paged user search returning public profile fields, excluding secrets.
-- [ ] **M3-J1.2** Add friend-request records and send route with self, duplicate, and existing-friend checks.
-- [ ] **M3-J1.3** Add incoming and outgoing request listing for the current user.
-- [ ] **M3-J1.4** Check search pagination and request creation/denial with two accounts.
+- [x] **M3-J1.1** Add paged user search returning public profile fields, excluding secrets. *(Authenticated display-name search uses stable newest-first cursor pagination and serializes users through the public profile response.)*
+- [x] **M3-J1.2** Add friend-request records and send route with self, duplicate, and existing-friend checks. *(Sending creates a pending request; self, existing-friend, duplicate, and opposite-direction pending requests are rejected. A partial unique index prevents concurrent duplicate pending requests.)*
+- [x] **M3-J1.3** Add incoming and outgoing request listing for the current user. *(The signed-in user receives only their own pending incoming and outgoing request records.)*
+- [x] **M3-J1.4** Check search pagination and request creation/denial with two accounts. *(Tests verify multi-page search without duplicates or secret fields, request creation and account-scoped listing across two sessions, and rejected self, duplicate, reverse-direction, existing-friend, invalid, and unauthenticated requests.)*
 
 ### M3-J2 — Jan: Friendship state
 

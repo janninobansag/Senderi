@@ -19,11 +19,17 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
     [
       ["users", { email: 1 }],
       ["friendships", { userIdLow: 1, userIdHigh: 1 }],
+      ["friendRequests", { userIdLow: 1, userIdHigh: 1 }],
       ["likes", { userId: 1, postId: 1 }],
       ["messages", { senderId: 1, clientId: 1 }],
       ["passwordResets", { userId: 1 }],
     ],
   );
+
+  const pendingFriendRequestIndex = databaseIndexes.find(
+    (index) => index.options.name === "friend_requests_pending_pair_unique",
+  );
+  assert.deepEqual(pendingFriendRequestIndex?.options.partialFilterExpression, { status: "pending" });
 
   const ttlIndexes = databaseIndexes.filter((index) => index.options.expireAfterSeconds !== undefined);
   assert.deepEqual(
