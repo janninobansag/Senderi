@@ -1,11 +1,16 @@
 import { ObjectId, type Db } from "mongodb";
 import { Router, type Response } from "express";
+import { randomUUID } from "node:crypto";
+import { pipeline } from "node:stream/promises";
+import multer from "multer";
 import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
 import { collectionNames, type PostDocument, type PostVisibility, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
+import { cloudinaryPostPhotoStorage, validatePostPhoto, type PostPhotoStorage } from "../media/post-photo";
+import { requireClientOrigin } from "../middleware/require-client-origin";
 import { canViewPost, decodePostCursor, listVisiblePostDocuments } from "../post-access";
 
 const postPageQuerySchema = z.object({
@@ -22,6 +27,7 @@ interface PostResponseItem {
   id: string;
   author: ReturnType<typeof toPublicUserResponse>;
   text?: string;
+  photoUrl?: string;
   visibility: PostVisibility;
   createdAt: string;
 }
@@ -38,11 +44,15 @@ interface PostResponse {
 export interface PostsRouterDependencies {
   getDatabase: () => Db;
   getCloudinaryCloudName: () => string | undefined;
+  getAllowedOrigins: () => readonly string[];
+  photoStorage: PostPhotoStorage;
 }
 
 const defaultDependencies: PostsRouterDependencies = {
   getDatabase: getConnectedDatabase,
   getCloudinaryCloudName: () => process.env.CLOUDINARY_CLOUD_NAME,
+  getAllowedOrigins: () => (process.env.CLIENT_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),
+  photoStorage: cloudinaryPostPhotoStorage,
 };
 
 function getAuthenticatedSession(response: Response): AuthenticatedSessionContext {
@@ -70,6 +80,7 @@ function toPostResponse(post: PostDocument, author: UserDocument, cloudName?: st
     id: post._id.toHexString(),
     author: toPublicUserResponse(author, cloudName),
     ...(post.text !== undefined ? { text: post.text } : {}),
+    ...(post.photoAssetId ? { photoUrl: `/api/posts/${post._id.toHexString()}/photo` } : {}),
     visibility: post.visibility,
     createdAt: post.createdAt.toISOString(),
   };
@@ -112,6 +123,102 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
   const dependencies = { ...defaultDependencies, ...overrides };
   const router = Router();
   const authenticated = requireSession({ getDatabase: dependencies.getDatabase });
+  const uploadPhoto = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 },
+  }).single("file");
+
+  const requirePostOwner = async (request: Parameters<typeof authenticated>[0], response: Response, next: Parameters<typeof authenticated>[2]) => {
+    const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+    const post = await dependencies.getDatabase()
+      .collection<PostDocument>(collectionNames.posts)
+      .findOne({ _id: postId });
+    const viewerId = getAuthenticatedSession(response).user._id;
+
+    if (!post || !post.authorId.equals(viewerId)) {
+      throw new HttpError(404, "not_found", "Post was not found.");
+    }
+
+    response.locals.postPhotoPost = post;
+    next();
+  };
+
+  router.put(
+    "/:postId/photo",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    requirePostOwner,
+    uploadPhoto,
+    async (request, response) => {
+      const post = response.locals.postPhotoPost as PostDocument;
+      const file = request.file;
+      if (!file) throw new HttpError(400, "missing_file", "Choose one photo to upload.");
+      await validatePostPhoto(file);
+
+      const assetName = `${post._id.toHexString()}-${randomUUID()}`;
+      const uploaded = await dependencies.photoStorage.upload(file.buffer, assetName);
+      const database = dependencies.getDatabase();
+      const previousAssetId = post.photoAssetId;
+      let updated: PostDocument | null;
+
+      try {
+        updated = await database.collection<PostDocument>(collectionNames.posts).findOneAndUpdate(
+          {
+            _id: post._id,
+            authorId: getAuthenticatedSession(response).user._id,
+            ...(previousAssetId ? { photoAssetId: previousAssetId } : { photoAssetId: { $exists: false } }),
+          },
+          { $set: { photoAssetId: uploaded.assetId, updatedAt: new Date() } },
+          { returnDocument: "after" },
+        );
+
+        if (!updated) {
+          throw new HttpError(409, "post_photo_conflict", "The post changed while its photo was uploading. Try again.");
+        }
+      } catch (error) {
+        await dependencies.photoStorage.destroy(uploaded.assetId).catch(() => {
+          console.error("Failed to clean up abandoned post photo.");
+        });
+        throw error;
+      }
+
+      if (previousAssetId) {
+        await dependencies.photoStorage.destroy(previousAssetId).catch(() => {
+          console.error("Failed to delete replaced post photo.");
+        });
+      }
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json({ post: toPostResponse(updated, getAuthenticatedSession(response).user, dependencies.getCloudinaryCloudName()) } satisfies PostResponse);
+    },
+  );
+
+  router.get("/:postId/photo", authenticated, async (request, response) => {
+    const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+    const database = dependencies.getDatabase();
+    const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+    const viewerId = getAuthenticatedSession(response).user._id;
+
+    if (!post?.photoAssetId || !(await canViewPost(database, viewerId, post))) {
+      throw new HttpError(404, "not_found", "Post photo was not found.");
+    }
+
+    let photo;
+    try {
+      photo = await dependencies.photoStorage.download(post.photoAssetId);
+    } catch {
+      throw new HttpError(502, "media_unavailable", "Post photo is temporarily unavailable.");
+    }
+
+    response.status(200);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.setHeader("Vary", "Cookie");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Content-Disposition", "inline");
+    response.setHeader("Content-Type", photo.contentType);
+    if (photo.contentLength !== undefined) response.setHeader("Content-Length", String(photo.contentLength));
+    await pipeline(photo.stream, response);
+  });
 
   router.post("/", authenticated, async (request, response) => {
     const parsed = createPostSchema.safeParse(request.body);

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
+import { Readable } from "node:stream";
 import { ObjectId, type Db } from "mongodb";
 import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
 import { collectionNames, type FriendshipDocument, type PostDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
+import type { PostPhotoStorage } from "../src/media/post-photo";
 import { createPostsRouter, createUserPostsRouter } from "../src/routes/posts";
 
 interface PostTestData {
@@ -14,6 +16,7 @@ interface PostTestData {
   sessions: SessionDocument[];
   friendships: FriendshipDocument[];
   posts: PostDocument[];
+  failPostUpdate?: boolean;
 }
 
 type MongoFilter = Record<string, unknown>;
@@ -107,6 +110,23 @@ function createDatabase(data: PostTestData): Db {
           },
           findOne: async (filter: { _id: ObjectId }) =>
             data.posts.find((post) => post._id.equals(filter._id)) ?? null,
+          findOneAndUpdate: async (
+            filter: { _id: ObjectId; authorId: ObjectId; photoAssetId?: string | { $exists: boolean } },
+            update: { $set: Partial<PostDocument> },
+          ) => {
+            if (data.failPostUpdate) throw new Error("Simulated post update failure.");
+            const post = data.posts.find((candidate) => {
+              if (!candidate._id.equals(filter._id) || !candidate.authorId.equals(filter.authorId)) return false;
+              if (typeof filter.photoAssetId === "string") return candidate.photoAssetId === filter.photoAssetId;
+              if (filter.photoAssetId && "$exists" in filter.photoAssetId) {
+                return filter.photoAssetId.$exists ? candidate.photoAssetId !== undefined : candidate.photoAssetId === undefined;
+              }
+              return true;
+            });
+            if (!post) return null;
+            Object.assign(post, update.$set);
+            return post;
+          },
           find: (filter: MongoFilter) => {
             let result = data.posts.filter((post) => matchesPost(post, filter));
             let maximum = Number.POSITIVE_INFINITY;
@@ -175,12 +195,30 @@ function sessionFor(user: UserDocument, token: string): SessionDocument {
   };
 }
 
-function createApp(data: PostTestData) {
+const validPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
+function createPhotoStorage(overrides: Partial<PostPhotoStorage> = {}): PostPhotoStorage {
+  return {
+    upload: async (_buffer, publicId) => ({ assetId: `senderi/posts/${publicId}` }),
+    destroy: async () => undefined,
+    download: async () => ({ stream: Readable.from([validPng]), contentType: "image/png", contentLength: validPng.length }),
+    ...overrides,
+  };
+}
+
+function createApp(data: PostTestData, photoStorage = createPhotoStorage()) {
   const database = createDatabase(data);
   const app = express();
   app.use(express.json());
   app.use("/api/users", createUserPostsRouter({ getDatabase: () => database }));
-  app.use("/api/posts", createPostsRouter({ getDatabase: () => database }));
+  app.use("/api/posts", createPostsRouter({
+    getDatabase: () => database,
+    getAllowedOrigins: () => ["http://localhost:5173"],
+    photoStorage,
+  }));
   app.use(notFoundHandler);
   app.use(errorHandler);
   return app;
@@ -420,4 +458,180 @@ test("post reads require a valid session and reject malformed IDs and page queri
   await request(app).get("/api/posts?limit=51").set("Cookie", cookie(tokens.author)).expect(400);
   await request(app).get("/api/posts?cursor=not-valid!!").set("Cookie", cookie(tokens.author)).expect(400);
   await request(app).get("/api/posts?cursor=YWJj").set("Cookie", cookie(tokens.author)).expect(400);
+});
+
+test("post photo upload inspects bytes, replaces only the owner's photo, and deletes the old asset after saving", async () => {
+  const { data, tokens } = matrixFixture();
+  const post = data.posts[0]!;
+  post.photoAssetId = "senderi/posts/old-photo";
+  const destroyed: string[] = [];
+  const uploaded: Array<{ buffer: Buffer; publicId: string }> = [];
+  const storage = createPhotoStorage({
+    upload: async (buffer, publicId) => {
+      uploaded.push({ buffer, publicId });
+      return { assetId: "senderi/posts/new-photo" };
+    },
+    destroy: async (assetId) => {
+      assert.equal(data.posts[0]?.photoAssetId, "senderi/posts/new-photo", "database replacement must happen before old asset deletion");
+      destroyed.push(assetId);
+    },
+  });
+  const response = await request(createApp(data, storage))
+    .put(`/api/posts/${post._id.toHexString()}/photo`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .attach("file", validPng, "photo.png")
+    .expect(200);
+
+  assert.equal(uploaded.length, 1);
+  assert.deepEqual(uploaded[0]?.buffer, validPng);
+  assert.match(uploaded[0]?.publicId ?? "", new RegExp(`^${post._id.toHexString()}-[0-9a-f-]{36}$`));
+  assert.equal(data.posts[0]?.photoAssetId, "senderi/posts/new-photo");
+  assert.deepEqual(destroyed, ["senderi/posts/old-photo"]);
+  assert.equal(response.body.post.photoUrl, `/api/posts/${post._id.toHexString()}/photo`);
+  assert.equal("photoAssetId" in response.body.post, false);
+  assert.equal(JSON.stringify(response.body).includes("cloudinary"), false);
+});
+
+test("post photo upload rejects non-owners, invalid content, missing files, and oversized or multiple files", async () => {
+  const { data, tokens } = matrixFixture();
+  const uploads: string[] = [];
+  const storage = createPhotoStorage({
+    upload: async (_buffer, publicId) => {
+      uploads.push(publicId);
+      return { assetId: `senderi/posts/${publicId}` };
+    },
+  });
+  const app = createApp(data, storage);
+  const postId = ids.public;
+
+  await request(app)
+    .put(`/api/posts/${postId}/photo`)
+    .set("Origin", "https://unexpected.example")
+    .set("Cookie", cookie(tokens.author))
+    .attach("file", validPng, "photo.png")
+    .expect(403);
+  await request(app)
+    .put(`/api/posts/${postId}/photo`)
+    .set("Origin", "http://localhost:5173")
+    .attach("file", validPng, "photo.png")
+    .expect(401);
+
+  await request(app)
+    .put(`/api/posts/${postId}/photo`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.outsider))
+    .attach("file", validPng, "photo.png")
+    .expect(404);
+  assert.equal(uploads.length, 0);
+
+  await request(app)
+    .put(`/api/posts/${postId}/photo`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .attach("file", Buffer.from("not an image"), "photo.png")
+    .expect(400);
+  await request(app)
+    .put(`/api/posts/${postId}/photo`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .expect(400);
+  await request(app)
+    .put(`/api/posts/${postId}/photo`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .attach("file", Buffer.alloc(5 * 1024 * 1024 + 1), "large.png")
+    .expect(413);
+  await request(app)
+    .put(`/api/posts/${postId}/photo`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .attach("file", validPng, "first.png")
+    .attach("file", validPng, "second.png")
+    .expect(400);
+
+  assert.equal(uploads.length, 0);
+});
+
+test("failed post photo persistence deletes the new Cloudinary asset and keeps the old ID", async () => {
+  const { data, tokens } = matrixFixture();
+  const post = data.posts[0]!;
+  post.photoAssetId = "senderi/posts/old-photo";
+  data.failPostUpdate = true;
+  const destroyed: string[] = [];
+  const app = createApp(data, createPhotoStorage({
+    upload: async () => ({ assetId: "senderi/posts/new-photo" }),
+    destroy: async (assetId) => { destroyed.push(assetId); },
+  }));
+
+  await request(app)
+    .put(`/api/posts/${post._id.toHexString()}/photo`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .attach("file", validPng, "photo.png")
+    .expect(500);
+
+  assert.equal(post.photoAssetId, "senderi/posts/old-photo");
+  assert.deepEqual(destroyed, ["senderi/posts/new-photo"]);
+});
+
+test("photo byte requests recheck current audience, never expose Cloudinary IDs, and disable caching", async () => {
+  const { data, tokens } = matrixFixture();
+  for (const post of data.posts) post.photoAssetId = `senderi/posts/${post._id.toHexString()}`;
+  const downloaded: string[] = [];
+  const app = createApp(data, createPhotoStorage({
+    download: async (assetId) => {
+      downloaded.push(assetId);
+      return { stream: Readable.from([validPng]), contentType: "image/png", contentLength: validPng.length };
+    },
+  }));
+  const authorizedIds = {
+    author: [ids.onlyMe, ids.friends, ids.public],
+    friend: [ids.friends, ids.public],
+    outsider: [ids.public],
+  } as const;
+
+  for (const viewer of ["author", "friend", "outsider"] as const) {
+    for (const postId of [ids.onlyMe, ids.friends, ids.public] as const) {
+      const visible = authorizedIds[viewer].includes(postId);
+      const response = await request(app)
+        .get(`/api/posts/${postId}/photo`)
+        .set("Cookie", cookie(tokens[viewer]));
+      assert.equal(response.status, visible ? 200 : 404, `${viewer} access to ${postId} photo`);
+      if (visible) {
+        assert.equal(response.headers["content-type"], "image/png");
+        assert.equal(response.headers["cache-control"], "private, no-store");
+        assert.equal(response.headers.vary, "Cookie");
+        assert.equal(response.headers["x-content-type-options"], "nosniff");
+        assert.deepEqual(response.body, validPng);
+      } else {
+        assert.deepEqual(response.body, { error: { code: "not_found", message: "Post photo was not found." } });
+      }
+    }
+  }
+
+  assert.equal(downloaded.length, 6, "hidden requests must not contact Cloudinary");
+  const outsiderResponse = await request(app)
+    .get(`/api/posts/${ids.onlyMe}/photo`)
+    .set("Cookie", cookie(tokens.outsider));
+  const missingResponse = await request(app)
+    .get("/api/posts/000000000000000000000099/photo")
+    .set("Cookie", cookie(tokens.outsider));
+  assert.equal(outsiderResponse.status, 404);
+  assert.deepEqual(outsiderResponse.body, missingResponse.body);
+
+  const visiblePost = await request(app)
+    .get(`/api/posts/${ids.public}`)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(visiblePost.body.post.photoUrl, `/api/posts/${ids.public}/photo`);
+  assert.equal("photoAssetId" in visiblePost.body.post, false);
+  assert.equal(JSON.stringify(visiblePost.body).includes("senderi/posts/"), false);
+  await request(app).get(`/api/posts/${ids.public}/photo`).expect(401);
+
+  data.friendships = [];
+  const removedFriend = await request(app)
+    .get(`/api/posts/${ids.friends}/photo`)
+    .set("Cookie", cookie(tokens.friend));
+  assert.equal(removedFriend.status, 404, "friends access must be revoked immediately after friendship removal");
 });

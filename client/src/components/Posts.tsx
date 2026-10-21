@@ -132,6 +132,15 @@ function PostCard({ post }: { post: Post }) {
       <div className="mt-5 whitespace-pre-wrap break-words text-sm leading-7 text-ink/85">
         {post.text || <span className="text-muted">Shared a photo.</span>}
       </div>
+      {post.photoUrl && (
+        <img
+          className="mt-4 max-h-[36rem] w-full rounded-2xl border border-line object-contain"
+          src={post.photoUrl}
+          alt={`Photo shared by ${post.author.displayName}`}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+        />
+      )}
     </article>
   );
 }

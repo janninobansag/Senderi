@@ -50,9 +50,10 @@ MongoDB collections: `users`, `sessions`, `friendRequests`, `friendships`, `post
 | `GET /api/posts` | Paged feed of visible posts and shares | Signed in; filter in the database and recheck before returning. |
 | `GET /api/users/:userId/posts` | Paged visible posts and shares by user | Signed in; apply current audience. |
 | `GET /api/posts/:postId` | Post detail | Viewer must pass current audience check. |
-| `POST /api/posts` | Multipart `text?`, `photo?`, `visibility` -> post | Current user; at least text or one photo. Image is uploaded as authenticated Cloudinary media. |
+| `POST /api/posts` | `{ text, visibility }` -> post | Signed in; text-only creation validates the audience and derives the author from the current session. |
 | `PATCH /api/posts/:postId` | `{ visibility }` -> post | Author only; audience changes take effect on all reads. |
-| `GET /api/posts/:postId/photo` | Image response | Same current audience check as post; API streams protected Cloudinary media without revealing a reusable provider URL. |
+| `PUT /api/posts/:postId/photo` | One multipart `file` -> post | Author only; one JPEG, PNG, or WebP up to 5 MB, inspected on the server and stored as an authenticated Cloudinary asset. |
+| `GET /api/posts/:postId/photo` | Image byte stream | Signed in; rechecks the post's current audience and streams protected Cloudinary media without revealing a provider URL. Response is `private, no-store`. |
 | `PUT /api/posts/:postId/like`, `DELETE /api/posts/:postId/like` | Like/unlike -> count and viewer state | Viewer must pass post audience check; idempotent. |
 | `GET /api/posts/:postId/comments` | Paged comments | Viewer must pass post audience check. |
 | `POST /api/posts/:postId/comments` | `{ text }` -> comment | Viewer must pass post audience check. |
