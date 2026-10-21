@@ -32,6 +32,16 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "friendships_pair_unique", unique: true },
   },
   {
+    collection: collectionNames.friendships,
+    keys: { userIdLow: 1, createdAt: -1, _id: -1 },
+    options: { name: "friendships_low_created_at" },
+  },
+  {
+    collection: collectionNames.friendships,
+    keys: { userIdHigh: 1, createdAt: -1, _id: -1 },
+    options: { name: "friendships_high_created_at" },
+  },
+  {
     collection: collectionNames.friendRequests,
     keys: { userIdLow: 1, userIdHigh: 1 },
     options: {

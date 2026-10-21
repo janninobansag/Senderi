@@ -14,6 +14,8 @@ import {
   type UserDocument,
 } from "../src/db/documents";
 import { createFriendRequestsRouter } from "../src/routes/friend-requests";
+import { createFriendsRouter } from "../src/routes/friends";
+import { areFriends } from "../src/friends/are-friends";
 import { createUsersRouter } from "../src/routes/users";
 
 interface FriendTestData {
@@ -30,28 +32,30 @@ function createDatabase(data: FriendTestData): Db {
         return {
           findOne: async (filter: { _id?: ObjectId }) =>
             data.users.find((user) => filter._id && user._id.equals(filter._id)) ?? null,
-          find: (filter: {
-            displayName: { $regex: string; $options: string };
-            _id: { $ne: ObjectId };
-            $or?: Array<{
-              createdAt?: { $lt: Date } | Date;
-              _id?: { $lt: ObjectId };
-            }>;
-          }) => {
-            const expression = new RegExp(filter.displayName.$regex, filter.displayName.$options);
-            const matchesCursor = (user: UserDocument): boolean => {
-              if (!filter.$or) return true;
-              return filter.$or.some((condition) => {
-                if (condition.createdAt instanceof Date) {
-                  return user.createdAt.getTime() === condition.createdAt.getTime() &&
-                    Boolean(condition._id?.$lt && user._id.toHexString() < condition._id.$lt.toHexString());
-                }
-                return Boolean(condition.createdAt?.$lt && user.createdAt < condition.createdAt.$lt);
+          find: (filter: Record<string, unknown>) => {
+            let result: UserDocument[];
+            if ("displayName" in filter) {
+              const displayName = filter.displayName as { $regex: string; $options: string };
+              const idFilter = filter._id as { $ne: ObjectId };
+              const expression = new RegExp(displayName.$regex, displayName.$options);
+              const conditions = filter.$or as Array<{
+                createdAt?: { $lt: Date } | Date;
+                _id?: { $lt: ObjectId };
+              }> | undefined;
+              result = data.users.filter((user) => {
+                const matchesCursor = !conditions || conditions.some((condition) => {
+                  if (condition.createdAt instanceof Date) {
+                    return user.createdAt.getTime() === condition.createdAt.getTime() &&
+                      Boolean(condition._id?.$lt && user._id.toHexString() < condition._id.$lt.toHexString());
+                  }
+                  return Boolean(condition.createdAt?.$lt && user.createdAt < condition.createdAt.$lt);
+                });
+                return !user._id.equals(idFilter.$ne) && expression.test(user.displayName) && matchesCursor;
               });
-            };
-            let result = data.users.filter((user) =>
-              !user._id.equals(filter._id.$ne) && expression.test(user.displayName) && matchesCursor(user),
-            );
+            } else {
+              const idFilter = filter._id as { $in: ObjectId[] };
+              result = data.users.filter((user) => idFilter.$in.some((id) => user._id.equals(id)));
+            }
             let maximum = Number.POSITIVE_INFINITY;
             const cursor = {
               sort: () => {
@@ -86,6 +90,66 @@ function createDatabase(data: FriendTestData): Db {
               friendship.userIdLow.equals(filter.userIdLow) &&
               friendship.userIdHigh.equals(filter.userIdHigh),
             ) ?? null,
+          find: (filter: { $and: Array<Record<string, unknown>> }) => {
+            const [membersFilter, cursorFilter] = filter.$and;
+            const memberConditions = membersFilter.$or as Array<Partial<FriendshipDocument>>;
+            const cursorConditions = cursorFilter?.$or as Array<{
+              createdAt?: { $lt: Date } | Date;
+              _id?: { $lt: ObjectId };
+            }> | undefined;
+            let result = data.friendships.filter((friendship) => {
+              const isMember = memberConditions.some((condition) =>
+                (condition.userIdLow && friendship.userIdLow.equals(condition.userIdLow)) ||
+                (condition.userIdHigh && friendship.userIdHigh.equals(condition.userIdHigh)),
+              );
+              const afterCursor = !cursorConditions || cursorConditions.some((condition) => {
+                if (condition.createdAt instanceof Date) {
+                  return friendship.createdAt.getTime() === condition.createdAt.getTime() &&
+                    Boolean(condition._id?.$lt &&
+                      friendship._id.toHexString() < condition._id.$lt.toHexString());
+                }
+                return Boolean(condition.createdAt?.$lt && friendship.createdAt < condition.createdAt.$lt);
+              });
+              return isMember && afterCursor;
+            });
+            let maximum = Number.POSITIVE_INFINITY;
+            const cursor = {
+              sort: () => {
+                result = result.toSorted((left, right) => {
+                  const dateOrder = right.createdAt.getTime() - left.createdAt.getTime();
+                  return dateOrder || right._id.toHexString().localeCompare(left._id.toHexString());
+                });
+                return cursor;
+              },
+              limit: (value: number) => {
+                maximum = value;
+                return cursor;
+              },
+              toArray: async () => result.slice(0, maximum),
+            };
+            return cursor;
+          },
+          updateOne: async (
+            filter: Pick<FriendshipDocument, "userIdLow" | "userIdHigh">,
+            update: { $setOnInsert: FriendshipDocument },
+          ) => {
+            const existing = data.friendships.find((friendship) =>
+              friendship.userIdLow.equals(filter.userIdLow) &&
+              friendship.userIdHigh.equals(filter.userIdHigh),
+            );
+            if (existing) return { acknowledged: true, matchedCount: 1, upsertedCount: 0 };
+            data.friendships.push(update.$setOnInsert);
+            return { acknowledged: true, matchedCount: 0, upsertedCount: 1 };
+          },
+          deleteOne: async (filter: Pick<FriendshipDocument, "userIdLow" | "userIdHigh">) => {
+            const index = data.friendships.findIndex((friendship) =>
+              friendship.userIdLow.equals(filter.userIdLow) &&
+              friendship.userIdHigh.equals(filter.userIdHigh),
+            );
+            if (index < 0) return { acknowledged: true, deletedCount: 0 };
+            data.friendships.splice(index, 1);
+            return { acknowledged: true, deletedCount: 1 };
+          },
         };
       }
 
@@ -110,6 +174,28 @@ function createDatabase(data: FriendTestData): Db {
             }
             data.requests.push(friendRequest);
             return { acknowledged: true, insertedId: friendRequest._id };
+          },
+          updateOne: async (
+            filter: Partial<FriendRequestDocument>,
+            update: {
+              $set: Partial<FriendRequestDocument>;
+              $unset?: Record<string, string>;
+            },
+          ) => {
+            const friendRequest = data.requests.find((candidate) =>
+              Object.entries(filter).every(([key, value]) => {
+                const actual = candidate[key as keyof FriendRequestDocument];
+                if (actual instanceof ObjectId && value instanceof ObjectId) return actual.equals(value);
+                if (actual instanceof Date && value instanceof Date) return actual.getTime() === value.getTime();
+                return actual === value;
+              }),
+            );
+            if (!friendRequest) return { acknowledged: true, matchedCount: 0, modifiedCount: 0 };
+            Object.assign(friendRequest, update.$set);
+            for (const field of Object.keys(update.$unset ?? {})) {
+              delete friendRequest[field as keyof FriendRequestDocument];
+            }
+            return { acknowledged: true, matchedCount: 1, modifiedCount: 1 };
           },
           find: (filter: { senderId?: ObjectId; recipientId?: ObjectId; status: "pending" }) => {
             let result = data.requests.filter((friendRequest) =>
@@ -183,6 +269,11 @@ function createTestApp(data: FriendTestData) {
     getDatabase: () => database,
     getAllowedOrigins: () => ["http://localhost:5173"],
     now: () => new Date("2026-10-01T01:00:00.000Z"),
+  }));
+  app.use("/api/friends", createFriendsRouter({
+    getDatabase: () => database,
+    getAllowedOrigins: () => ["http://localhost:5173"],
+    getCloudinaryCloudName: () => "senderi-demo",
   }));
   app.use(notFoundHandler);
   app.use(errorHandler);
@@ -409,4 +500,156 @@ test("the pending-pair unique index rejects concurrent duplicate friend requests
 
   assert.deepEqual(responses.map((response) => response.status).sort(), [201, 409]);
   assert.equal(data.requests.length, 1);
+});
+
+test("only the recipient can decline a pending request and declined requests do not create friendships", async () => {
+  const alice = makeUser("000000000000000000000001", "alice@example.com", "Alice Example");
+  const bob = makeUser("000000000000000000000002", "bob@example.com", "Bob Example");
+  const data = emptyData(
+    [alice, bob],
+    [sessionFor(alice, aliceToken), sessionFor(bob, bobToken)],
+  );
+  const app = createTestApp(data);
+  const created = await request(app)
+    .post("/api/friend-requests")
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`)
+    .send({ recipientId: bob._id.toHexString() });
+  const requestId = created.body.request.id as string;
+
+  const senderCannotDecline = await request(app)
+    .patch(`/api/friend-requests/${requestId}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`)
+    .send({ action: "decline" });
+  assert.equal(senderCannotDecline.status, 403);
+  assert.equal(data.requests[0].status, "pending");
+
+  const senderCannotAccept = await request(app)
+    .patch(`/api/friend-requests/${requestId}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`)
+    .send({ action: "accept" });
+  assert.equal(senderCannotAccept.status, 403);
+  assert.equal(data.requests[0].status, "pending");
+
+  const declined = await request(app)
+    .patch(`/api/friend-requests/${requestId}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${bobToken}`)
+    .send({ action: "decline" });
+  assert.equal(declined.status, 200);
+  assert.equal(declined.body.request.status, "declined");
+  assert.equal(declined.body.request.respondedAt, "2026-10-01T01:00:00.000Z");
+  assert.equal(data.requests[0].status, "declined");
+  assert.equal(data.friendships.length, 0);
+  assert.equal(await areFriends(createDatabase(data), alice._id, bob._id), false);
+
+  const secondResponse = await request(app)
+    .patch(`/api/friend-requests/${requestId}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${bobToken}`)
+    .send({ action: "accept" });
+  assert.equal(secondResponse.status, 409);
+  assert.equal(secondResponse.body.error.code, "friend_request_already_resolved");
+
+  const retriedRequest = await request(app)
+    .post("/api/friend-requests")
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`)
+    .send({ recipientId: bob._id.toHexString() });
+  assert.equal(retriedRequest.status, 201);
+  assert.equal(data.requests.length, 2);
+  assert.equal(data.requests[1].status, "pending");
+});
+
+test("concurrent acceptance resolves once and creates one mutual friendship", async () => {
+  const alice = makeUser("000000000000000000000001", "alice@example.com", "Alice Example");
+  const bob = makeUser("000000000000000000000002", "bob@example.com", "Bob Example");
+  const data = emptyData(
+    [alice, bob],
+    [sessionFor(alice, aliceToken), sessionFor(bob, bobToken)],
+  );
+  const app = createTestApp(data);
+  const created = await request(app)
+    .post("/api/friend-requests")
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`)
+    .send({ recipientId: bob._id.toHexString() });
+  const requestId = created.body.request.id as string;
+  const accept = () => request(app)
+    .patch(`/api/friend-requests/${requestId}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${bobToken}`)
+    .send({ action: "accept" });
+  const responses = await Promise.all([accept(), accept()]);
+
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+  assert.equal(data.requests[0].status, "accepted");
+  assert.equal(data.friendships.length, 1);
+  assert.equal(await areFriends(createDatabase(data), alice._id, bob._id), true);
+  assert.equal(await areFriends(createDatabase(data), alice._id, alice._id), false);
+
+  const bobProfileOfAlice = await request(app)
+    .get(`/api/users/${alice._id.toHexString()}`)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${bobToken}`);
+  assert.equal(bobProfileOfAlice.status, 200);
+  assert.equal(bobProfileOfAlice.body.friendshipStatus, "friends");
+});
+
+test("friends are paged as public profiles and either friend can remove the relationship", async () => {
+  const alice = makeUser("000000000000000000000001", "alice@example.com", "Alice Example");
+  const bob = makeUser("000000000000000000000002", "bob@example.com", "Bob Example");
+  const charlie = makeUser("000000000000000000000003", "charlie@example.com", "Charlie Example");
+  const data = emptyData(
+    [alice, bob, charlie],
+    [sessionFor(alice, aliceToken), sessionFor(bob, bobToken)],
+  );
+  data.friendships.push(makeFriendship(alice, bob), makeFriendship(alice, charlie));
+  const app = createTestApp(data);
+
+  const firstPage = await request(app)
+    .get("/api/friends?limit=1")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
+  assert.equal(firstPage.status, 200);
+  assert.equal(firstPage.body.items.length, 1);
+  assert.notEqual(firstPage.body.nextCursor, null);
+  assert.equal("email" in firstPage.body.items[0], false);
+  assert.equal("passwordHash" in firstPage.body.items[0], false);
+
+  const secondPage = await request(app)
+    .get(`/api/friends?limit=1&cursor=${firstPage.body.nextCursor}`)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
+  assert.equal(secondPage.status, 200);
+  assert.equal(secondPage.body.items.length, 1);
+  assert.equal(secondPage.body.nextCursor, null);
+  assert.deepEqual(
+    [firstPage.body.items[0].id, secondPage.body.items[0].id].sort(),
+    [bob._id.toHexString(), charlie._id.toHexString()].sort(),
+  );
+
+  const removedByBob = await request(app)
+    .delete(`/api/friends/${alice._id.toHexString()}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${bobToken}`);
+  assert.equal(removedByBob.status, 204);
+  assert.equal(await areFriends(createDatabase(data), alice._id, bob._id), false);
+
+  const bobListAfterRemoval = await request(app)
+    .get("/api/friends")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${bobToken}`);
+  assert.deepEqual(bobListAfterRemoval.body, { items: [], nextCursor: null });
+
+  const removedByAlice = await request(app)
+    .delete(`/api/friends/${charlie._id.toHexString()}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
+  assert.equal(removedByAlice.status, 204);
+  assert.equal(data.friendships.length, 0);
+  assert.equal(await areFriends(createDatabase(data), alice._id, charlie._id), false);
+
+  const emptyList = await request(app)
+    .get("/api/friends")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
+  assert.deepEqual(emptyList.body, { items: [], nextCursor: null });
 });
