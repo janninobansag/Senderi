@@ -9,7 +9,9 @@ export const collectionNames = {
   posts: "posts",
   comments: "comments",
   likes: "likes",
+  shareLikes: "shareLikes",
   shares: "shares",
+  notifications: "notifications",
   messages: "messages",
   passwordResets: "passwordResets",
   socketTickets: "socketTickets",
@@ -74,6 +76,14 @@ export interface LikeDocument {
   createdAt: Date;
 }
 
+/** A reaction belongs to one share card, independently of its source post. */
+export interface ShareLikeDocument {
+  _id: ObjectId;
+  userId: ObjectId;
+  shareId: ObjectId;
+  createdAt: Date;
+}
+
 /** A text comment belongs to a post and its author is the authenticated user. */
 export interface CommentDocument {
   _id: ObjectId;
@@ -88,8 +98,30 @@ export interface ShareDocument {
   _id: ObjectId;
   authorId: ObjectId;
   sourcePostId: ObjectId;
+  /** Optional text the author added when sharing the source post. */
+  caption?: string;
   visibility: PostVisibility;
   createdAt: Date;
+}
+
+export type NotificationType =
+  | "post_like"
+  | "share_like"
+  | "post_comment"
+  | "post_share"
+  | "friend_request"
+  | "friend_accepted";
+
+export interface NotificationDocument {
+  _id: ObjectId;
+  recipientId: ObjectId;
+  actorId: ObjectId;
+  type: NotificationType;
+  postId?: ObjectId;
+  shareId?: ObjectId;
+  friendRequestId?: ObjectId;
+  createdAt: Date;
+  readAt?: Date;
 }
 
 export interface MessageDocument {

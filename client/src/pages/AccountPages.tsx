@@ -224,7 +224,7 @@ export function LoginPage() {
         <Field id="login-email" label="Email address" type="email" autoComplete="email" maxLength={254} value={email} onChange={(event) => setEmail(event.target.value)} error={fieldErrors.email} required />
         <Field id="login-password" label="Password" type="password" autoComplete="current-password" maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} error={fieldErrors.password} required />
         <div className="flex justify-end">
-          <Link className="text-sm font-semibold text-violet hover:text-violet-dark" to="/forgot-password">Forgot password?</Link>
+          <Link className="text-sm font-semibold text-accent hover:text-accent-dark" to="/forgot-password">Forgot password?</Link>
         </div>
         <AuthSubmit pending={pending}>Sign in</AuthSubmit>
       </form>

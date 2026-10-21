@@ -80,6 +80,31 @@ export interface RespondToFriendRequestResponse {
   request: FriendRequest;
 }
 
+/** Activity delivered to the signed-in user. */
+export type NotificationType =
+  | "post_like"
+  | "share_like"
+  | "post_comment"
+  | "post_share"
+  | "friend_request"
+  | "friend_accepted";
+
+export interface NotificationItem {
+  id: string;
+  type: NotificationType;
+  actor: User;
+  createdAt: string;
+  isRead: boolean;
+  postId?: string;
+  shareId?: string;
+  friendRequestId?: string;
+}
+
+export interface NotificationsResponse {
+  items: NotificationItem[];
+  unreadCount: number;
+}
+
 /** Public profiles returned for the signed-in user's accepted friends. */
 export type FriendListResponse = Page<User>;
 
@@ -126,19 +151,38 @@ export interface UpdatePostRequest {
 }
 
 /** The public share context attached to a source post in a feed. */
-export interface Share {
+export interface Share extends PostLikeState {
   id: string;
   author: User;
   sourcePostId: string;
+  /** Optional text the author added when sharing the source post. */
+  caption?: string;
   visibility: Visibility;
   createdAt: string;
 }
 
 export interface CreateShareRequest {
   visibility: Visibility;
+  caption?: string;
 }
 
 export interface CreateShareResponse {
+  share: Share;
+}
+
+export interface UpdateShareRequest {
+  visibility: Visibility;
+}
+
+export interface UpdateShareResponse {
+  share: Share;
+}
+
+export interface UpdateShareRequest {
+  visibility: Visibility;
+}
+
+export interface UpdateShareResponse {
   share: Share;
 }
 

@@ -76,6 +76,16 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "likes_user_post_unique", unique: true },
   },
   {
+    collection: collectionNames.shareLikes,
+    keys: { userId: 1, shareId: 1 },
+    options: { name: "share_likes_user_share_unique", unique: true },
+  },
+  {
+    collection: collectionNames.shareLikes,
+    keys: { shareId: 1 },
+    options: { name: "share_likes_by_share" },
+  },
+  {
     collection: collectionNames.comments,
     keys: { postId: 1, createdAt: -1, _id: -1 },
     options: { name: "comments_post_newest_first" },
@@ -89,6 +99,11 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     collection: collectionNames.shares,
     keys: { visibility: 1, createdAt: -1, _id: -1 },
     options: { name: "shares_visibility_newest_first" },
+  },
+  {
+    collection: collectionNames.notifications,
+    keys: { recipientId: 1, createdAt: -1, _id: -1 },
+    options: { name: "notifications_recipient_newest_first" },
   },
   {
     collection: collectionNames.messages,

@@ -21,9 +21,20 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       ["friendships", { userIdLow: 1, userIdHigh: 1 }],
       ["friendRequests", { userIdLow: 1, userIdHigh: 1 }],
       ["likes", { userId: 1, postId: 1 }],
+      ["shareLikes", { userId: 1, shareId: 1 }],
       ["messages", { senderId: 1, clientId: 1 }],
       ["passwordResets", { userId: 1 }],
       ["socketTickets", { ticketHash: 1 }],
+    ],
+  );
+
+  assert.deepEqual(
+    databaseIndexes
+      .filter((index) => index.collection === "shareLikes")
+      .map(({ keys, options }) => [keys, options.name, options.unique ?? false]),
+    [
+      [{ userId: 1, shareId: 1 }, "share_likes_user_share_unique", true],
+      [{ shareId: 1 }, "share_likes_by_share", false],
     ],
   );
 
@@ -31,6 +42,14 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
     (index) => index.options.name === "friend_requests_pending_pair_unique",
   );
   assert.deepEqual(pendingFriendRequestIndex?.options.partialFilterExpression, { status: "pending" });
+  assert.deepEqual(
+    databaseIndexes.find((index) => index.options.name === "notifications_recipient_newest_first"),
+    {
+      collection: "notifications",
+      keys: { recipientId: 1, createdAt: -1, _id: -1 },
+      options: { name: "notifications_recipient_newest_first" },
+    },
+  );
   assert.deepEqual(
     databaseIndexes
       .filter((index) => index.options.name.startsWith("friendships_"))

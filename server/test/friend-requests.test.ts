@@ -10,6 +10,7 @@ import {
   collectionNames,
   type FriendRequestDocument,
   type FriendshipDocument,
+  type NotificationDocument,
   type SessionDocument,
   type UserDocument,
 } from "../src/db/documents";
@@ -23,6 +24,7 @@ interface FriendTestData {
   sessions: SessionDocument[];
   friendships: FriendshipDocument[];
   requests: FriendRequestDocument[];
+  notifications: NotificationDocument[];
 }
 
 function createDatabase(data: FriendTestData): Db {
@@ -80,6 +82,15 @@ function createDatabase(data: FriendTestData): Db {
         return {
           findOne: async (filter: { tokenHash: string }) =>
             data.sessions.find((session) => session.tokenHash === filter.tokenHash) ?? null,
+        };
+      }
+
+      if (name === collectionNames.notifications) {
+        return {
+          insertOne: async (notification: NotificationDocument) => {
+            data.notifications.push(notification);
+            return { acknowledged: true, insertedId: notification._id };
+          },
         };
       }
 
@@ -281,7 +292,7 @@ function createTestApp(data: FriendTestData) {
 }
 
 function emptyData(users: UserDocument[], sessions: SessionDocument[]): FriendTestData {
-  return { users, sessions, friendships: [], requests: [] };
+  return { users, sessions, friendships: [], requests: [], notifications: [] };
 }
 
 const aliceToken = "alice-friend-token";
@@ -384,6 +395,10 @@ test("two signed-in users can create a request and only see it in their own dire
   assert.equal(created.body.request.createdAt, "2026-10-01T01:00:00.000Z");
   assert.equal("email" in created.body.request, false);
   assert.equal(data.requests.length, 1);
+  assert.equal(data.notifications.length, 1);
+  assert.equal(data.notifications[0]!.type, "friend_request");
+  assert.equal(data.notifications[0]!.recipientId.toHexString(), bob._id.toHexString());
+  assert.equal(data.notifications[0]!.actorId.toHexString(), alice._id.toHexString());
 
   const aliceList = await request(app)
     .get("/api/friend-requests")
@@ -587,6 +602,14 @@ test("concurrent acceptance resolves once and creates one mutual friendship", as
   assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
   assert.equal(data.requests[0].status, "accepted");
   assert.equal(data.friendships.length, 1);
+  assert.equal(data.notifications.length, 2);
+  assert.equal(data.notifications[1]!.type, "friend_accepted");
+  assert.equal(data.notifications[1]!.recipientId.toHexString(), alice._id.toHexString());
+  assert.equal(data.notifications[1]!.actorId.toHexString(), bob._id.toHexString());
+  assert.equal(data.notifications.length, 2);
+  assert.equal(data.notifications[1]!.type, "friend_accepted");
+  assert.equal(data.notifications[1]!.recipientId.toHexString(), alice._id.toHexString());
+  assert.equal(data.notifications[1]!.actorId.toHexString(), bob._id.toHexString());
   assert.equal(await areFriends(createDatabase(data), alice._id, bob._id), true);
   assert.equal(await areFriends(createDatabase(data), alice._id, alice._id), false);
 
