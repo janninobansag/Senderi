@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 import { ObjectId, type Db, type Document } from "mongodb";
 import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
-import { collectionNames, type FriendshipDocument, type LikeDocument, type PostDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
+import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type PostDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
 import type { PostPhotoStorage } from "../src/media/post-photo";
@@ -16,6 +16,7 @@ interface PostTestData {
   sessions: SessionDocument[];
   friendships: FriendshipDocument[];
   likes: LikeDocument[];
+  comments: CommentDocument[];
   posts: PostDocument[];
   failPostInsert?: boolean;
   failPostUpdate?: boolean;
@@ -67,6 +68,23 @@ function matchesPost(post: PostDocument, filter: MongoFilter): boolean {
 function matchesLike(like: LikeDocument, filter: { postId?: ObjectId; userId?: ObjectId }): boolean {
   return (!filter.postId || like.postId.equals(filter.postId)) &&
     (!filter.userId || like.userId.equals(filter.userId));
+}
+
+function matchesComment(comment: CommentDocument, filter: MongoFilter): boolean {
+  if ("$and" in filter) {
+    return (filter.$and as MongoFilter[]).every((condition) => matchesComment(comment, condition));
+  }
+  if ("$or" in filter) {
+    return (filter.$or as MongoFilter[]).some((condition) => matchesComment(comment, condition));
+  }
+
+  return Object.entries(filter).every(([field, expected]) => {
+    if (field === "postId") return matchesObjectId(comment.postId, expected);
+    if (field === "authorId") return matchesObjectId(comment.authorId, expected);
+    if (field === "_id") return matchesObjectId(comment._id, expected);
+    if (field === "createdAt") return matchesDate(comment.createdAt, expected);
+    return false;
+  });
 }
 
 function createDatabase(data: PostTestData): Db {
@@ -149,6 +167,34 @@ function createDatabase(data: PostTestData): Db {
             if (index < 0) return { acknowledged: true, deletedCount: 0 };
             data.likes.splice(index, 1);
             return { acknowledged: true, deletedCount: 1 };
+          },
+        };
+      }
+
+      if (name === collectionNames.comments) {
+        return {
+          insertOne: async (comment: CommentDocument) => {
+            data.comments.push(comment);
+            return { acknowledged: true, insertedId: comment._id };
+          },
+          find: (filter: MongoFilter) => {
+            let result = data.comments.filter((comment) => matchesComment(comment, filter));
+            let maximum = Number.POSITIVE_INFINITY;
+            const cursor = {
+              sort: () => {
+                result = result.toSorted((left, right) =>
+                  right.createdAt.getTime() - left.createdAt.getTime() ||
+                  right._id.toHexString().localeCompare(left._id.toHexString()),
+                );
+                return cursor;
+              },
+              limit: (limit: number) => {
+                maximum = limit;
+                return cursor;
+              },
+              toArray: async () => result.slice(0, maximum),
+            };
+            return cursor;
           },
         };
       }
@@ -305,6 +351,7 @@ function matrixFixture(): { data: PostTestData; tokens: Record<"author" | "frien
       createdAt: new Date(now),
     }],
     likes: [],
+    comments: [],
     posts: [
       makePost(ids.onlyMe, author._id, "onlyMe", new Date(now + 3)),
       makePost(ids.friends, author._id, "friends", new Date(now + 2)),
@@ -999,4 +1046,130 @@ test("photo byte requests recheck current audience, never expose Cloudinary IDs,
     .get(`/api/posts/${ids.friends}/photo`)
     .set("Cookie", cookie(tokens.friend));
   assert.equal(removedFriend.status, 404, "friends access must be revoked immediately after friendship removal");
+});
+
+test("comments paginate newest first with stable cursors and return only public author fields", async () => {
+  const { data, tokens } = matrixFixture();
+  const postId = new ObjectId(ids.public);
+  const authorId = new ObjectId(ids.author);
+  const createdAt = new Date("2026-10-01T12:00:00.000Z");
+  data.comments = Array.from({ length: 5 }, (_, index) => ({
+    _id: new ObjectId((300 + index).toString(16).padStart(24, "0")),
+    postId,
+    authorId,
+    text: `Comment ${index + 1}`,
+    createdAt,
+  }));
+  const app = createApp(data);
+  const collected: Array<{ id: string; text: string; author: { id: string; email?: string; passwordHash?: string } }> = [];
+  let cursor: string | null = null;
+
+  do {
+    const page = await request(app)
+      .get(`/api/posts/${ids.public}/comments`)
+      .query({ limit: 2, ...(cursor ? { cursor } : {}) })
+      .set("Cookie", cookie(tokens.outsider))
+      .expect(200);
+    assert.equal(page.headers["cache-control"], "private, no-store");
+    collected.push(...page.body.items);
+    cursor = page.body.nextCursor;
+  } while (cursor);
+
+  assert.deepEqual(collected.map((comment) => comment.text), [
+    "Comment 5", "Comment 4", "Comment 3", "Comment 2", "Comment 1",
+  ]);
+  assert.equal(new Set(collected.map((comment) => comment.id)).size, 5);
+  assert.ok(collected.every((comment) => comment.author.id === ids.author));
+  assert.ok(collected.every((comment) => !("email" in comment.author) && !("passwordHash" in comment.author)));
+});
+
+test("comment creation validates text, requires an allowed origin, and stops after access is revoked", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const postPath = `/api/posts/${ids.public}`;
+  const commentsPath = `${postPath}/comments`;
+
+  await request(app)
+    .post(commentsPath)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Missing origin" })
+    .expect(403);
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "   " })
+    .expect(400);
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "x".repeat(2_001) })
+    .expect(400);
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Allowed comment", extra: "not accepted" })
+    .expect(400);
+
+  const created = await request(app)
+    .post(commentsPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "  Allowed comment  " })
+    .expect(201);
+  assert.equal(created.body.comment.text, "Allowed comment");
+  assert.equal(created.body.comment.author.id, ids.outsider);
+  assert.equal("email" in created.body.comment.author, false);
+  assert.equal(created.headers["cache-control"], "private, no-store");
+  assert.equal(data.comments.length, 1);
+
+  await request(app)
+    .patch(postPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .send({ visibility: "onlyMe" })
+    .expect(200);
+
+  await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Should be denied" })
+    .expect(404);
+  assert.equal(data.comments.length, 1, "a denied viewer must not add comments after the post becomes Only me");
+
+  const authorPage = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.author))
+    .expect(200);
+  assert.deepEqual(authorPage.body.items.map((comment: { text: string }) => comment.text), ["Allowed comment"]);
+});
+
+test("comment routes require a session and reject malformed post IDs, cursors, and page limits", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  await request(app).get(`/api/posts/${ids.public}/comments`).expect(401);
+  await request(app)
+    .post(`/api/posts/${ids.public}/comments`)
+    .set("Origin", "http://localhost:5173")
+    .send({ text: "Sign in first" })
+    .expect(401);
+  await request(app)
+    .get("/api/posts/not-an-object-id/comments")
+    .set("Cookie", cookie(tokens.author))
+    .expect(404);
+  await request(app)
+    .get(`/api/posts/${ids.public}/comments?limit=51`)
+    .set("Cookie", cookie(tokens.author))
+    .expect(400);
+  await request(app)
+    .get(`/api/posts/${ids.public}/comments?cursor=YWJj`)
+    .set("Cookie", cookie(tokens.author))
+    .expect(400);
 });

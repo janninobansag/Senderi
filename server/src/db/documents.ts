@@ -74,6 +74,15 @@ export interface LikeDocument {
   createdAt: Date;
 }
 
+/** A text comment belongs to a post and its author is the authenticated user. */
+export interface CommentDocument {
+  _id: ObjectId;
+  postId: ObjectId;
+  authorId: ObjectId;
+  text: string;
+  createdAt: Date;
+}
+
 export interface MessageDocument {
   _id: ObjectId;
   senderId: ObjectId;

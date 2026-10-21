@@ -171,10 +171,10 @@ This checklist breaks down the 34 reviewable tasks in [Milestones and assignment
 
 ### M5-J2 — Jan: Comments
 
-- [ ] **M5-J2.1** Define text comment records, length validation, and newest-first pagination.
-- [ ] **M5-J2.2** Add list/create routes that call the current post-view check.
-- [ ] **M5-J2.3** Add comment list, composer, and loading/error states on post cards or detail.
-- [ ] **M5-J2.4** Check pagination and denial after a post changes from Public to Only me.
+- [x] **M5-J2.1** Define text comment records, length validation, and newest-first pagination. *(Comments store the post, authenticated author, trimmed text capped at 2,000 characters, and creation time. A compound post/time/ID index supports stable cursor pagination; API tests cover newest-first pages and invalid text.)*
+- [x] **M5-J2.2** Add list/create routes that call the current post-view check. *(Both routes require a signed-in viewer and call `canViewPost` against the current post. Creation requires an allowed Origin and derives the author from the session.)*
+- [x] **M5-J2.3** Add comment list, composer, and loading/error states on post cards or detail. *(Post cards provide a paged comment panel, composer with a 2,000-character counter, and loading, empty, pending, success, and error feedback.)*
+- [x] **M5-J2.4** Check pagination and denial after a post changes from Public to Only me. *(Integration tests traverse multiple newest-first pages, then switch a Public post to Only me and confirm a non-owner can neither list existing comments nor create another.)*
 
 ### M5-J3 — Jan: Shares
 

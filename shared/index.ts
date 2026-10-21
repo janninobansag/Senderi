@@ -122,3 +122,22 @@ export interface CreatePostResponse {
 export interface UpdatePostRequest {
   visibility: Visibility;
 }
+
+/** Public comment data attached to a post; private account fields are excluded. */
+export interface Comment {
+  id: string;
+  postId: string;
+  author: User;
+  text: string;
+  createdAt: string;
+}
+
+export type CommentListResponse = Page<Comment>;
+
+export interface CreateCommentRequest {
+  text: string;
+}
+
+export interface CreateCommentResponse {
+  comment: Comment;
+}

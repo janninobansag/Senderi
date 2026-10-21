@@ -1,4 +1,4 @@
-import { ObjectId, type Db } from "mongodb";
+import { ObjectId, type Db, type Filter } from "mongodb";
 import { Router, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
@@ -7,13 +7,18 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type LikeDocument, type PostDocument, type PostVisibility, type UserDocument } from "../db/documents";
+import { collectionNames, type CommentDocument, type LikeDocument, type PostDocument, type PostVisibility, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { cloudinaryPostPhotoStorage, validatePostPhoto, type PostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
 import { canViewPost, decodePostCursor, listVisiblePostDocuments } from "../post-access";
 
 const postPageQuerySchema = z.object({
+  cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+}).strict();
+
+const commentPageQuerySchema = z.object({
   cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 }).strict();
@@ -25,6 +30,10 @@ const createPostSchema = z.object({
 
 const updatePostSchema = z.object({
   visibility: z.enum(["public", "friends", "onlyMe"]),
+}).strict();
+
+const createCommentSchema = z.object({
+  text: z.string().trim().min(1).max(2_000),
 }).strict();
 
 interface PostResponseItem {
@@ -58,6 +67,19 @@ interface PostResponse {
   post: PostResponseItem;
 }
 
+interface CommentResponseItem {
+  id: string;
+  postId: string;
+  author: ReturnType<typeof toPublicUserResponse>;
+  text: string;
+  createdAt: string;
+}
+
+interface CommentCursor {
+  createdAt: Date;
+  commentId: ObjectId;
+}
+
 export interface PostsRouterDependencies {
   getDatabase: () => Db;
   getCloudinaryCloudName: () => string | undefined;
@@ -85,6 +107,42 @@ function parsePageQuery(query: Record<string, unknown>) {
   };
 }
 
+function decodeCommentCursor(token: string): CommentCursor {
+  try {
+    const value: unknown = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+    if (
+      typeof value !== "object" || value === null ||
+      !("createdAt" in value) || typeof value.createdAt !== "string" ||
+      !("id" in value) || typeof value.id !== "string" ||
+      !/^[a-f\d]{24}$/i.test(value.id)
+    ) throw new Error("Invalid cursor payload.");
+
+    const createdAt = new Date(value.createdAt);
+    if (!Number.isFinite(createdAt.getTime()) || createdAt.toISOString() !== value.createdAt) {
+      throw new Error("Invalid cursor date.");
+    }
+    return { createdAt, commentId: new ObjectId(value.id) };
+  } catch {
+    throw new HttpError(400, "invalid_cursor", "Comment cursor is invalid.");
+  }
+}
+
+function encodeCommentCursor(comment: Pick<CommentDocument, "_id" | "createdAt">): string {
+  return Buffer.from(JSON.stringify({
+    createdAt: comment.createdAt.toISOString(),
+    id: comment._id.toHexString(),
+  })).toString("base64url");
+}
+
+function parseCommentPageQuery(query: Record<string, unknown>) {
+  const parsed = commentPageQuerySchema.safeParse(query);
+  if (!parsed.success) throw new HttpError(400, "validation_error", "Comment page query is invalid.");
+  return {
+    limit: parsed.data.limit,
+    cursor: parsed.data.cursor ? decodeCommentCursor(parsed.data.cursor) : undefined,
+  };
+}
+
 function toObjectIdOrNotFound(value: string, resource: "post" | "profile"): ObjectId {
   if (!/^[a-f\d]{24}$/i.test(value)) {
     throw new HttpError(404, "not_found", resource === "post" ? "Post was not found." : "Profile was not found.");
@@ -107,6 +165,47 @@ function toPostResponse(
     createdAt: post.createdAt.toISOString(),
     ...likeSummary,
   };
+}
+
+function toCommentResponse(comment: CommentDocument, author: UserDocument, cloudName?: string): CommentResponseItem {
+  return {
+    id: comment._id.toHexString(),
+    postId: comment.postId.toHexString(),
+    author: toPublicUserResponse(author, cloudName),
+    text: comment.text,
+    createdAt: comment.createdAt.toISOString(),
+  };
+}
+
+async function toCommentResponses(
+  database: Db,
+  comments: CommentDocument[],
+  cloudName?: string,
+): Promise<CommentResponseItem[]> {
+  if (comments.length === 0) return [];
+  const authorIds = [...new Map(comments.map((comment) => [
+    comment.authorId.toHexString(),
+    comment.authorId,
+  ])).values()];
+  const authors = await database
+    .collection<UserDocument>(collectionNames.users)
+    .find({ _id: { $in: authorIds } }, {
+      projection: {
+        _id: 1,
+        displayName: 1,
+        bio: 1,
+        info: 1,
+        avatarId: 1,
+        coverId: 1,
+        createdAt: 1,
+      },
+    })
+    .toArray();
+  const authorsById = new Map(authors.map((author) => [author._id.toHexString(), author]));
+  return comments.flatMap((comment) => {
+    const author = authorsById.get(comment.authorId.toHexString());
+    return author ? [toCommentResponse(comment, author, cloudName)] : [];
+  });
 }
 
 async function toPostResponses(
@@ -378,6 +477,78 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const likeSummary = await getPostLikeSummary(database, postId, session.user._id);
       response.setHeader("Cache-Control", "private, no-store");
       response.json(likeSummary);
+    },
+  );
+
+  router.get("/:postId/comments", authenticated, async (request, response) => {
+    const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+    const database = dependencies.getDatabase();
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+    if (!post || !(await canViewPost(database, viewerId, post))) {
+      throw new HttpError(404, "not_found", "Post was not found.");
+    }
+
+    const page = parseCommentPageQuery(request.query as Record<string, unknown>);
+    const cursorFilter: Filter<CommentDocument> | undefined = page.cursor
+      ? {
+        $or: [
+          { createdAt: { $lt: page.cursor.createdAt } },
+          { createdAt: page.cursor.createdAt, _id: { $lt: page.cursor.commentId } },
+        ],
+      }
+      : undefined;
+    const filter: Filter<CommentDocument> = cursorFilter
+      ? { $and: [{ postId }, cursorFilter] }
+      : { postId };
+    const comments = await database
+      .collection<CommentDocument>(collectionNames.comments)
+      .find(filter)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(page.limit + 1)
+      .toArray();
+    const hasMore = comments.length > page.limit;
+    const pageComments = hasMore ? comments.slice(0, page.limit) : comments;
+    const items = await toCommentResponses(database, pageComments, dependencies.getCloudinaryCloudName());
+    const nextCursor = hasMore && pageComments.length > 0
+      ? encodeCommentCursor(pageComments[pageComments.length - 1]!)
+      : null;
+
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ items, nextCursor });
+  });
+
+  router.post(
+    "/:postId/comments",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const database = dependencies.getDatabase();
+      const session = getAuthenticatedSession(response);
+      const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+      if (!post || !(await canViewPost(database, session.user._id, post))) {
+        throw new HttpError(404, "not_found", "Post was not found.");
+      }
+
+      const parsed = createCommentSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new HttpError(400, "validation_error", "Comment text must contain 1 to 2000 characters.");
+      }
+
+      const comment: CommentDocument = {
+        _id: new ObjectId(),
+        postId,
+        authorId: session.user._id,
+        text: parsed.data.text,
+        createdAt: new Date(),
+      };
+      await database.collection<CommentDocument>(collectionNames.comments).insertOne(comment);
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(201).json({
+        comment: toCommentResponse(comment, session.user, dependencies.getCloudinaryCloudName()),
+      });
     },
   );
 
