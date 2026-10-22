@@ -90,22 +90,24 @@ function AuthPageShell({
   eyebrow,
   title,
   description,
+  illustrated = false,
   children,
 }: {
   eyebrow: string;
   title: string;
   description: string;
+  illustrated?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="auth-main">
+    <div className={`auth-main${illustrated ? " auth-main-illustrated" : ""}`}>
       <div className="auth-grid">
         <div className="auth-copy">
           <span className="eyebrow">{eyebrow}</span>
           <h1 className="mt-4 max-w-lg font-display text-4xl font-bold leading-tight tracking-[-0.055em] text-ink sm:text-5xl">{title}</h1>
           <p className="mt-5 max-w-md text-base leading-7 text-muted">{description}</p>
           <div className="auth-note mt-8">
-            <span className="auth-note-mark" aria-hidden="true">s.</span>
+            <span className="auth-note-mark" aria-hidden="true"><img src="/senderi-mark.svg" alt="" /></span>
             <p>Make space for the people and moments that matter.</p>
           </div>
         </div>
@@ -163,7 +165,7 @@ export function SignupPage() {
   }
 
   return (
-    <AuthPageShell eyebrow="Join Senderi" title="A little more connected." description="Create an account to find your people, share what matters, and keep up with friends.">
+    <AuthPageShell eyebrow="Join Senderi" title="A little more connected." description="Create an account to find your people, share what matters, and keep up with friends." illustrated>
       <div className="mb-6">
         <h2 className="font-display text-2xl font-bold tracking-[-0.04em] text-ink">Create your account</h2>
         <p className="mt-2 text-sm leading-6 text-muted">It only takes a moment to get started.</p>
@@ -214,7 +216,7 @@ export function LoginPage() {
   }
 
   return (
-    <AuthPageShell eyebrow="Welcome back" title="Your people are here." description="Sign in to return to your timeline and catch up with your friends.">
+    <AuthPageShell eyebrow="Welcome back" title="Your people are here." description="Sign in to return to your timeline and catch up with your friends." illustrated>
       <div className="mb-6">
         <h2 className="font-display text-2xl font-bold tracking-[-0.04em] text-ink">Sign in</h2>
         <p className="mt-2 text-sm leading-6 text-muted">Use the email and password for your Senderi account.</p>
