@@ -7,20 +7,21 @@
   "scripts": {
     "dev": "vite",
     "lint": "eslint . --max-warnings=0",
-    "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.node.json --noEmit",
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "socket.io-client": "^4.8.4",
     "@vitejs/plugin-react": "^5.0.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "react-router-dom": "^7.9.1"
+    "react-router-dom": "^7.9.1",
+    "socket.io-client": "^4.8.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.1.13",
+    "@types/node": "^24.19.2",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "eslint": "^10.11.0",

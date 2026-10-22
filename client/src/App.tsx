@@ -146,6 +146,10 @@ function HeaderPeopleSearch() {
   const normalizedQuery = query.trim();
 
   useEffect(() => {
+    if (isOpen) searchInputRef.current?.focus();
+  }, [isOpen]);
+
+  useEffect(() => {
     const term = normalizedQuery;
     if (term.length < 2) {
       setPeopleMatches([]);
@@ -225,6 +229,7 @@ function HeaderPeopleSearch() {
     storeRecentSearch(term);
     setIsEditingHistory(false);
     setIsOpen(false);
+    searchInputRef.current?.blur();
     navigate(`/search?query=${encodeURIComponent(term)}`);
   }
 
@@ -244,7 +249,7 @@ function HeaderPeopleSearch() {
   }
 
   return (
-    <div className="header-search-control" ref={searchControlRef}>
+    <div className={`header-search-control${isOpen ? " is-open" : ""}`} ref={searchControlRef}>
       <form className="header-people-search" role="search" onSubmit={submitSearch}>
         <svg className="header-search-desktop-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="10.8" cy="10.8" r="6.8" />
@@ -253,13 +258,24 @@ function HeaderPeopleSearch() {
         <button
           className="header-mobile-search-trigger"
           type="button"
-          aria-label="Open search"
-          onClick={() => { setIsOpen(true); searchInputRef.current?.focus(); }}
+          aria-label={isOpen ? "Close search" : "Open search"}
+          aria-expanded={isOpen}
+          aria-controls="header-search-popover"
+          onClick={() => {
+            if (isOpen) {
+              setIsOpen(false);
+              setQuery("");
+              searchInputRef.current?.blur();
+            } else {
+              setIsOpen(true);
+            }
+          }}
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="10.8" cy="10.8" r="6.8" />
-            <path d="m16 16 5 5" />
-          </svg>
+          {isOpen ? (
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5l14 14M19 5 5 19" /></svg>
+          ) : (
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
+          )}
         </button>
         <label className="sr-only" htmlFor="header-people-search-input">Search Senderi</label>
         <input
@@ -310,7 +326,7 @@ function HeaderPeopleSearch() {
                   <ul className="header-search-list">
                     {peopleMatches.map((person) => (
                       <li key={person.id}>
-                        <Link className="header-search-result" to={`/profile/${encodeURIComponent(person.id)}`} onClick={() => { storeRecentSearch(normalizedQuery); setIsOpen(false); }}>
+                        <Link className="header-search-result" to={`/profile/${encodeURIComponent(person.id)}`} onClick={() => { storeRecentSearch(normalizedQuery); setIsOpen(false); searchInputRef.current?.blur(); }}>
                           <span className="header-search-result-avatar">{person.avatarUrl ? <img src={person.avatarUrl} alt="" /> : person.displayName.trim().charAt(0).toUpperCase() || "?"}</span>
                           <span className="header-search-result-copy"><strong>{person.displayName}</strong><span>{person.bio || person.info.location || "Senderi member"}</span></span>
                         </Link>
