@@ -60,6 +60,9 @@ function matchesPost(post: PostDocument, filter: MongoFilter): boolean {
     if (field === "authorId") return matchesObjectId(post.authorId, expected);
     if (field === "_id") return matchesObjectId(post._id, expected);
     if (field === "createdAt") return matchesDate(post.createdAt, expected);
+    if (field === "photoAssetId" && typeof expected === "object" && expected !== null && "$exists" in expected) {
+      return (post.photoAssetId !== undefined) === expected.$exists;
+    }
     if (field === "visibility") {
       if (typeof expected === "object" && expected !== null && "$in" in expected) {
         return (expected.$in as PostDocument["visibility"][]).includes(post.visibility);
@@ -615,6 +618,44 @@ test("feed, author timeline, and direct URLs enforce every audience for author, 
     .set("Cookie", cookie(tokens.outsider));
   assert.equal(hidden.status, nonexistent.status);
   assert.deepEqual(hidden.body, nonexistent.body);
+});
+
+test("profile photos paginate only visible photo posts without exposing storage IDs", async () => {
+  const { data, tokens } = matrixFixture();
+  for (const post of data.posts) post.photoAssetId = `senderi/posts/${post._id.toHexString()}`;
+  data.posts.push(makePost("000000000000000000000014", data.users[0]!._id, "public", new Date(Date.now() + 4)));
+  const app = createApp(data);
+  const expectedByViewer = {
+    author: [ids.onlyMe, ids.friends, ids.public],
+    friend: [ids.friends, ids.public],
+    outsider: [ids.public],
+  } as const;
+
+  for (const viewer of ["author", "friend", "outsider"] as const) {
+    const collected: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await request(app)
+        .get(`/api/users/${ids.author}/photos`)
+        .query({ limit: 1, ...(cursor ? { cursor } : {}) })
+        .set("Cookie", cookie(tokens[viewer]))
+        .expect(200);
+      assert.equal(page.headers["cache-control"], "private, no-store");
+      for (const post of page.body.items as Array<{ id: string; photoUrl?: string; photoAssetId?: string }>) {
+        collected.push(post.id);
+        assert.equal(post.photoUrl, `/api/posts/${post.id}/photo`);
+        assert.equal("photoAssetId" in post, false);
+      }
+      cursor = page.body.nextCursor;
+    } while (cursor);
+    assert.deepEqual(collected, expectedByViewer[viewer]);
+  }
+
+  await request(app).get(`/api/users/${ids.author}/photos`).expect(401);
+  await request(app)
+    .get(`/api/users/${ids.author}/photos?cursor=invalid`)
+    .set("Cookie", cookie(tokens.author))
+    .expect(400);
 });
 
 test("post search returns matching feed posts and shares only when their current audiences allow access", async () => {

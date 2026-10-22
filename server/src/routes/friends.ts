@@ -16,6 +16,7 @@ import { requireClientOrigin } from "../middleware/require-client-origin";
 const friendListQuerySchema = z.object({
   cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
+  includeMutualCounts: z.literal("true").optional(),
 }).strict();
 
 type FriendListCursor = { createdAt: Date; friendshipId: ObjectId };
@@ -86,6 +87,7 @@ export function createFriendsRouter(overrides: Partial<FriendsRouterDependencies
       throw new HttpError(400, "validation_error", "Friend list query is invalid.");
     }
     const { cursor: cursorToken, limit } = parsedQuery.data;
+    const includeMutualCounts = parsedQuery.data.includeMutualCounts === "true";
     const cursor = cursorToken ? decodeFriendListCursor(cursorToken) : undefined;
     const viewerId = getAuthenticatedSession(response).user._id;
     const filter: Filter<FriendshipDocument> = {
@@ -99,21 +101,32 @@ export function createFriendsRouter(overrides: Partial<FriendsRouterDependencies
         }] : []),
       ],
     };
-    const friendships = await dependencies.getDatabase()
-      .collection<FriendshipDocument>(collectionNames.friendships)
-      .find(filter)
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(limit + 1)
-      .toArray();
+    const friendshipCollection = dependencies.getDatabase().collection<FriendshipDocument>(collectionNames.friendships);
+    const [friendships, viewerFriendships] = await Promise.all([
+      friendshipCollection.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(limit + 1)
+        .toArray(),
+      includeMutualCounts
+        ? friendshipCollection.find({ $or: [{ userIdLow: viewerId }, { userIdHigh: viewerId }] }, {
+          projection: { userIdLow: 1, userIdHigh: 1 },
+        }).toArray()
+        : Promise.resolve([]),
+    ]);
     const hasMore = friendships.length > limit;
     const pageFriendships = friendships.slice(0, limit);
     const friendIds = pageFriendships.map((friendship) =>
       friendship.userIdLow.equals(viewerId) ? friendship.userIdHigh : friendship.userIdLow,
     );
-    const users = friendIds.length
-      ? await dependencies.getDatabase()
-        .collection<UserDocument>(collectionNames.users)
-        .find({ _id: { $in: friendIds } }, {
+    const viewerFriendIds = viewerFriendships.map((friendship) =>
+      friendship.userIdLow.equals(viewerId) ? friendship.userIdHigh : friendship.userIdLow,
+    );
+    const friendIdSet = new Set(friendIds.map((friendId) => friendId.toHexString()));
+    const [users, mutualFriendships] = friendIds.length
+      ? await Promise.all([
+        dependencies.getDatabase()
+          .collection<UserDocument>(collectionNames.users)
+          .find({ _id: { $in: friendIds } }, {
           projection: {
             _id: 1,
             displayName: 1,
@@ -124,16 +137,39 @@ export function createFriendsRouter(overrides: Partial<FriendsRouterDependencies
             createdAt: 1,
           },
         })
-        .toArray()
-      : [];
+          .toArray(),
+        includeMutualCounts && viewerFriendIds.length > 1
+          ? friendshipCollection.find({
+            $or: [
+              { userIdLow: { $in: friendIds }, userIdHigh: { $in: viewerFriendIds } },
+              { userIdHigh: { $in: friendIds }, userIdLow: { $in: viewerFriendIds } },
+            ],
+          }, { projection: { userIdLow: 1, userIdHigh: 1 } }).toArray()
+          : Promise.resolve([]),
+      ])
+      : [[], []];
     const usersById = new Map(users.map((user) => [user._id.toHexString(), user]));
+    const mutualFriendCounts = new Map<string, number>();
+    for (const friendship of mutualFriendships) {
+      const lowId = friendship.userIdLow.toHexString();
+      const highId = friendship.userIdHigh.toHexString();
+      if (friendIdSet.has(lowId) && !friendship.userIdHigh.equals(viewerId)) {
+        mutualFriendCounts.set(lowId, (mutualFriendCounts.get(lowId) ?? 0) + 1);
+      }
+      if (friendIdSet.has(highId) && !friendship.userIdLow.equals(viewerId)) {
+        mutualFriendCounts.set(highId, (mutualFriendCounts.get(highId) ?? 0) + 1);
+      }
+    }
     const lastFriendship = pageFriendships.at(-1);
 
     response.setHeader("Cache-Control", "private, no-store");
     response.json({
       items: friendIds.flatMap((friendId) => {
         const user = usersById.get(friendId.toHexString());
-        return user ? [toPublicUserResponse(user, dependencies.getCloudinaryCloudName())] : [];
+        return user ? [{
+          ...toPublicUserResponse(user, dependencies.getCloudinaryCloudName()),
+          ...(includeMutualCounts ? { mutualFriendCount: mutualFriendCounts.get(friendId.toHexString()) ?? 0 } : {}),
+        }] : [];
       }),
       nextCursor: hasMore && lastFriendship ? encodeFriendListCursor(lastFriendship) : null,
     });

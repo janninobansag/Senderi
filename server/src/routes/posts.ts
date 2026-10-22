@@ -11,7 +11,7 @@ import { collectionNames, type CommentDocument, type FriendshipDocument, type Li
 import { HttpError } from "../errors/http-error";
 import { cloudinaryPostPhotoStorage, optimizePostPhoto, type PostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
-import { canViewPost, decodePostCursor, encodePostCursor } from "../post-access";
+import { canViewPost, decodePostCursor, encodePostCursor, listVisiblePostDocuments } from "../post-access";
 import { listVisibleFeedRecords, type FeedRecord } from "../feed-access";
 import { canViewShare } from "../share-access";
 import { createNotification } from "../notifications/create-notification";
@@ -1130,6 +1130,21 @@ export function createUserPostsRouter(overrides: Partial<PostsRouterDependencies
     const viewerId = getAuthenticatedSession(response).user._id;
     const page = await listVisibleFeedRecords(database, viewerId, { ...query, authorId });
     const items = await toFeedResponses(database, page.items, viewerId, dependencies.getCloudinaryCloudName());
+
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json(toPostListResponse(items, page.nextCursor));
+  });
+
+  router.get("/:userId/photos", authenticated, async (request, response) => {
+    const authorId = toObjectIdOrNotFound(String(request.params.userId), "profile");
+    const database = dependencies.getDatabase();
+    const author = await database.collection<UserDocument>(collectionNames.users).findOne({ _id: authorId });
+    if (!author) throw new HttpError(404, "not_found", "Profile was not found.");
+
+    const query = parsePageQuery(request.query as Record<string, unknown>);
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const page = await listVisiblePostDocuments(database, viewerId, { ...query, authorId, photosOnly: true });
+    const items = await toPostResponses(database, page.items, viewerId, dependencies.getCloudinaryCloudName());
 
     response.setHeader("Cache-Control", "private, no-store");
     response.json(toPostListResponse(items, page.nextCursor));

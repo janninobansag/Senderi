@@ -15,6 +15,7 @@ import type {
 } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch } from "../api/client";
+import { notifyChatUnreadChanged } from "../chat/unread-events";
 import { EmptyState, RequestErrorState } from "../components/AsyncState";
 import { ChatListSkeleton, MessageBubblesSkeleton, SkeletonBlock, SkeletonRegion } from "../components/Skeletons";
 import {
@@ -198,6 +199,7 @@ export function MessagesPage() {
         delete next[friendId];
         return next;
       });
+      notifyChatUnreadChanged();
     } catch {
       // Keep the unread marker until the server confirms it was cleared.
     }
@@ -333,6 +335,7 @@ export function MessagesPage() {
       const friendId = event.message.senderId === currentUserId ? event.message.recipientId : event.message.senderId;
       updateConversation(friendId, (current) => mergeChatMessage(current, asAcknowledged(event.message)));
       if (event.message.recipientId === currentUserId) {
+        notifyChatUnreadChanged();
         if (selectedFriendIdRef.current === friendId) {
           void markConversationRead(friendId);
         } else {

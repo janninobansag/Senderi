@@ -382,16 +382,20 @@ function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) 
 function PostDetailsDialog({
   post,
   isOpen,
+  photoViewer = false,
   onClose,
   likeState,
   isLikePending,
+  likeMessage,
   onToggleLike,
 }: {
   post: Post;
   isOpen: boolean;
+  photoViewer?: boolean;
   onClose: () => void;
   likeState: { likeCount: number; isLikedByViewer: boolean };
   isLikePending: boolean;
+  likeMessage?: { text: string; isError: boolean } | null;
   onToggleLike: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -408,16 +412,27 @@ function PostDetailsDialog({
   return (
     <dialog
       ref={dialogRef}
-      className="post-detail-dialog"
+      className={`post-detail-dialog${photoViewer ? " post-photo-viewer-dialog" : ""}`}
       aria-label={`Post by ${post.author.displayName}`}
       onClose={onClose}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <button className="post-detail-close" type="button" aria-label="Close post details" onClick={onClose}>
-        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
-      </button>
+      {photoViewer ? (
+        <div className="post-photo-viewer-controls">
+          <button className="post-detail-close" type="button" aria-label="Close photo viewer" onClick={onClose}>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+          <Link className="post-photo-viewer-home" to="/" aria-label="Senderi home" title="Go to home">
+            <img src="/senderi-mark.svg" alt="" />
+          </Link>
+        </div>
+      ) : (
+        <button className="post-detail-close" type="button" aria-label="Close post details" onClick={onClose}>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+        </button>
+      )}
       <div className="post-detail-layout">
         <div className="post-detail-media">
           {post.photoUrl
@@ -461,10 +476,62 @@ function PostDetailsDialog({
             </button>
             <span className="post-action-count">{likeState.likeCount.toLocaleString()}</span>
           </div>
+          {likeMessage && <p className={likeMessage.isError ? "form-error" : "form-success"} role={likeMessage.isError ? "alert" : "status"}>{likeMessage.text}</p>}
           <CommentsPanel postId={post.id} initiallyOpen />
         </aside>
       </div>
     </dialog>
+  );
+}
+
+export function PostPhotoViewer({
+  post,
+  onClose,
+  onLikeUpdated,
+}: {
+  post: Post;
+  onClose: () => void;
+  onLikeUpdated?: (state: LikeResponse) => void;
+}) {
+  const [likeState, setLikeState] = useState({ likeCount: post.likeCount, isLikedByViewer: post.isLikedByViewer });
+  const [isLikePending, setIsLikePending] = useState(false);
+  const [likeMessage, setLikeMessage] = useState<{ text: string; isError: boolean } | null>(null);
+
+  useEffect(() => {
+    setLikeState({ likeCount: post.likeCount, isLikedByViewer: post.isLikedByViewer });
+  }, [post.id, post.likeCount, post.isLikedByViewer]);
+
+  async function toggleLike() {
+    if (isLikePending) return;
+    const wasLiked = likeState.isLikedByViewer;
+    setIsLikePending(true);
+    setLikeMessage(null);
+    try {
+      const state = await apiFetch<LikeResponse>(`/api/posts/${post.id}/like`, { method: wasLiked ? "DELETE" : "PUT" });
+      setLikeState(state);
+      onLikeUpdated?.(state);
+      setLikeMessage({ text: wasLiked ? "Like removed." : "Post liked.", isError: false });
+    } catch (error: unknown) {
+      setLikeMessage({
+        text: error instanceof ApiError ? error.message : "We couldn’t update your Like. Try again.",
+        isError: true,
+      });
+    } finally {
+      setIsLikePending(false);
+    }
+  }
+
+  return (
+    <PostDetailsDialog
+      post={post}
+      isOpen
+      photoViewer
+      onClose={onClose}
+      likeState={likeState}
+      isLikePending={isLikePending}
+      likeMessage={likeMessage}
+      onToggleLike={() => void toggleLike()}
+    />
   );
 }
 
@@ -475,8 +542,12 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAudienceMenuOpen, setIsAudienceMenuOpen] = useState(false);
   const [message, setMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const photoInput = useRef<HTMLInputElement>(null);
+  const audienceMenuRef = useRef<HTMLDivElement>(null);
+  const audienceMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const audienceMenuId = useId();
 
   useEffect(() => {
     if (!photo) {
@@ -488,6 +559,30 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
     setPhotoPreview(previewUrl);
     return () => URL.revokeObjectURL(previewUrl);
   }, [photo]);
+
+  useEffect(() => {
+    if (!isAudienceMenuOpen) return;
+
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (event.target instanceof Node && !audienceMenuRef.current?.contains(event.target)) {
+        setIsAudienceMenuOpen(false);
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsAudienceMenuOpen(false);
+        audienceMenuButtonRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isAudienceMenuOpen]);
 
   async function submitPost(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -548,10 +643,51 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
     setMessage({ text: "Photo ready to share.", isError: false });
   }
 
+  const audienceOptionsControl = (
+    <div className="post-composer-options" ref={audienceMenuRef}>
+      <button
+        ref={audienceMenuButtonRef}
+        className="post-composer-options-trigger"
+        type="button"
+        aria-label={`Post options, audience ${audienceLabel(visibility)}`}
+        aria-haspopup="dialog"
+        aria-expanded={isAudienceMenuOpen}
+        aria-controls={audienceMenuId}
+        title="Post options"
+        disabled={isSubmitting}
+        onClick={() => setIsAudienceMenuOpen((open) => !open)}
+      >
+        <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
+      </button>
+      <div className="post-composer-options-menu" id={audienceMenuId} role="dialog" aria-label="Post options" hidden={!isAudienceMenuOpen}>
+        <label>
+          <span>Audience</span>
+          <select
+            value={visibility}
+            onChange={(event) => {
+              setVisibility(event.target.value as Visibility);
+              setIsAudienceMenuOpen(false);
+              audienceMenuButtonRef.current?.focus();
+            }}
+            aria-label="Post audience"
+            disabled={isSubmitting}
+          >
+            {audienceOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+
   return (
     <form className="surface-card space-y-4 p-5 sm:p-6" onSubmit={(event) => void submitPost(event)}>
-      <label className="block">
+      <div className="post-composer-heading">
         <span className="eyebrow">Create a post</span>
+        {audienceOptionsControl}
+      </div>
+      <label className="block">
         <textarea
           className="mt-3 min-h-28 w-full resize-y rounded-2xl border border-line bg-canvas px-4 py-3 text-sm leading-6 text-ink outline-none transition placeholder:text-muted focus:border-accent"
           aria-label="Post text"
@@ -601,20 +737,7 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
           </div>
         )}
       </div>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <label className="flex items-center gap-3 text-sm font-semibold text-muted">
-          Audience
-          <select
-            className="rounded-xl border border-line bg-canvas px-3 py-2 text-sm font-medium text-ink outline-none focus:border-accent"
-            value={visibility}
-            onChange={(event) => setVisibility(event.target.value as Visibility)}
-            aria-label="Post audience"
-          >
-            {audienceOptions.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        </label>
+      <div className="post-composer-footer flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
         <div className="flex items-center justify-between gap-4 sm:justify-end">
           <span className="text-xs text-muted">{text.length}/{MAX_POST_LENGTH}</span>
           <button className="button-accent" type="submit" disabled={isSubmitting || !text.trim()}>
@@ -664,7 +787,7 @@ function PostCard({
   const [isUpdating, setIsUpdating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [detailMode, setDetailMode] = useState<"post" | "photo" | null>(null);
   const [updateMessage, setUpdateMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const [postLikeState, setPostLikeState] = useState({
     likeCount: post.likeCount,
@@ -863,13 +986,31 @@ function PostCard({
         {post.text || <span className="text-muted">Shared a photo.</span>}
       </div>
       {post.photoUrl && (
-        <img
-          className={post.share ? "share-embedded-image" : "mt-4 max-h-[36rem] w-full rounded-2xl border border-line object-contain"}
-          src={post.photoUrl}
-          alt={`Photo shared by ${post.author.displayName}`}
-          loading="lazy"
-          referrerPolicy="no-referrer"
-        />
+        post.share ? (
+          <img
+            className="share-embedded-image"
+            src={post.photoUrl}
+            alt={`Photo shared by ${post.author.displayName}`}
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <button
+            className="post-photo-trigger"
+            type="button"
+            aria-haspopup="dialog"
+            aria-label={`View photo shared by ${post.author.displayName}`}
+            onClick={() => setDetailMode("photo")}
+          >
+            <img
+              className="mt-4 max-h-[36rem] w-full rounded-2xl border border-line object-contain"
+              src={post.photoUrl}
+              alt={`Photo shared by ${post.author.displayName}`}
+              loading="lazy"
+              referrerPolicy="no-referrer"
+            />
+          </button>
+        )
       )}
     </>
   );
@@ -949,7 +1090,7 @@ function PostCard({
           type="button"
           aria-haspopup="dialog"
           aria-label={`Open original post by ${post.author.displayName}`}
-          onClick={() => setIsDetailsOpen(true)}
+          onClick={() => setDetailMode("post")}
         >
           {originalPostContent}
         </button>
@@ -979,11 +1120,12 @@ function PostCard({
         <ShareControl post={post} onShared={onShared} />
       </div>
       <CommentsPanel postId={post.id} />
-      {post.share && (
+      {detailMode && (
         <PostDetailsDialog
           post={post}
-          isOpen={isDetailsOpen}
-          onClose={() => setIsDetailsOpen(false)}
+          isOpen
+          photoViewer={detailMode === "photo"}
+          onClose={() => setDetailMode(null)}
           likeState={postLikeState}
           isLikePending={pendingLikeTarget !== null}
           onToggleLike={() => void toggleLike("post")}
