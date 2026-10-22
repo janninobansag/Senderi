@@ -13,7 +13,7 @@ import { MessagesPage } from "./pages/MessagesPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SearchPage } from "./pages/SearchPage";
 
-type IconName = "home" | "users" | "message" | "user" | "userPlus" | "bell" | "plus" | "arrow";
+type IconName = "home" | "users" | "message" | "user" | "userPlus" | "bell" | "plus";
 
 function Icon({ name, size = 19 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -24,7 +24,6 @@ function Icon({ name, size = 19 }: { name: IconName; size?: number }) {
     userPlus: <><circle cx="8" cy="7" r="4" /><path d="M2.5 20v-1a5.5 5.5 0 0 1 11 0v1M19 8v7M15.5 11.5h7" /></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
-    arrow: <><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></>,
   };
 
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
@@ -80,7 +79,7 @@ export default function App() {
       )}
 
       <Routes>
-        <Route path="/" element={isLoading ? <PageLoading /> : user ? <MemberLayout><HomePage /></MemberLayout> : <PublicHomePage />} />
+        <Route path="/" element={isLoading ? <PageLoading /> : user ? <MemberLayout><HomePage /></MemberLayout> : <Navigate to="/login" replace />} />
         <Route path="/login" element={<PublicAccountRoute><LoginPage /></PublicAccountRoute>} />
         <Route path="/signup" element={<PublicAccountRoute><SignupPage /></PublicAccountRoute>} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
@@ -303,6 +302,7 @@ function HeaderPeopleSearch() {
 function HeaderActions() {
   const { user, isLoading, signOut } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
@@ -693,8 +693,8 @@ function HeaderActions() {
         </>
       ) : (
         <>
-          <Link className="header-link" to="/login">Sign in</Link>
-          <Link className="header-action" to="/signup">Create account</Link>
+          {location.pathname !== "/login" && <Link className="header-link" to="/login">Sign in</Link>}
+          {location.pathname !== "/signup" && <Link className="header-action" to="/signup">Create account</Link>}
         </>
       )}
     </div>
@@ -756,9 +756,10 @@ function MemberLayout({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const location = useLocation();
   const isFriendsPage = location.pathname === "/friends";
+  const isHomePage = location.pathname === "/";
 
   return (
-    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""}`}>
+    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""} ${isHomePage ? "home-member-layout" : ""}`}>
       {!isFriendsPage && <aside className="member-layout-sidebar lg:w-64 lg:shrink-0">
         <nav aria-label="Main navigation" className="member-primary-nav flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
           <p className="mb-2 hidden px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted lg:block">Explore</p>
@@ -783,30 +784,5 @@ function MemberLayout({ children }: { children: ReactNode }) {
       </aside>}
       <main className="min-w-0 flex-1">{children}</main>
     </div>
-  );
-}
-
-function PublicHomePage() {
-  return (
-    <main className="mx-auto max-w-7xl px-5 py-7 sm:px-8 sm:py-12">
-      <section className="hero-card relative overflow-hidden p-7 sm:p-12 lg:min-h-[420px]">
-        <div className="relative z-10 max-w-2xl">
-          <span className="eyebrow eyebrow-light">Your space to connect</span>
-          <h1 className="mt-4 max-w-xl font-display text-4xl font-bold leading-[1.08] tracking-[-0.055em] text-white sm:text-6xl">Make space for the good stuff.</h1>
-          <p className="mt-5 max-w-lg text-base leading-7 text-white/70 sm:text-lg">Share a moment, catch up with your people, and keep the little things that matter close.</p>
-          <div className="mt-8 flex flex-wrap items-center gap-4">
-            <Link className="button-accent" to="/signup">Create your account <Icon name="arrow" size={16} /></Link>
-            <Link className="font-semibold text-white/85 transition hover:text-white" to="/login">I already have an account</Link>
-          </div>
-        </div>
-        <div className="hero-orbit hero-orbit-one" aria-hidden="true" />
-        <div className="hero-orbit hero-orbit-two" aria-hidden="true" />
-      </section>
-      <div className="mt-5 grid gap-5 md:grid-cols-3">
-        <section className="surface-card p-6"><span className="eyebrow">Share</span><h2 className="mt-3 font-display text-xl font-bold text-ink">Keep the moments</h2><p className="mt-2 text-sm leading-6 text-muted">Post a thought or a photo for the people you choose.</p></section>
-        <section className="surface-card p-6"><span className="eyebrow">Connect</span><h2 className="mt-3 font-display text-xl font-bold text-ink">Find your circle</h2><p className="mt-2 text-sm leading-6 text-muted">Build a space with friends and people you care about.</p></section>
-        <section className="surface-card p-6"><span className="eyebrow">Belong</span><h2 className="mt-3 font-display text-xl font-bold text-ink">Make it yours</h2><p className="mt-2 text-sm leading-6 text-muted">Create an account and shape your own Senderi profile.</p></section>
-      </div>
-    </main>
   );
 }
