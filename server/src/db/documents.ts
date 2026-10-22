@@ -131,6 +131,9 @@ export interface MessageDocument {
   clientId: string;
   text: string;
   createdAt: Date;
+  /** Explicitly false only for newly delivered messages awaiting the recipient. */
+  isRead?: boolean;
+  readAt?: Date;
 }
 
 /** TTL-managed documents use BSON Date values in expiresAt. */

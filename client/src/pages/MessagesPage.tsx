@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { io, type Socket } from "socket.io-client";
+import { Link, useSearchParams } from "react-router-dom";
 import type {
+  ChatUnreadResponse,
   FriendListResponse,
   Message,
   MessageAckEvent,
@@ -13,7 +15,8 @@ import type {
 } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch } from "../api/client";
-import { EmptyState, LoadingState, RequestErrorState } from "../components/AsyncState";
+import { EmptyState, RequestErrorState } from "../components/AsyncState";
+import { ChatListSkeleton, MessageBubblesSkeleton, SkeletonBlock, SkeletonRegion } from "../components/Skeletons";
 import {
   createPendingMessage,
   failChatMessage,
@@ -78,6 +81,7 @@ function messageTime(value: string): string {
 
 export function MessagesPage() {
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const userId = user?.id;
   const [friends, setFriends] = useState<User[]>([]);
   const [friendsCursor, setFriendsCursor] = useState<string | null>(null);
@@ -85,7 +89,10 @@ export function MessagesPage() {
   const [friendsLoadingMore, setFriendsLoadingMore] = useState(false);
   const [friendsError, setFriendsError] = useState<string | null>(null);
   const [friendsMoreError, setFriendsMoreError] = useState<string | null>(null);
-  const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null);
+  const [selectedFriendId, setSelectedFriendId] = useState<string | null>(() => searchParams.get("friend"));
+  const [conversationSearch, setConversationSearch] = useState("");
+  const [chatFilter, setChatFilter] = useState<"all" | "unread">("all");
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [conversations, setConversations] = useState<Record<string, ChatMessage[]>>({});
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -96,11 +103,13 @@ export function MessagesPage() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const conversationsRef = useRef<Record<string, ChatMessage[]>>({});
+  const initialFriendIdRef = useRef<string | null>(searchParams.get("friend"));
   const selectedFriendIdRef = useRef<string | null>(null);
   const nextCursorRef = useRef<string | null>(null);
   const socketRef = useRef<ChatSocket | null>(null);
   const sendTimersRef = useRef<Map<string, number>>(new Map());
   const messageScrollRef = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const shouldStickToBottomRef = useRef(true);
 
   const updateConversation = useCallback((friendId: string, update: (messages: ChatMessage[]) => ChatMessage[]) => {
@@ -180,6 +189,20 @@ export function MessagesPage() {
     }
   }, [setActiveCursor, updateConversation]);
 
+  const markConversationRead = useCallback(async (friendId: string) => {
+    try {
+      await apiFetch<void>(`/api/chats/${encodeURIComponent(friendId)}/read`, { method: "PATCH" });
+      setUnreadCounts((current) => {
+        if (!(friendId in current)) return current;
+        const next = { ...current };
+        delete next[friendId];
+        return next;
+      });
+    } catch {
+      // Keep the unread marker until the server confirms it was cleared.
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     setFriendsLoading(true);
@@ -188,13 +211,50 @@ export function MessagesPage() {
       if (!active) return;
       setFriends(response.items);
       setFriendsCursor(response.nextCursor);
+      setSelectedFriendId((current) => {
+        const requested = initialFriendIdRef.current;
+        if (requested && response.items.some((friend) => friend.id === requested)) return requested;
+        if (current && response.items.some((friend) => friend.id === current)) return current;
+        return response.items[0]?.id ?? null;
+      });
+      void Promise.all(response.items.map(async (friend) => {
+        try {
+          const latest = await apiFetch<MessageHistoryResponse>(`/api/chats/${encodeURIComponent(friend.id)}/messages?limit=1`);
+          return [friend.id, latest.items[0] ? asAcknowledged(latest.items[0]) : null] as const;
+        } catch {
+          return [friend.id, null] as const;
+        }
+      })).then((summaries) => {
+        if (!active) return;
+        const next = { ...conversationsRef.current };
+        for (const [friendId, latestMessage] of summaries) {
+          if (latestMessage) next[friendId] = mergeChatMessages(next[friendId] ?? [], [latestMessage]);
+        }
+        conversationsRef.current = next;
+        setConversations(next);
+      });
     }).catch((error: unknown) => {
       if (active) setFriendsError(errorMessage(error, "Could not load your friends."));
     }).finally(() => {
       if (active) setFriendsLoading(false);
     });
     return () => { active = false; };
-  }, []);
+  }, [updateConversation]);
+
+  useEffect(() => {
+    if (!userId) {
+      setUnreadCounts({});
+      return;
+    }
+    let active = true;
+    void apiFetch<ChatUnreadResponse>("/api/chats/unread").then((response) => {
+      if (!active) return;
+      setUnreadCounts(Object.fromEntries(response.items.map((item) => [item.friendId, item.unreadCount])));
+    }).catch(() => {
+      if (active) setUnreadCounts({});
+    });
+    return () => { active = false; };
+  }, [userId]);
 
   useEffect(() => {
     selectedFriendIdRef.current = selectedFriendId;
@@ -203,6 +263,7 @@ export function MessagesPage() {
     setHistoryError(null);
     if (!selectedFriendId) return;
 
+    void markConversationRead(selectedFriendId);
     let active = true;
     setHistoryLoading(true);
     void fetchHistory(selectedFriendId).then((response) => {
@@ -220,7 +281,7 @@ export function MessagesPage() {
     });
 
     return () => { active = false; };
-  }, [selectedFriendId, updateConversation]);
+  }, [markConversationRead, selectedFriendId, updateConversation]);
 
   useEffect(() => {
     if (!userId) return;
@@ -271,6 +332,13 @@ export function MessagesPage() {
     socket.on("message:new", (event) => {
       const friendId = event.message.senderId === currentUserId ? event.message.recipientId : event.message.senderId;
       updateConversation(friendId, (current) => mergeChatMessage(current, asAcknowledged(event.message)));
+      if (event.message.recipientId === currentUserId) {
+        if (selectedFriendIdRef.current === friendId) {
+          void markConversationRead(friendId);
+        } else {
+          setUnreadCounts((current) => ({ ...current, [friendId]: (current[friendId] ?? 0) + 1 }));
+        }
+      }
     });
     socket.on("message:error", (event) => {
       if (!event.clientId) return;
@@ -296,7 +364,7 @@ export function MessagesPage() {
       socket.disconnect();
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [clearSendTimer, refreshConversation, retryPendingMessages, updateConversation, userId]);
+  }, [clearSendTimer, markConversationRead, refreshConversation, retryPendingMessages, updateConversation, userId]);
 
   async function loadMoreFriends(): Promise<void> {
     if (!friendsCursor || friendsLoadingMore) return;
@@ -355,8 +423,19 @@ export function MessagesPage() {
     transmitMessage(friendId, { ...message, deliveryState: "pending" });
   }
 
+  function openConversation(friendId: string): void {
+    setSelectedFriendId(friendId);
+    setSearchParams({ friend: friendId }, { replace: true });
+  }
+
   const selectedFriend = friends.find((friend) => friend.id === selectedFriendId) ?? null;
   const selectedMessages = selectedFriendId ? conversations[selectedFriendId] ?? [] : [];
+  const visibleFriends = friends.filter((friend) => {
+    const latestMessage = conversations[friend.id]?.at(-1);
+    return (chatFilter === "all" || (unreadCounts[friend.id] ?? 0) > 0) && `${friend.displayName} ${latestMessage?.text ?? ""}`
+      .toLocaleLowerCase()
+      .includes(conversationSearch.trim().toLocaleLowerCase());
+  });
 
   useEffect(() => {
     shouldStickToBottomRef.current = true;
@@ -378,39 +457,47 @@ export function MessagesPage() {
     shouldStickToBottomRef.current = distanceFromBottom < 72;
   }
 
-  return (
-    <div className="space-y-5">
-      <section className="surface-card p-6 sm:p-8">
-        <span className="eyebrow">Your circle</span>
-        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="text-3xl font-bold tracking-[-0.04em] text-ink">Messages</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-muted">Private conversations with your friends. Messages are saved before they are delivered.</p>
-          </div>
-          <span className={`chat-connection chat-connection-${connectionState}`} role="status">
-            <span className="chat-connection-dot" aria-hidden="true" />
-            {connectionState === "connected" ? "Connected" : connectionState === "connecting" ? "Connecting…" : "Reconnecting…"}
-          </span>
-        </div>
-        {connectionError && <p className="friend-feedback friend-feedback-error" role="status">{connectionError}</p>}
-      </section>
+  useEffect(() => {
+    const input = composerInputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
+  }, [composerText]);
 
-      <div className="chat-layout">
-        <section className="surface-card chat-friends-panel" aria-labelledby="conversations-title">
-          <div className="chat-panel-heading">
-            <div>
-              <h2 id="conversations-title" className="text-xl font-bold tracking-[-0.03em] text-ink">Conversations</h2>
-              <p className="mt-1 text-sm text-muted">Choose a friend to open your chat.</p>
-            </div>
-            <span className="friend-count">{friends.length}{friendsCursor ? "+" : ""} friends</span>
-          </div>
-          {friendsLoading ? <LoadingState message="Loading your friends…" /> : friendsError ? (
+  return (
+    <main className="messages-shell">
+      <aside className="messages-sidebar" aria-label="Chats">
+        <header className="messages-sidebar-heading">
+          <h1>Chats</h1>
+          <Link to="/friends" aria-label="Find someone to message" title="New message">+</Link>
+        </header>
+        <label className="messages-page-search">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
+          <span className="sr-only">Search messages</span>
+          <input value={conversationSearch} onChange={(event) => setConversationSearch(event.target.value)} placeholder="Search Messenges" />
+        </label>
+        <div className="messages-page-tabs" role="tablist" aria-label="Chat filters">
+          <button className={chatFilter === "all" ? "messages-page-tab-active" : ""} type="button" role="tab" aria-selected={chatFilter === "all"} onClick={() => setChatFilter("all")}>All</button>
+          <button className={chatFilter === "unread" ? "messages-page-tab-active" : ""} type="button" role="tab" aria-selected={chatFilter === "unread"} onClick={() => setChatFilter("unread")}>Unread</button>
+        </div>
+
+        {chatFilter === "all" && (
+          <Link className="messages-page-requests" to="/friends">
+            <span className="messages-request-icon"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="7" r="4" /><path d="M2.5 20v-1a5.5 5.5 0 0 1 11 0v1M19 8v7M15.5 11.5h7" /></svg></span>
+            <span><strong>Friend requests</strong><small>Review people who want to connect</small></span>
+            <span aria-hidden="true">›</span>
+          </Link>
+        )}
+        <div className="messages-page-list">
+          {friendsLoading ? <ChatListSkeleton /> : friendsError ? (
             <RequestErrorState title="Conversations unavailable" message={friendsError} />
           ) : friends.length === 0 ? (
             <EmptyState title="No friends yet" message="Add a friend first, then you can start a private conversation." />
+          ) : visibleFriends.length === 0 ? (
+            <p className="messages-list-empty">{chatFilter === "unread" ? "No unread messages." : "No chats match your search."}</p>
           ) : (
             <ul className="chat-friend-list" aria-label="Friend conversations">
-              {friends.map((friend) => {
+              {visibleFriends.map((friend) => {
                 const recentMessage = conversations[friend.id]?.at(-1);
                 return (
                   <li key={friend.id}>
@@ -418,25 +505,28 @@ export function MessagesPage() {
                       className={`chat-friend-button ${selectedFriendId === friend.id ? "chat-friend-button-active" : ""}`}
                       type="button"
                       aria-pressed={selectedFriendId === friend.id}
-                      onClick={() => setSelectedFriendId(friend.id)}
+                      onClick={() => openConversation(friend.id)}
                     >
                       <ChatFriendAvatar user={friend} />
                       <span className="chat-friend-copy">
                         <strong>{friend.displayName}</strong>
-                        <span>{recentMessage?.text ?? "Open your conversation"}</span>
+                        <span>{recentMessage ? `${recentMessage.senderId === userId ? "You: " : ""}${recentMessage.text}` : "Start a conversation"}</span>
                       </span>
                       {recentMessage && <time className="chat-friend-time" dateTime={recentMessage.createdAt}>{messageTime(recentMessage.createdAt)}</time>}
+                      {(unreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${unreadCounts[friend.id]} unread messages`} />}
                     </button>
                   </li>
                 );
               })}
             </ul>
           )}
+          {friendsLoadingMore && <ChatListSkeleton count={2} />}
           {friendsMoreError && <p className="friend-feedback friend-feedback-error" role="alert">{friendsMoreError}</p>}
           {friendsCursor && <button className="button-secondary chat-load-more" type="button" onClick={() => void loadMoreFriends()} disabled={friendsLoadingMore}>{friendsLoadingMore ? "Loading friends…" : "Load more friends"}</button>}
-        </section>
+        </div>
+      </aside>
 
-        <section className="surface-card chat-conversation-panel" aria-label={selectedFriend ? `Conversation with ${selectedFriend.displayName}` : "Conversation"}>
+        <section className="chat-conversation-panel messages-conversation" aria-label={selectedFriend ? `Conversation with ${selectedFriend.displayName}` : "Conversation"}>
           {selectedFriend ? (
             <>
               <header className="chat-conversation-header">
@@ -444,17 +534,19 @@ export function MessagesPage() {
                   <ChatFriendAvatar user={selectedFriend} />
                   <div className="friend-person-copy">
                     <h2 className="friend-person-name">{selectedFriend.displayName}</h2>
-                    <p>{selectedFriend.bio || "Your conversation"}</p>
+                    <p>{connectionError ? "Connection interrupted" : connectionState === "connected" ? "Active conversation" : "Connecting…"}</p>
                   </div>
                 </div>
-                <button className="button-secondary chat-refresh" type="button" onClick={() => void refreshConversation(selectedFriend.id, true)} disabled={historyLoading}>
-                  Refresh
-                </button>
+                <div className="messages-chat-actions">
+                  <span className={`chat-connection chat-connection-${connectionState}`} role="status"><span className="chat-connection-dot" aria-hidden="true" />{connectionState === "connected" ? "Connected" : connectionState === "connecting" ? "Connecting…" : "Reconnecting…"}</span>
+                  <Link className="messages-profile-link" to={`/profile/${encodeURIComponent(selectedFriend.id)}`} aria-label={`View ${selectedFriend.displayName}'s profile`} title="View profile">↗</Link>
+                </div>
               </header>
+              {connectionError && <p className="friend-feedback friend-feedback-error" role="status">{connectionError}</p>}
               {historyError && <p className="friend-feedback friend-feedback-error" role="alert">{historyError}</p>}
               {nextCursor && <button className="button-secondary chat-load-more" type="button" onClick={() => void loadOlderMessages()} disabled={historyLoadingMore}>{historyLoadingMore ? "Loading older messages…" : "Load older messages"}</button>}
               <div ref={messageScrollRef} className="chat-message-scroll" onScroll={trackMessageScroll} aria-live="polite" aria-relevant="additions text">
-                {historyLoading && selectedMessages.length === 0 ? <LoadingState message="Loading conversation…" /> : selectedMessages.length === 0 ? (
+                {historyLoading && selectedMessages.length === 0 ? <MessageBubblesSkeleton /> : selectedMessages.length === 0 ? (
                   <EmptyState title="Start the conversation" message={`Send a message to ${selectedFriend.displayName}.`} />
                 ) : (
                   <ol className="chat-message-list" aria-label="Messages">
@@ -485,31 +577,54 @@ export function MessagesPage() {
               </div>
               <form className="chat-composer" onSubmit={sendMessage}>
                 <label htmlFor="chat-message" className="sr-only">Message to {selectedFriend.displayName}</label>
-                <textarea
-                  id="chat-message"
-                  className="form-input chat-message-input"
-                  value={composerText}
-                  onChange={(event) => setComposerText(event.target.value)}
-                  maxLength={2_000}
-                  rows={2}
-                  placeholder={`Write a message to ${selectedFriend.displayName}…`}
-                  required
-                />
-                <div className="chat-composer-footer">
-                  <span>{composerText.length}/2,000 characters</span>
-                  <button className="button-accent" type="submit" disabled={!composerText.trim()}>{connectionState === "connected" ? "Send message" : "Queue message"}</button>
+                <div className="chat-composer-row">
+                  <textarea
+                    ref={composerInputRef}
+                    id="chat-message"
+                    className="form-input chat-message-input"
+                    value={composerText}
+                    onChange={(event) => setComposerText(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                        event.preventDefault();
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                    maxLength={2_000}
+                    rows={1}
+                    placeholder={`Write a message to ${selectedFriend.displayName}…`}
+                  />
+                  {composerText.trim() && (
+                    <button className="chat-composer-send" type="submit" aria-label="Send message" title="Send message">
+                      <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h13" /><path d="m13 6 6 6-6 6" /></svg>
+                    </button>
+                  )}
                 </div>
               </form>
             </>
           ) : (
-            <div className="chat-empty-selection">
-              {friendsLoading ? <LoadingState message="Loading your conversations…" /> : friendsError ? <RequestErrorState title="Conversations unavailable" message={friendsError} /> : (
+            <div className={`chat-empty-selection${friendsLoading ? " chat-empty-selection-loading" : ""}`}>
+              {friendsLoading ? <MessageBubblesSkeleton /> : friendsError ? <RequestErrorState title="Conversations unavailable" message={friendsError} /> : (
                 <EmptyState title="Choose a conversation" message="Select a friend from your conversation list to read or send messages." />
               )}
             </div>
           )}
         </section>
-      </div>
-    </div>
+      <aside className="messages-info-panel" aria-label="Chat information">
+        {selectedFriend ? (
+          <>
+            <div className="messages-info-profile">
+              <ChatFriendAvatar user={selectedFriend} />
+              <h2>{selectedFriend.displayName}</h2>
+              <p>{selectedFriend.bio || "Senderi member"}</p>
+              <Link className="messages-info-profile-link" to={`/profile/${encodeURIComponent(selectedFriend.id)}`}>View profile</Link>
+            </div>
+
+          </>
+        ) : friendsLoading ? (
+          <SkeletonRegion message="Loading chat information" className="skeleton-info-panel"><SkeletonBlock className="skeleton-avatar skeleton-profile-avatar" /><SkeletonBlock className="skeleton-line skeleton-w-65" /></SkeletonRegion>
+        ) : <p className="messages-info-placeholder">Choose a chat to see its details.</p>}
+      </aside>
+    </main>
   );
 }

@@ -218,6 +218,15 @@ export interface Message {
 
 export type MessageHistoryResponse = Page<Message>;
 
+export interface ChatUnreadConversation {
+  friendId: UserId;
+  unreadCount: number;
+}
+
+export interface ChatUnreadResponse {
+  items: ChatUnreadConversation[];
+}
+
 export interface SocketTicketResponse {
   ticket: string;
   expiresAt: string;

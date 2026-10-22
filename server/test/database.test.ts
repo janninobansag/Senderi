@@ -76,6 +76,7 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
     [
       [{ senderId: 1, clientId: 1 }, "messages_sender_client_unique"],
       [{ senderId: 1, recipientId: 1, createdAt: -1, _id: -1 }, "messages_conversation_newest_first"],
+      [{ recipientId: 1, isRead: 1, senderId: 1 }, "messages_recipient_is_read_by_sender"],
     ],
   );
   assert.deepEqual(

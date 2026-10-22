@@ -151,6 +151,7 @@ async function sendMessage(
       clientId: validatedClientId,
       text,
       createdAt: now,
+      isRead: false,
     };
     let storedMessage: MessageDocument;
     let wasInserted = false;

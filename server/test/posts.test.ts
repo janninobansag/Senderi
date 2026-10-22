@@ -66,6 +66,9 @@ function matchesPost(post: PostDocument, filter: MongoFilter): boolean {
       }
       return post.visibility === expected;
     }
+    if (field === "text" && typeof expected === "object" && expected !== null && "$regex" in expected) {
+      return typeof post.text === "string" && new RegExp(String(expected.$regex), String(expected.$options ?? "")).test(post.text);
+    }
     return false;
   });
 }
@@ -113,6 +116,9 @@ function matchesShare(share: ShareDocument, filter: MongoFilter): boolean {
     if (field === "sourcePostId") return matchesObjectId(share.sourcePostId, expected);
     if (field === "_id") return matchesObjectId(share._id, expected);
     if (field === "createdAt") return matchesDate(share.createdAt, expected);
+    if (field === "caption" && typeof expected === "object" && expected !== null && "$regex" in expected) {
+      return typeof share.caption === "string" && new RegExp(String(expected.$regex), String(expected.$options ?? "")).test(share.caption);
+    }
     if (field === "visibility") {
       if (typeof expected === "object" && expected !== null && "$in" in expected) {
         return (expected.$in as ShareDocument["visibility"][]).includes(share.visibility);
@@ -609,6 +615,53 @@ test("feed, author timeline, and direct URLs enforce every audience for author, 
     .set("Cookie", cookie(tokens.outsider));
   assert.equal(hidden.status, nonexistent.status);
   assert.deepEqual(hidden.body, nonexistent.body);
+});
+
+test("post search returns matching feed posts and shares only when their current audiences allow access", async () => {
+  const { data, tokens } = matrixFixture();
+  const author = data.users.find((user) => user._id.toHexString() === ids.author)!;
+  const outsider = data.users.find((user) => user._id.toHexString() === ids.outsider)!;
+  const publicPost = data.posts.find((post) => post._id.toHexString() === ids.public)!;
+  const friendsPost = data.posts.find((post) => post._id.toHexString() === ids.friends)!;
+  const privatePost = data.posts.find((post) => post._id.toHexString() === ids.onlyMe)!;
+  publicPost.text = "needle public note";
+  friendsPost.text = "needle friends note";
+  privatePost.text = "needle private note";
+  const now = new Date(Date.now() + 10);
+  const publicSource = makePost("000000000000000000000014", outsider._id, "public", now);
+  publicSource.text = "needle source note";
+  const hiddenSource = makePost("000000000000000000000015", outsider._id, "friends", now);
+  hiddenSource.text = "needle hidden source";
+  const hiddenFriendPost = makePost("000000000000000000000016", outsider._id, "friends", now);
+  hiddenFriendPost.text = "needle outsider friends note";
+  data.posts.push(publicSource, hiddenSource, hiddenFriendPost);
+  const visibleShare = makeShare("000000000000000000000021", author._id, publicSource._id, "friends", new Date(now.getTime() + 1));
+  const shareOfHiddenSource = makeShare("000000000000000000000022", author._id, hiddenSource._id, "public", new Date(now.getTime() + 2));
+  shareOfHiddenSource.caption = "needle caption from hidden source";
+  data.shares.push(visibleShare, shareOfHiddenSource);
+
+  const app = createApp(data);
+  const response = await request(app)
+    .get("/api/posts/search?query=needle&limit=20")
+    .set("Cookie", cookie(tokens.friend));
+
+  assert.equal(response.status, 200);
+  const resultKeys = response.body.items.map((post: { id: string; share?: { id: string } }) =>
+    post.share ? `share:${post.share.id}` : `post:${post.id}`,
+  );
+  assert.deepEqual(new Set(resultKeys), new Set([
+    `post:${publicPost._id.toHexString()}`,
+    `post:${friendsPost._id.toHexString()}`,
+    `post:${publicSource._id.toHexString()}`,
+    `share:${visibleShare._id.toHexString()}`,
+  ]));
+  assert.equal(response.body.items.some((post: { id: string }) => post.id === privatePost._id.toHexString()), false);
+  assert.equal(response.body.items.some((post: { id: string }) => post.id === hiddenFriendPost._id.toHexString()), false);
+  assert.equal(response.body.items.some((post: { share?: { id: string } }) => post.share?.id === shareOfHiddenSource._id.toHexString()), false);
+  assert.equal(response.headers["cache-control"], "private, no-store");
+
+  const anonymous = await request(app).get("/api/posts/search?query=needle");
+  assert.equal(anonymous.status, 401);
 });
 
 test("share creation accepts only a Public source and returns its public author context", async () => {

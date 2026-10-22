@@ -7,16 +7,22 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type CommentDocument, type LikeDocument, type PostDocument, type PostVisibility, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../db/documents";
+import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type PostDocument, type PostVisibility, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { cloudinaryPostPhotoStorage, optimizePostPhoto, type PostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
-import { canViewPost, decodePostCursor } from "../post-access";
+import { canViewPost, decodePostCursor, encodePostCursor } from "../post-access";
 import { listVisibleFeedRecords, type FeedRecord } from "../feed-access";
 import { canViewShare } from "../share-access";
 import { createNotification } from "../notifications/create-notification";
 
 const postPageQuerySchema = z.object({
+  cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+}).strict();
+
+const postSearchQuerySchema = z.object({
+  query: z.string().trim().min(1).max(80),
   cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 }).strict();
@@ -133,6 +139,10 @@ function parsePageQuery(query: Record<string, unknown>) {
     limit: parsed.data.limit,
     cursor: parsed.data.cursor ? decodePostCursor(parsed.data.cursor) : undefined,
   };
+}
+
+function escapeSearchTerm(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function decodeCommentCursor(token: string): CommentCursor {
@@ -958,6 +968,115 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       } satisfies PostResponse);
     },
   );
+
+  router.get("/search", authenticated, async (request, response) => {
+    const parsed = postSearchQuerySchema.safeParse(request.query);
+    if (!parsed.success) throw new HttpError(400, "validation_error", "Post search query is invalid.");
+
+    const { query: searchTerm, cursor: cursorToken, limit } = parsed.data;
+    const cursor = cursorToken ? decodePostCursor(cursorToken) : undefined;
+    const database = dependencies.getDatabase();
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const friendships = await database.collection<FriendshipDocument>(collectionNames.friendships)
+      .find({ $or: [{ userIdLow: viewerId }, { userIdHigh: viewerId }] })
+      .toArray();
+    const friendIds = friendships.map((friendship) =>
+      friendship.userIdLow.equals(viewerId) ? friendship.userIdHigh : friendship.userIdLow,
+    );
+    const pattern = escapeSearchTerm(searchTerm);
+    const postAudienceFilter: Filter<PostDocument> = {
+      $or: [
+        { authorId: viewerId },
+        { visibility: "public" },
+        ...(friendIds.length ? [{ authorId: { $in: friendIds }, visibility: "friends" as const }] : []),
+      ],
+    };
+    const shareAudienceFilter: Filter<ShareDocument> = {
+      $or: [
+        { authorId: viewerId },
+        { visibility: "public" },
+        ...(friendIds.length ? [{ authorId: { $in: friendIds }, visibility: "friends" as const }] : []),
+      ],
+    };
+    const postCursorFilter: Filter<PostDocument> | undefined = cursor ? {
+      $or: [
+        { createdAt: { $lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, _id: { $lt: cursor.itemId } },
+      ],
+    } : undefined;
+    const shareCursorFilter: Filter<ShareDocument> | undefined = cursor ? {
+      $or: [
+        { createdAt: { $lt: cursor.createdAt } },
+        { createdAt: cursor.createdAt, _id: { $lt: cursor.itemId } },
+        ...(cursor.kind === "post" ? [{ createdAt: cursor.createdAt, _id: cursor.itemId }] : []),
+      ],
+    } : undefined;
+    const [matchingPosts, matchingPublicSources] = await Promise.all([
+      database.collection<PostDocument>(collectionNames.posts)
+        .find({
+          $and: [postAudienceFilter, { text: { $regex: pattern, $options: "i" } }, ...(postCursorFilter ? [postCursorFilter] : [])],
+        })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(limit + 1)
+        .toArray(),
+      database.collection<PostDocument>(collectionNames.posts)
+        .find({ visibility: "public", text: { $regex: pattern, $options: "i" } }, { projection: { _id: 1 } })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(500)
+        .toArray(),
+    ]);
+    const sourceIds = [...new Map(matchingPublicSources.map((post) => [post._id.toHexString(), post._id])).values()];
+    const shareMatchFilter: Filter<ShareDocument> = sourceIds.length
+      ? { $or: [{ caption: { $regex: pattern, $options: "i" } }, { sourcePostId: { $in: sourceIds } }] }
+      : { caption: { $regex: pattern, $options: "i" } };
+    const matchingShares = await database.collection<ShareDocument>(collectionNames.shares)
+      .find({
+        $and: [shareAudienceFilter, shareMatchFilter, ...(shareCursorFilter ? [shareCursorFilter] : [])],
+      })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit + 1)
+      .toArray();
+    const shareSourceIds = [...new Map(matchingShares.map((share) => [share.sourcePostId.toHexString(), share.sourcePostId])).values()];
+    const shareSources = await database.collection<PostDocument>(collectionNames.posts)
+      .find({ _id: { $in: shareSourceIds }, visibility: "public" })
+      .toArray();
+    const shareSourcesById = new Map(shareSources.map((post) => [post._id.toHexString(), post]));
+
+    const visibleRecords: FeedRecord[] = [];
+    for (const post of matchingPosts) {
+      if (await canViewPost(database, viewerId, post)) visibleRecords.push({ kind: "post", post });
+    }
+    for (const share of matchingShares) {
+      const sourcePost = shareSourcesById.get(share.sourcePostId.toHexString());
+      if (sourcePost && await canViewShare(database, viewerId, share)) {
+        visibleRecords.push({ kind: "share", share, sourcePost });
+      }
+    }
+    visibleRecords.sort((left, right) => {
+      const leftCreatedAt = left.kind === "post" ? left.post.createdAt : left.share.createdAt;
+      const rightCreatedAt = right.kind === "post" ? right.post.createdAt : right.share.createdAt;
+      const dateDifference = rightCreatedAt.getTime() - leftCreatedAt.getTime();
+      if (dateDifference !== 0) return dateDifference;
+      const leftId = left.kind === "post" ? left.post._id : left.share._id;
+      const rightId = right.kind === "post" ? right.post._id : right.share._id;
+      const idDifference = rightId.toHexString().localeCompare(leftId.toHexString());
+      if (idDifference !== 0) return idDifference;
+      return left.kind === right.kind ? 0 : left.kind === "post" ? -1 : 1;
+    });
+    const hasMore = visibleRecords.length > limit;
+    const pageRecords = visibleRecords.slice(0, limit);
+    const lastRecord = pageRecords.at(-1);
+    const nextCursor = hasMore && lastRecord
+      ? encodePostCursor(
+        lastRecord.kind === "post" ? lastRecord.post : lastRecord.share,
+        lastRecord.kind,
+      )
+      : null;
+    const items = await toFeedResponses(database, pageRecords, viewerId, dependencies.getCloudinaryCloudName());
+
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json(toPostListResponse(items, nextCursor));
+  });
 
   router.get("/", authenticated, async (request, response) => {
     const query = parsePageQuery(request.query as Record<string, unknown>);

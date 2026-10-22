@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Link, Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
-import type { NotificationItem, NotificationsResponse } from "../../shared";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import type { ChatUnreadResponse, FriendListResponse, Message, MessageHistoryResponse, NotificationItem, NotificationsResponse, Post, PostListResponse, User, UserSearchResponse } from "../../shared";
 import { apiFetch } from "./api/client";
+import { CompactRowsSkeleton, SessionSkeleton, SkeletonBlock, SkeletonRegion } from "./components/Skeletons";
 import { PostComposer, PostList } from "./components/Posts";
 import { useAuth } from "./auth/AuthContext";
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage } from "./pages/AccountPages";
 import { FriendsPage } from "./pages/FriendsPage";
 import { MessagesPage } from "./pages/MessagesPage";
 import { ProfilePage } from "./pages/ProfilePage";
+import { SearchPage } from "./pages/SearchPage";
 
-type IconName = "home" | "users" | "message" | "user" | "bell" | "plus" | "arrow";
+type IconName = "home" | "users" | "message" | "user" | "userPlus" | "bell" | "plus" | "arrow";
 
 function Icon({ name, size = 19 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -17,6 +19,7 @@ function Icon({ name, size = 19 }: { name: IconName; size?: number }) {
     users: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></>,
     message: <><path d="M21 11.5a8.38 8.38 0 0 1-9 8.5 9.62 9.62 0 0 1-4-.8L3 21l1.8-4A8.3 8.3 0 0 1 3 11.5 8.38 8.38 0 0 1 12 3a8.38 8.38 0 0 1 9 8.5Z" /><path d="M8 11h.01M12 11h.01M16 11h.01" /></>,
     user: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
+    userPlus: <><circle cx="8" cy="7" r="4" /><path d="M2.5 20v-1a5.5 5.5 0 0 1 11 0v1M19 8v7M15.5 11.5h7" /></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
     arrow: <><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></>,
@@ -55,8 +58,14 @@ export default function App() {
   return (
     <div className="min-h-screen bg-canvas text-ink">
       <header className="relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
-        <div className="flex h-[72px] w-full items-center justify-between px-5 sm:px-8">
-          <NavLink to="/" className="flex items-center gap-2 text-xl font-extrabold tracking-[-0.06em] text-ink sm:text-2xl">senderi<span className="text-accent">.</span></NavLink>
+        <div className="app-header-inner flex h-[72px] w-full items-center justify-between px-5 sm:px-8">
+          <div className="header-brand-group">
+            <NavLink to="/" aria-label="Senderi home" className="header-brand flex items-center gap-2.5 text-xl font-extrabold tracking-[-0.06em] text-ink sm:text-2xl">
+              <img src="/senderi-mark.svg" alt="" className="h-9 w-9 shrink-0" />
+              <span>senderi<span className="text-accent">.</span></span>
+            </NavLink>
+            {user && <HeaderPeopleSearch />}
+          </div>
           <HeaderActions />
         </div>
       </header>
@@ -75,11 +84,216 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/friends" element={<RequireUser><FriendsPage /></RequireUser>} />
-        <Route path="/messages" element={<RequireUser><MessagesPage /></RequireUser>} />
+        <Route path="/messages" element={<RequireUser withLayout={false}><MessagesPage /></RequireUser>} />
+        <Route path="/search" element={<RequireUser><SearchPage /></RequireUser>} />
         <Route path="/profile" element={<RequireUser><ProfilePage /></RequireUser>} />
         <Route path="/profile/:userId" element={<RequireUser><ProfilePage /></RequireUser>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+    </div>
+  );
+}
+
+function HeaderPeopleSearch() {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const [isEditingHistory, setIsEditingHistory] = useState(false);
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => {
+    try {
+      const stored: unknown = JSON.parse(window.localStorage.getItem("senderi-search-history") ?? "[]");
+      return Array.isArray(stored) ? stored.filter((item): item is string => typeof item === "string").slice(0, 8) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [peopleMatches, setPeopleMatches] = useState<User[]>([]);
+  const [postMatches, setPostMatches] = useState<Post[]>([]);
+  const [isLoadingMatches, setIsLoadingMatches] = useState(false);
+  const [matchesError, setMatchesError] = useState<string | null>(null);
+  const searchControlRef = useRef<HTMLDivElement>(null);
+  const normalizedQuery = query.trim();
+
+  useEffect(() => {
+    const term = normalizedQuery;
+    if (term.length < 2) {
+      setPeopleMatches([]);
+      setPostMatches([]);
+      setMatchesError(null);
+      setIsLoadingMatches(false);
+      return;
+    }
+
+    let active = true;
+    setPeopleMatches([]);
+    setPostMatches([]);
+    setIsLoadingMatches(true);
+    const timeout = window.setTimeout(() => {
+      setMatchesError(null);
+      const userParams = new URLSearchParams({ query: term, limit: "5" });
+      const postParams = new URLSearchParams({ query: term, limit: "5" });
+      void Promise.all([
+        apiFetch<UserSearchResponse>(`/api/users?${userParams.toString()}`),
+        apiFetch<PostListResponse>(`/api/posts/search?${postParams.toString()}`),
+      ]).then(([people, posts]) => {
+        if (!active) return;
+        setPeopleMatches(people.items);
+        setPostMatches(posts.items);
+      }).catch(() => {
+        if (active) {
+          setPeopleMatches([]);
+          setPostMatches([]);
+          setMatchesError("Search suggestions could not load. Press Enter to try the full search.");
+        }
+      }).finally(() => {
+        if (active) setIsLoadingMatches(false);
+      });
+    }, 220);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [normalizedQuery]);
+
+  useEffect(() => {
+    function closeSearch(event: PointerEvent) {
+      if (event.target instanceof Node && !searchControlRef.current?.contains(event.target)) {
+        setIsOpen(false);
+      }
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", closeSearch);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeSearch);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
+
+  function storeRecentSearch(term: string) {
+    const next = [term, ...recentSearches.filter((item) => item.toLocaleLowerCase() !== term.toLocaleLowerCase())].slice(0, 8);
+    setRecentSearches(next);
+    try {
+      window.localStorage.setItem("senderi-search-history", JSON.stringify(next));
+    } catch {
+      // Keep the current session usable when browser storage is unavailable.
+    }
+  }
+
+  function openFullSearch(value: string) {
+    const term = value.trim();
+    if (!term) return;
+    setQuery(term);
+    storeRecentSearch(term);
+    setIsEditingHistory(false);
+    setIsOpen(false);
+    navigate(`/search?query=${encodeURIComponent(term)}`);
+  }
+
+  function removeRecentSearch(value: string) {
+    const next = recentSearches.filter((item) => item !== value);
+    setRecentSearches(next);
+    try {
+      window.localStorage.setItem("senderi-search-history", JSON.stringify(next));
+    } catch {
+      // Keep the current session usable when browser storage is unavailable.
+    }
+  }
+
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    openFullSearch(query);
+  }
+
+  return (
+    <div className="header-search-control" ref={searchControlRef}>
+      <form className="header-people-search" role="search" onSubmit={submitSearch}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="10.8" cy="10.8" r="6.8" />
+          <path d="m16 16 5 5" />
+        </svg>
+        <label className="sr-only" htmlFor="header-people-search-input">Search Senderi</label>
+        <input
+          id="header-people-search-input"
+          value={query}
+          onFocus={() => setIsOpen(true)}
+          onChange={(event) => { setQuery(event.target.value); setIsOpen(true); setIsEditingHistory(false); }}
+          aria-expanded={isOpen}
+          aria-controls="header-search-popover"
+          maxLength={80}
+          placeholder="Search Senderi"
+          autoComplete="off"
+        />
+      </form>
+
+      {isOpen && (
+        <div id="header-search-popover" className="header-search-popover" role="region" aria-label="Search Senderi suggestions">
+          {normalizedQuery.length < 2 ? (
+            <>
+              <div className="header-search-popover-heading">
+                <strong>Recent</strong>
+                {recentSearches.length > 0 && <button type="button" onClick={() => setIsEditingHistory((editing) => !editing)}>{isEditingHistory ? "Done" : "Edit"}</button>}
+              </div>
+              {recentSearches.length === 0 ? (
+                <p className="header-search-empty">Recent searches will appear here.</p>
+              ) : (
+                <ul className="header-search-list">
+                  {recentSearches.map((recent) => (
+                    <li className="header-search-list-item" key={recent}>
+                      <span className="header-search-recent-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg></span>
+                      <button className="header-search-result-copy" type="button" onClick={() => openFullSearch(recent)}>{recent}</button>
+                      {isEditingHistory && <button className="header-search-remove" type="button" aria-label={`Remove ${recent} from recent searches`} onClick={() => removeRecentSearch(recent)}>×</button>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="header-search-popover-heading"><strong>Search results</strong></div>
+              {isLoadingMatches ? <CompactRowsSkeleton message="Searching Senderi" count={3} /> : null}
+              {matchesError && <p className="header-search-empty header-search-error" role="alert">{matchesError}</p>}
+              {!isLoadingMatches && !matchesError && peopleMatches.length === 0 && postMatches.length === 0 && <p className="header-search-empty">No matches found. Try another search.</p>}
+              {peopleMatches.length > 0 && (
+                <>
+                  <h3 className="header-search-section-label">People</h3>
+                  <ul className="header-search-list">
+                    {peopleMatches.map((person) => (
+                      <li key={person.id}>
+                        <Link className="header-search-result" to={`/profile/${encodeURIComponent(person.id)}`} onClick={() => { storeRecentSearch(normalizedQuery); setIsOpen(false); }}>
+                          <span className="header-search-result-avatar">{person.avatarUrl ? <img src={person.avatarUrl} alt="" /> : person.displayName.trim().charAt(0).toUpperCase() || "?"}</span>
+                          <span className="header-search-result-copy"><strong>{person.displayName}</strong><span>{person.bio || person.info.location || "Senderi member"}</span></span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {postMatches.length > 0 && (
+                <>
+                  <h3 className="header-search-section-label">Posts</h3>
+                  <ul className="header-search-list">
+                    {postMatches.map((post) => (
+                      <li key={post.share?.id ?? post.id}>
+                        <button className="header-search-result" type="button" onClick={() => openFullSearch(normalizedQuery)}>
+                          <span className="header-search-result-avatar">{(post.share?.author.avatarUrl || post.author.avatarUrl) ? <img src={post.share?.author.avatarUrl || post.author.avatarUrl} alt="" /> : (post.share?.author.displayName || post.author.displayName).trim().charAt(0).toUpperCase() || "?"}</span>
+                          <span className="header-search-result-copy"><strong>{post.share ? `${post.share.author.displayName} shared a post` : post.author.displayName}</strong><span>{post.share?.caption || post.text || "Photo post"}</span></span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              <button className="header-search-all-results" type="button" onClick={() => openFullSearch(normalizedQuery)}>See all results for “{normalizedQuery}”</button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -91,15 +305,24 @@ function HeaderActions() {
   const [error, setError] = useState<string | null>(null);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isMessagesOpen, setIsMessagesOpen] = useState(false);
+  const [messageSearch, setMessageSearch] = useState("");
+  const [messageFilter, setMessageFilter] = useState<"all" | "unread">("all");
+  const [messageFriends, setMessageFriends] = useState<User[]>([]);
+  const [messagePreviews, setMessagePreviews] = useState<Record<string, Message | null>>({});
+  const [messageUnreadCounts, setMessageUnreadCounts] = useState<Record<string, number>>({});
+  const [messagesLoading, setMessagesLoading] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationError, setNotificationError] = useState<string | null>(null);
   const accountMenuId = useId();
   const notificationsPanelId = useId();
+  const messagesPanelId = useId();
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const accountButtonRef = useRef<HTMLButtonElement>(null);
   const notificationsButtonRef = useRef<HTMLButtonElement>(null);
+  const messagesButtonRef = useRef<HTMLAnchorElement>(null);
   const currentUserId = user?.id;
 
   const refreshNotifications = useCallback(async () => {
@@ -134,12 +357,13 @@ function HeaderActions() {
   }, [currentUserId, refreshNotifications]);
 
   useEffect(() => {
-    if (!isAccountMenuOpen && !isNotificationsOpen) return;
+    if (!isAccountMenuOpen && !isNotificationsOpen && !isMessagesOpen) return;
 
     function closeOnOutsidePointer(event: PointerEvent) {
       if (event.target instanceof Node && !accountMenuRef.current?.contains(event.target)) {
         setIsAccountMenuOpen(false);
         setIsNotificationsOpen(false);
+        setIsMessagesOpen(false);
       }
     }
 
@@ -147,8 +371,10 @@ function HeaderActions() {
       if (event.key === "Escape") {
         setIsAccountMenuOpen(false);
         setIsNotificationsOpen(false);
+        setIsMessagesOpen(false);
         if (isAccountMenuOpen) accountButtonRef.current?.focus();
-        else notificationsButtonRef.current?.focus();
+        else if (isNotificationsOpen) notificationsButtonRef.current?.focus();
+        else messagesButtonRef.current?.focus();
       }
     }
 
@@ -158,7 +384,43 @@ function HeaderActions() {
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [isAccountMenuOpen, isNotificationsOpen]);
+  }, [isAccountMenuOpen, isNotificationsOpen, isMessagesOpen]);
+
+  useEffect(() => {
+    if (!isMessagesOpen || !currentUserId) return;
+    let active = true;
+    setMessagesLoading(true);
+    void apiFetch<ChatUnreadResponse>("/api/chats/unread").then((result) => {
+      if (!active) return;
+      setMessageUnreadCounts(Object.fromEntries(result.items.map((item) => [item.friendId, item.unreadCount])));
+    }).catch(() => {
+      if (active) setMessageUnreadCounts({});
+    });
+    void apiFetch<FriendListResponse>("/api/friends?limit=12").then(async (result) => {
+      if (!active) return;
+      setMessageFriends(result.items);
+      const summaries = await Promise.all(result.items.map(async (friend) => {
+        try {
+          const history = await apiFetch<MessageHistoryResponse>(`/api/chats/${encodeURIComponent(friend.id)}/messages?limit=1`);
+          return [friend.id, history.items[0] ?? null] as const;
+        } catch {
+          return [friend.id, null] as const;
+        }
+      }));
+      if (active) {
+        const previews = Object.fromEntries(summaries);
+        setMessagePreviews(previews);
+        setMessageFriends([...result.items].sort((left, right) =>
+          (previews[right.id]?.createdAt ?? "").localeCompare(previews[left.id]?.createdAt ?? ""),
+        ));
+      }
+    }).catch(() => {
+      if (active) setMessageFriends([]);
+    }).finally(() => {
+      if (active) setMessagesLoading(false);
+    });
+    return () => { active = false; };
+  }, [isMessagesOpen, currentUserId]);
 
   async function handleSignOut() {
     setPending(true);
@@ -167,6 +429,7 @@ function HeaderActions() {
       await signOut();
       setIsAccountMenuOpen(false);
       setIsNotificationsOpen(false);
+      setIsMessagesOpen(false);
       navigate("/login", { replace: true });
     } catch {
       setError("We couldn’t sign you out. Check your connection and try again.");
@@ -206,24 +469,75 @@ function HeaderActions() {
     }
   }
 
+  const filteredMessageFriends = messageFriends.filter((friend) => {
+    const preview = messagePreviews[friend.id];
+    const text = `${friend.displayName} ${preview?.text ?? ""}`;
+    return text.toLocaleLowerCase().includes(messageSearch.trim().toLocaleLowerCase()) &&
+      (messageFilter === "all" || (messageUnreadCounts[friend.id] ?? 0) > 0);
+  });
+
   return (
     <div className="relative flex items-center gap-3" ref={accountMenuRef}>
       {isLoading ? (
-        <span className="text-sm font-medium text-muted" role="status">Restoring session…</span>
+        <SkeletonRegion message="Restoring session" className="skeleton-header-actions"><div className="skeleton-header-icons"><SkeletonBlock className="skeleton-avatar" /><SkeletonBlock className="skeleton-avatar" /><SkeletonBlock className="skeleton-avatar" /></div></SkeletonRegion>
       ) : user ? (
         <>
           <NavLink
-            className={({ isActive }) => `icon-button header-messages-link${isActive ? " header-icon-active" : ""}`}
+            ref={messagesButtonRef}
+            className={({ isActive }) => `icon-button header-messages-link${isActive || isMessagesOpen ? " header-icon-active" : ""}`}
             to="/messages"
-            aria-label="Messages"
-            title="Messages"
-            onClick={() => {
+            onClick={(event) => {
+              event.preventDefault();
               setIsAccountMenuOpen(false);
               setIsNotificationsOpen(false);
+              setIsMessagesOpen((open) => !open);
             }}
+            aria-expanded={isMessagesOpen}
+            aria-controls={messagesPanelId}
+            aria-haspopup="dialog"
+            aria-label="Messages"
+            title="Messages"
           >
             <Icon name="message" size={19} />
           </NavLink>
+          <div id={messagesPanelId} className="header-messages-panel" role="dialog" aria-label="Messages" hidden={!isMessagesOpen}>
+            <div className="header-messages-heading">
+              <h2>Chats</h2>
+              <Link className="header-messages-compose" to="/friends" aria-label="Find someone to message" title="New message" onClick={() => setIsMessagesOpen(false)}>＋</Link>
+            </div>
+            <label className="header-messages-search">
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
+              <span className="sr-only">Search messages</span>
+              <input value={messageSearch} onChange={(event) => setMessageSearch(event.target.value)} placeholder="Search Messenger" />
+            </label>
+            <div className="header-messages-tabs" role="tablist" aria-label="Chat filters">
+              <button className={messageFilter === "all" ? "header-messages-tab-active" : ""} type="button" role="tab" aria-selected={messageFilter === "all"} onClick={() => setMessageFilter("all")}>All</button>
+              <button className={messageFilter === "unread" ? "header-messages-tab-active" : ""} type="button" role="tab" aria-selected={messageFilter === "unread"} onClick={() => setMessageFilter("unread")}>Unread</button>
+            </div>
+            {messageFilter === "all" && (
+              <Link className="header-message-requests" to="/friends" onClick={() => setIsMessagesOpen(false)}>
+                <span className="header-message-requests-icon"><Icon name="userPlus" size={20} /></span>
+                <span><strong>Friend requests</strong><small>Review people who want to connect</small></span>
+                <span aria-hidden="true">›</span>
+              </Link>
+            )}
+            <div className="header-messages-list" aria-live="polite">
+              {messagesLoading ? <CompactRowsSkeleton message="Loading chats" count={4} /> : null}
+              {!messagesLoading && filteredMessageFriends.length === 0 && <p className="header-messages-empty">{messageFilter === "unread" ? "No unread messages." : messageFriends.length === 0 ? "Your chats will appear here." : "No chats match your search."}</p>}
+              {!messagesLoading && filteredMessageFriends.map((friend) => {
+                const preview = messagePreviews[friend.id];
+                return (
+                  <button className="header-message-row" key={friend.id} type="button" onClick={() => { setIsMessagesOpen(false); navigate(`/messages?friend=${encodeURIComponent(friend.id)}`); }}>
+                    <span className="header-message-avatar">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" /> : friend.displayName.trim().charAt(0).toUpperCase()}</span>
+                    <span className="header-message-copy"><strong>{friend.displayName}</strong><span>{preview ? `${preview.senderId === currentUserId ? "You: " : ""}${preview.text}` : "Start a conversation"}</span></span>
+                    {preview && <time>{formatMessagePreviewTime(preview.createdAt)}</time>}
+                    {(messageUnreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${messageUnreadCounts[friend.id]} unread messages`} />}
+                  </button>
+                );
+              })}
+            </div>
+            <button className="header-messages-see-all" type="button" onClick={() => { setIsMessagesOpen(false); navigate("/messages"); }}>See all in Messages</button>
+          </div>
           <button
             ref={notificationsButtonRef}
             className="icon-button header-notification-trigger"
@@ -232,6 +546,7 @@ function HeaderActions() {
             aria-expanded={isNotificationsOpen}
             aria-controls={notificationsPanelId}
             onClick={() => {
+              setIsMessagesOpen(false);
               setIsAccountMenuOpen(false);
               setIsNotificationsOpen((open) => {
                 if (!open) void refreshNotifications();
@@ -255,7 +570,7 @@ function HeaderActions() {
             </div>
             {notificationError && <p className="header-notifications-error" role="alert">{notificationError}</p>}
             {notificationsLoading && notifications.length === 0 ? (
-              <p>Loading notifications…</p>
+              <CompactRowsSkeleton message="Loading notifications" count={3} />
             ) : notifications.length === 0 ? (
               <div className="header-notifications-empty">
                 <strong>No notifications yet</strong>
@@ -294,6 +609,7 @@ function HeaderActions() {
             aria-controls={accountMenuId}
             onClick={() => {
               setIsNotificationsOpen(false);
+              setIsMessagesOpen(false);
               setIsAccountMenuOpen((open) => !open);
             }}
           >
@@ -357,66 +673,18 @@ function formatNotificationTime(value: string): string {
   return unit ? formatter.format(Math.round(seconds / unit[1]), unit[0]) : formatter.format(seconds, "second");
 }
 
-function PageLoading() {
-  return (
-    <main className="mx-auto max-w-7xl px-5 py-6 sm:px-8 sm:py-10" aria-busy="true" aria-label="Loading Senderi">
-      <p className="sr-only" role="status">Restoring your Senderi session…</p>
-      <div className="grid gap-6 lg:grid-cols-[224px_minmax(0,1fr)]" aria-hidden="true">
-        <aside>
-          <div className="mb-2 hidden px-3 lg:block"><SkeletonBlock className="h-3 w-16" /></div>
-          <nav className="flex gap-2 overflow-hidden pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
-            {["profile", "home", "friends", "messages"].map((item) => (
-              <div className="flex h-11 min-w-28 items-center gap-3 rounded-[14px] px-3 lg:w-full" key={item}>
-                <SkeletonBlock className="h-5 w-5 rounded-md" />
-                <SkeletonBlock className="h-3 w-20" />
-              </div>
-            ))}
-          </nav>
-        </aside>
-
-        <div className="min-w-0 space-y-5">
-          <section className="surface-card space-y-5 p-5 sm:p-6">
-            <SkeletonBlock className="h-3 w-24" />
-            <SkeletonBlock className="h-24 w-full rounded-2xl" />
-            <div className="flex items-center justify-between gap-4">
-              <SkeletonBlock className="h-9 w-28 rounded-xl" />
-              <SkeletonBlock className="h-10 w-28 rounded-full" />
-            </div>
-          </section>
-
-          <section className="space-y-4">
-            <div className="space-y-2 px-1">
-              <SkeletonBlock className="h-3 w-24" />
-              <SkeletonBlock className="h-7 w-36" />
-            </div>
-            {["first", "second"].map((post) => (
-              <article className="surface-card space-y-5 p-5 sm:p-6" key={post}>
-                <div className="flex items-center gap-3">
-                  <SkeletonBlock className="h-11 w-11 shrink-0 rounded-full" />
-                  <div className="flex-1 space-y-2">
-                    <SkeletonBlock className="h-3 w-36 max-w-full" />
-                    <SkeletonBlock className="h-3 w-48 max-w-full" />
-                  </div>
-                  <SkeletonBlock className="h-10 w-10 shrink-0 rounded-full" />
-                </div>
-                <SkeletonBlock className="h-4 w-2/3 max-w-full" />
-                {post === "second" && <SkeletonBlock className="h-56 w-full rounded-2xl" />}
-                <div className="flex gap-4 border-t border-line pt-4">
-                  <SkeletonBlock className="h-8 w-20 rounded-xl" />
-                  <SkeletonBlock className="h-8 w-20 rounded-xl" />
-                  <SkeletonBlock className="h-8 w-20 rounded-xl" />
-                </div>
-              </article>
-            ))}
-          </section>
-        </div>
-      </div>
-    </main>
-  );
+function formatMessagePreviewTime(value: string): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1_000));
+  if (seconds < 60) return "now";
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h`;
+  return `${Math.floor(seconds / 86_400)}d`;
 }
 
-function SkeletonBlock({ className }: { className: string }) {
-  return <span className={`session-skeleton-block ${className}`} />;
+function PageLoading() {
+  const { pathname } = useLocation();
+  const page = pathname === "/messages" ? "messages" : pathname === "/friends" ? "friends" : pathname.startsWith("/profile") ? "profile" : pathname === "/search" ? "search" : ["/login", "/signup", "/forgot-password", "/reset-password"].includes(pathname) ? "account" : "feed";
+  return <SessionSkeleton page={page} />;
 }
 
 function PublicAccountRoute({ children }: { children: ReactNode }) {
@@ -426,19 +694,21 @@ function PublicAccountRoute({ children }: { children: ReactNode }) {
   return children;
 }
 
-function RequireUser({ children }: { children: ReactNode }) {
+function RequireUser({ children, withLayout = true }: { children: ReactNode; withLayout?: boolean }) {
   const { user, isLoading } = useAuth();
   if (isLoading) return <PageLoading />;
   if (!user) return <Navigate to="/login" replace />;
-  return <MemberLayout>{children}</MemberLayout>;
+  return withLayout ? <MemberLayout>{children}</MemberLayout> : children;
 }
 
 function MemberLayout({ children }: { children: ReactNode }) {
   const { user } = useAuth();
+  const location = useLocation();
+  const isFriendsPage = location.pathname === "/friends";
 
   return (
-    <div className="flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row">
-      <aside className="lg:w-56 lg:shrink-0">
+    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row${isFriendsPage ? " friends-member-layout" : ""}`}>
+      {!isFriendsPage && <aside className="lg:w-56 lg:shrink-0">
         <nav aria-label="Main navigation" className="flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
           <p className="mb-2 hidden px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted lg:block">Explore</p>
           {navigation.map((item) => <NavLink
@@ -459,7 +729,7 @@ function MemberLayout({ children }: { children: ReactNode }) {
             ) : <><Icon name={item.icon} size={19} />{item.label}</>}
           </NavLink>)}
         </nav>
-      </aside>
+      </aside>}
       <main className="min-w-0 flex-1">{children}</main>
     </div>
   );

@@ -45,6 +45,7 @@ function matchesMessage(message: MessageDocument, filter: MongoFilter): boolean 
     if (field === "_id") return matchesObjectId(message._id, expected);
     if (field === "senderId") return matchesObjectId(message.senderId, expected);
     if (field === "recipientId") return matchesObjectId(message.recipientId, expected);
+    if (field === "isRead") return message.isRead === expected;
     if (field === "createdAt") {
       if (expected instanceof Date) return message.createdAt.getTime() === expected.getTime();
       if (typeof expected === "object" && expected !== null && "$lt" in expected) {
@@ -111,6 +112,34 @@ function createDatabase(data: MessageTestData): Db {
       if (name === collectionNames.messages) {
         return {
           find: (filter: MongoFilter) => new MessageCursor(data.messages, filter),
+          aggregate: (pipeline: MongoFilter[]) => ({
+            toArray: async () => {
+              const unreadBySender = new Map<string, number>();
+              const filter = pipeline[0]?.$match as MongoFilter;
+              for (const message of data.messages) {
+                if (matchesMessage(message, filter)) {
+                  const senderId = message.senderId.toHexString();
+                  unreadBySender.set(senderId, (unreadBySender.get(senderId) ?? 0) + 1);
+                }
+              }
+              return [...unreadBySender].map(([id, unreadCount]) => ({
+                _id: new ObjectId(id),
+                unreadCount,
+              }));
+            },
+          }),
+          updateMany: async (filter: MongoFilter, update: MongoFilter) => {
+            const { isRead, readAt } = update.$set as { isRead: boolean; readAt: Date };
+            let modifiedCount = 0;
+            for (const message of data.messages) {
+              if (matchesMessage(message, filter)) {
+                message.isRead = isRead;
+                message.readAt = readAt;
+                modifiedCount += 1;
+              }
+            }
+            return { modifiedCount };
+          },
         };
       }
       throw new Error(`Unexpected collection: ${name}`);
@@ -161,13 +190,18 @@ function messageFor(
     clientId: `client-${id}`,
     text,
     createdAt: fixedNow,
+    isRead: false,
   };
 }
 
 function createTestApp(data: MessageTestData) {
   const database = createDatabase(data);
   const app = express();
-  app.use("/api/chats", createChatsRouter({ getDatabase: () => database, now: () => fixedNow }));
+  app.use("/api/chats", createChatsRouter({
+    getDatabase: () => database,
+    getAllowedOrigins: () => ["http://client.test"],
+    now: () => fixedNow,
+  }));
   app.use(notFoundHandler);
   app.use(errorHandler);
   return app;
@@ -246,6 +280,36 @@ test("friend conversation history is stably paged newest-first and non-friends a
     reverseConversation.body.items.map((message: { id: string }) => message.id),
     firstPage.body.items.map((message: { id: string }) => message.id),
   );
+
+  const legacyMessage = messageFor("000000000000000000000006", bob, alice, "older history");
+  delete legacyMessage.isRead;
+  data.messages.push(legacyMessage);
+
+  const unreadBeforeOpening = await request(app)
+    .get("/api/chats/unread")
+    .set("Cookie", aliceCookie);
+  assert.equal(unreadBeforeOpening.status, 200);
+  assert.equal(unreadBeforeOpening.headers["cache-control"], "private, no-store");
+  assert.deepEqual(unreadBeforeOpening.body.items, [{ friendId: bobId, unreadCount: 2 }]);
+
+  const markRead = await request(app)
+    .patch(`/api/chats/${bobId}/read`)
+    .set("Cookie", aliceCookie)
+    .set("Origin", "http://client.test");
+  assert.equal(markRead.status, 204);
+  assert.equal(data.messages.filter((message) => message.senderId.equals(bob._id) && message.recipientId.equals(alice._id) && message.isRead).length, 2);
+  assert.equal(legacyMessage.isRead, undefined, "unread tracking leaves pre-feature history alone");
+
+  const unreadAfterOpening = await request(app)
+    .get("/api/chats/unread")
+    .set("Cookie", aliceCookie);
+  assert.deepEqual(unreadAfterOpening.body.items, []);
+
+  const cannotMarkNonFriendRead = await request(app)
+    .patch(`/api/chats/${carol._id.toHexString()}/read`)
+    .set("Cookie", aliceCookie)
+    .set("Origin", "http://client.test");
+  assert.equal(cannotMarkNonFriendRead.status, 404);
 
   const nonFriendHistory = await request(app)
     .get(`/api/chats/${aliceId}/messages`)
