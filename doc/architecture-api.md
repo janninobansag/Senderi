@@ -55,6 +55,7 @@ Message records contain `senderId`, `recipientId`, `text`, `createdAt`, and a se
 | `DELETE /api/friends/:userId` | `204` | Either friend may remove the canonical friendship record; repeated removal is safe. |
 | `GET /api/posts` | Paged feed of visible posts and shares, including `likeCount` and `isLikedByViewer` for each source post | Signed in; merge newest-first post and share records; each share must pass its audience check and the source must still be Public. |
 | `GET /api/users/:userId/posts` | Paged visible posts and shares by user, including `likeCount` and `isLikedByViewer` | Signed in; apply current post and share audiences and require Public source posts for shares. |
+| `GET /api/users/:userId/photos?cursor=&limit=` | Paged photo posts by user, newest first; defaults to 20 and caps at 50 | Signed in; applies the same current post audience checks as the timeline. Photo bytes still use the protected post photo route. |
 | `GET /api/posts/:postId` | Post detail with Like count and viewer state | Viewer must pass current audience check. |
 | `POST /api/posts` | JSON `{ text, visibility }` or multipart `text`, `visibility`, and optional `file` -> post | Signed in; derives the author from the current session. Multipart photos are inspected and uploaded as authenticated assets before inserting the post; failed inserts clean up the uploaded asset. |
 | `PATCH /api/posts/:postId` | `{ visibility }` -> post | Author only; requires an allowed Origin and persists the new audience. Feed, direct reads, and photo reads apply it immediately. |

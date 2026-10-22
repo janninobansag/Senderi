@@ -74,7 +74,7 @@ export async function canViewPost(
 export async function listVisiblePostDocuments(
   database: Db,
   viewerId: ObjectId,
-  options: { limit: number; cursor?: FeedCursor; authorId?: ObjectId },
+  options: { limit: number; cursor?: FeedCursor; authorId?: ObjectId; photosOnly?: boolean },
 ): Promise<VisiblePostPage> {
   let candidateFilter: Filter<PostDocument>;
 
@@ -105,6 +105,10 @@ export async function listVisiblePostDocuments(
         : []),
     ];
     candidateFilter = { $or: visibleConditions };
+  }
+
+  if (options.photosOnly) {
+    candidateFilter = { $and: [candidateFilter, { photoAssetId: { $exists: true } }] };
   }
 
   const items: PostDocument[] = [];

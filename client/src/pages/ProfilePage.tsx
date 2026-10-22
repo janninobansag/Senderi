@@ -1,10 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
 import { ApiError, apiFetch, apiUpload } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { RequestErrorState } from "../components/AsyncState";
 import { ProfileSkeleton } from "../components/Skeletons";
 import { PostList } from "../components/Posts";
+import { ProfileFriends, ProfileImageViewer, ProfilePhotos } from "../components/ProfileCollections";
 import type { ProfileResponse, User } from "../../../shared";
 
 type Profile = User;
@@ -37,12 +38,33 @@ function ProfileImagePicker({
   kind,
   disabled,
   onSelect,
+  inputRef,
+  showTrigger = true,
 }: {
   kind: ProfileImageKind;
   disabled: boolean;
   onSelect: (kind: ProfileImageKind, file: File) => void;
+  inputRef?: RefObject<HTMLInputElement | null>;
+  showTrigger?: boolean;
 }) {
   const imageLabel = profileImageLabel(kind);
+  const fileInput = (
+    <input
+      ref={inputRef}
+      className="sr-only"
+      type="file"
+      accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+      aria-label={`Choose a new ${imageLabel}`}
+      disabled={disabled}
+      onChange={(event) => {
+        const file = event.currentTarget.files?.[0];
+        event.currentTarget.value = "";
+        if (file) onSelect(kind, file);
+      }}
+    />
+  );
+
+  if (!showTrigger) return fileInput;
 
   return (
     <label className={`profile-image-picker ${kind === "avatar" ? "profile-avatar-picker" : "profile-cover-picker"} ${disabled ? "profile-image-picker-disabled" : ""}`}>
@@ -51,18 +73,7 @@ function ProfileImagePicker({
         <circle cx="12" cy="13" r="3.5" />
       </svg>
       <span className={kind === "avatar" ? "sr-only" : undefined}>Change {kind === "avatar" ? "profile photo" : "cover"}</span>
-      <input
-        className="sr-only"
-        type="file"
-        accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
-        aria-label={`Choose a new ${imageLabel}`}
-        disabled={disabled}
-        onChange={(event) => {
-          const file = event.currentTarget.files?.[0];
-          event.currentTarget.value = "";
-          if (file) onSelect(kind, file);
-        }}
-      />
+      {fileInput}
     </label>
   );
 }
@@ -132,17 +143,24 @@ function friendshipLabel(status: ProfileResponse["friendshipStatus"]): string {
 export function ProfilePage() {
   const { user: currentUser, refreshUser } = useAuth();
   const { userId } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const profileId = userId ?? currentUser?.id;
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [form, setForm] = useState<FormValues | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [isAvatarMenuOpen, setIsAvatarMenuOpen] = useState(false);
+  const [isAvatarViewerOpen, setIsAvatarViewerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [imageUpload, setImageUpload] = useState<ImageUploadState | null>(null);
   const editorDialogRef = useRef<HTMLDialogElement>(null);
+  const avatarFrameRef = useRef<HTMLDivElement>(null);
+  const avatarTriggerRef = useRef<HTMLButtonElement>(null);
+  const avatarFileInputRef = useRef<HTMLInputElement>(null);
   const editorTitleId = useId();
+  const profileTabId = useId();
   const uploadInProgress = useRef(false);
 
   useEffect(() => {
@@ -151,6 +169,30 @@ export function ProfilePage() {
     if (isEditorOpen && !dialog.open) dialog.showModal();
     if (!isEditorOpen && dialog.open) dialog.close();
   }, [isEditorOpen]);
+
+  useEffect(() => {
+    if (!isAvatarMenuOpen) return;
+
+    function closeAvatarMenu(event: PointerEvent) {
+      if (event.target instanceof Node && !avatarFrameRef.current?.contains(event.target)) {
+        setIsAvatarMenuOpen(false);
+      }
+    }
+
+    function handleAvatarMenuKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsAvatarMenuOpen(false);
+        avatarTriggerRef.current?.focus();
+      }
+    }
+
+    document.addEventListener("pointerdown", closeAvatarMenu);
+    document.addEventListener("keydown", handleAvatarMenuKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", closeAvatarMenu);
+      document.removeEventListener("keydown", handleAvatarMenuKeyDown);
+    };
+  }, [isAvatarMenuOpen]);
 
   useEffect(() => {
     const previewUrl = imageUpload?.previewUrl;
@@ -164,6 +206,8 @@ export function ProfilePage() {
     let active = true;
     setIsLoading(true);
     setIsEditorOpen(false);
+    setIsAvatarMenuOpen(false);
+    setIsAvatarViewerOpen(false);
     setError(null);
     setSaveMessage(null);
 
@@ -187,6 +231,8 @@ export function ProfilePage() {
   }, [profileId]);
 
   const isOwner = Boolean(profile && currentUser && profile.user.id === currentUser.id);
+  const requestedTab = searchParams.get("tab");
+  const activeTab = requestedTab === "photos" ? "photos" : requestedTab === "friends" && isOwner ? "friends" : "posts";
   const memberSince = useMemo(() => {
     if (!profile) return "";
     return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date(profile.user.createdAt));
@@ -289,6 +335,10 @@ export function ProfilePage() {
   if (isLoading) return <ProfileSkeleton />;
   if (error || !profile || !form) return <RequestErrorState title="Unable to load profile" message={error ?? "Please try again."} />;
 
+  const avatarImageUrl = imageUpload?.status === "uploading" && imageUpload.kind === "avatar"
+    ? imageUpload.previewUrl
+    : profile.user.avatarUrl;
+
   return (
     <div className="profile-page space-y-5">
       <section className="profile-cover">
@@ -298,14 +348,57 @@ export function ProfilePage() {
             : profile.user.coverUrl}
           displayName={profile.user.displayName}
         />
-        <div className="profile-avatar-frame">
-          <ProfileAvatar
-            imageUrl={imageUpload?.status === "uploading" && imageUpload.kind === "avatar"
-              ? imageUpload.previewUrl
-              : profile.user.avatarUrl}
-            displayName={profile.user.displayName}
-          />
-          {isOwner && <ProfileImagePicker kind="avatar" disabled={imageUpload?.status === "uploading"} onSelect={uploadProfileImage} />}
+        <div className="profile-avatar-frame" ref={avatarFrameRef}>
+          <button
+            ref={avatarTriggerRef}
+            className="profile-avatar-trigger"
+            type="button"
+            aria-label="Profile picture options"
+            aria-haspopup="menu"
+            aria-expanded={isAvatarMenuOpen}
+            aria-controls="profile-avatar-menu"
+            onClick={() => setIsAvatarMenuOpen((open) => !open)}
+          >
+            <ProfileAvatar imageUrl={avatarImageUrl} displayName={profile.user.displayName} />
+          </button>
+          {isAvatarMenuOpen && (
+            <div className="profile-avatar-menu" id="profile-avatar-menu" role="menu" aria-label="Profile picture options">
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!avatarImageUrl}
+                onClick={() => {
+                  setIsAvatarMenuOpen(false);
+                  setIsAvatarViewerOpen(true);
+                }}
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="3" /><circle cx="12" cy="9" r="2.5" /><path d="M7.5 18c.8-2.2 2.3-3.3 4.5-3.3s3.7 1.1 4.5 3.3" /></svg>
+                <span>See profile picture</span>
+              </button>
+              {isOwner && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={imageUpload?.status === "uploading"}
+                  onClick={() => {
+                    setIsAvatarMenuOpen(false);
+                    avatarFileInputRef.current?.click();
+                  }}
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="3" /><circle cx="8" cy="8" r="1.3" /><path d="m5 18 5-5 3 3 2.5-2.5L20 18" /></svg>
+                  <span>Choose profile picture</span>
+                </button>
+              )}
+            </div>
+          )}
+          {isOwner && <ProfileImagePicker kind="avatar" disabled={imageUpload?.status === "uploading"} onSelect={uploadProfileImage} inputRef={avatarFileInputRef} showTrigger={false} />}
+          {isAvatarViewerOpen && avatarImageUrl && (
+            <ProfileImageViewer
+              image={{ label: "Profile photo", url: avatarImageUrl }}
+              profile={profile.user}
+              onClose={() => setIsAvatarViewerOpen(false)}
+            />
+          )}
         </div>
         {isOwner && <ProfileImagePicker kind="cover" disabled={imageUpload?.status === "uploading"} onSelect={uploadProfileImage} />}
       </section>
@@ -354,15 +447,39 @@ export function ProfilePage() {
             <div><dt>Website</dt><dd>{profile.user.info.website ? <a href={profile.user.info.website} target="_blank" rel="noreferrer">{profile.user.info.website}</a> : "Not shared"}</dd></div>
           </dl>
         </div>
+        <div className="profile-tabs" role="tablist" aria-label="Profile sections">
+          {(["posts", "photos", ...(isOwner ? ["friends"] : [])] as const).map((tab) => (
+            <button
+              id={`${profileTabId}-${tab}`}
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              aria-controls={`${profileTabId}-panel`}
+              className={activeTab === tab ? "profile-tab-active" : ""}
+              onClick={() => setSearchParams(tab === "posts" ? {} : { tab })}
+            >
+              {tab === "posts" ? "Posts" : tab === "photos" ? "Photos" : "Friends"}
+            </button>
+          ))}
+        </div>
       </section>
 
-      <section className="surface-card space-y-5 p-6 sm:p-8">
-        <div>
-          <span className="eyebrow">Posts</span>
-          <h2 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-ink">{isOwner ? "Your timeline" : `${profile.user.displayName}’s timeline`}</h2>
-        </div>
-        <PostList path={`/api/users/${profile.user.id}/posts`} />
-      </section>
+      <div id={`${profileTabId}-panel`} role="tabpanel" aria-labelledby={`${profileTabId}-${activeTab}`}>
+        {activeTab === "posts" ? (
+          <section className="surface-card space-y-5 p-6 sm:p-8">
+            <div>
+              <span className="eyebrow">Posts</span>
+              <h2 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-ink">{isOwner ? "Your timeline" : `${profile.user.displayName}’s timeline`}</h2>
+            </div>
+            <PostList path={`/api/users/${profile.user.id}/posts`} />
+          </section>
+        ) : activeTab === "photos" ? (
+          <ProfilePhotos key={profile.user.id} profile={profile.user} />
+        ) : (
+          <ProfileFriends />
+        )}
+      </div>
 
       {isOwner && (
         <dialog

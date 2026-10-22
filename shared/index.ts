@@ -106,7 +106,12 @@ export interface NotificationsResponse {
 }
 
 /** Public profiles returned for the signed-in user's accepted friends. */
-export type FriendListResponse = Page<User>;
+export interface FriendListItem extends User {
+  /** Other friends shared with the signed-in viewer; does not include the viewer. */
+  mutualFriendCount?: number;
+}
+
+export type FriendListResponse = Page<FriendListItem>;
 
 /** A visible post with its public author profile; never contains storage secrets. */
 export interface PostLikeState {

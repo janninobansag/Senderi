@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import type { ChatUnreadResponse, FriendListResponse, Message, MessageHistoryResponse, NotificationItem, NotificationsResponse, Post, PostListResponse, User, UserSearchResponse } from "../../shared";
+import { io } from "socket.io-client";
+import type { ChatUnreadResponse, FriendListResponse, Message, MessageHistoryResponse, NotificationItem, NotificationsResponse, Post, PostListResponse, SocketTicketResponse, User, UserSearchResponse } from "../../shared";
 import { apiFetch } from "./api/client";
+import { CHAT_UNREAD_CHANGED_EVENT, notifyChatUnreadChanged } from "./chat/unread-events";
 import { CompactRowsSkeleton, SessionSkeleton, SkeletonBlock, SkeletonRegion } from "./components/Skeletons";
 import { PostComposer, PostList } from "./components/Posts";
 import { useAuth } from "./auth/AuthContext";
@@ -64,7 +66,7 @@ export default function App() {
               <img src="/senderi-mark.svg" alt="" className="h-9 w-9 shrink-0" />
               <span>senderi<span className="text-accent">.</span></span>
             </NavLink>
-            {user && <HeaderPeopleSearch />}
+            {user ? <HeaderPeopleSearch /> : isLoading ? <span className="skeleton-block skeleton-header-search" aria-hidden="true" /> : null}
           </div>
           <HeaderActions />
         </div>
@@ -357,6 +359,54 @@ function HeaderActions() {
   }, [currentUserId, refreshNotifications]);
 
   useEffect(() => {
+    if (!currentUserId) {
+      setMessageUnreadCounts({});
+      return;
+    }
+
+    let active = true;
+    let latestRequest = 0;
+    const refreshMessageUnread = () => {
+      const request = ++latestRequest;
+      void apiFetch<ChatUnreadResponse>("/api/chats/unread").then((result) => {
+        if (active && request === latestRequest) {
+          setMessageUnreadCounts(Object.fromEntries(result.items.map((item) => [item.friendId, item.unreadCount])));
+        }
+      }).catch(() => {
+        // Retain the last known badge while the connection is unavailable.
+      });
+    };
+
+    refreshMessageUnread();
+    const interval = window.setInterval(refreshMessageUnread, 30_000);
+    window.addEventListener("focus", refreshMessageUnread);
+    window.addEventListener(CHAT_UNREAD_CHANGED_EVENT, refreshMessageUnread);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshMessageUnread);
+      window.removeEventListener(CHAT_UNREAD_CHANGED_EVENT, refreshMessageUnread);
+    };
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    const socket = io(import.meta.env.VITE_SOCKET_URL || window.location.origin, {
+      autoConnect: false,
+      withCredentials: true,
+      auth: (callback) => {
+        void apiFetch<SocketTicketResponse>("/api/auth/socket-ticket", { method: "POST", body: {} })
+          .then(({ ticket }) => callback({ ticket }))
+          .catch(() => callback({ ticket: "" }));
+      },
+    });
+    socket.on("connect", notifyChatUnreadChanged);
+    socket.on("message:new", notifyChatUnreadChanged);
+    socket.connect();
+    return () => { socket.disconnect(); };
+  }, [currentUserId]);
+
+  useEffect(() => {
     if (!isAccountMenuOpen && !isNotificationsOpen && !isMessagesOpen) return;
 
     function closeOnOutsidePointer(event: PointerEvent) {
@@ -390,12 +440,6 @@ function HeaderActions() {
     if (!isMessagesOpen || !currentUserId) return;
     let active = true;
     setMessagesLoading(true);
-    void apiFetch<ChatUnreadResponse>("/api/chats/unread").then((result) => {
-      if (!active) return;
-      setMessageUnreadCounts(Object.fromEntries(result.items.map((item) => [item.friendId, item.unreadCount])));
-    }).catch(() => {
-      if (active) setMessageUnreadCounts({});
-    });
     void apiFetch<FriendListResponse>("/api/friends?limit=12").then(async (result) => {
       if (!active) return;
       setMessageFriends(result.items);
@@ -475,6 +519,7 @@ function HeaderActions() {
     return text.toLocaleLowerCase().includes(messageSearch.trim().toLocaleLowerCase()) &&
       (messageFilter === "all" || (messageUnreadCounts[friend.id] ?? 0) > 0);
   });
+  const unreadMessageCount = Object.values(messageUnreadCounts).reduce((total, count) => total + count, 0);
 
   return (
     <div className="relative flex items-center gap-3" ref={accountMenuRef}>
@@ -488,6 +533,7 @@ function HeaderActions() {
             to="/messages"
             onClick={(event) => {
               event.preventDefault();
+              if (!isMessagesOpen) notifyChatUnreadChanged();
               setIsAccountMenuOpen(false);
               setIsNotificationsOpen(false);
               setIsMessagesOpen((open) => !open);
@@ -495,10 +541,15 @@ function HeaderActions() {
             aria-expanded={isMessagesOpen}
             aria-controls={messagesPanelId}
             aria-haspopup="dialog"
-            aria-label="Messages"
+            aria-label={unreadMessageCount > 0 ? `Messages, ${unreadMessageCount} unread` : "Messages"}
             title="Messages"
           >
             <Icon name="message" size={19} />
+            {unreadMessageCount > 0 && (
+              <span className="header-notification-badge" aria-hidden="true">
+                {unreadMessageCount > 99 ? "99+" : unreadMessageCount}
+              </span>
+            )}
           </NavLink>
           <div id={messagesPanelId} className="header-messages-panel" role="dialog" aria-label="Messages" hidden={!isMessagesOpen}>
             <div className="header-messages-heading">
@@ -708,8 +759,8 @@ function MemberLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""}`}>
-      {!isFriendsPage && <aside className="lg:w-56 lg:shrink-0">
-        <nav aria-label="Main navigation" className="flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
+      {!isFriendsPage && <aside className="member-layout-sidebar lg:w-64 lg:shrink-0">
+        <nav aria-label="Main navigation" className="member-primary-nav flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
           <p className="mb-2 hidden px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted lg:block">Explore</p>
           {navigation.map((item) => <NavLink
             key={item.to}

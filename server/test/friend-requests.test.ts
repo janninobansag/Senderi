@@ -101,17 +101,27 @@ function createDatabase(data: FriendTestData): Db {
               friendship.userIdLow.equals(filter.userIdLow) &&
               friendship.userIdHigh.equals(filter.userIdHigh),
             ) ?? null,
-          find: (filter: { $and: Array<Record<string, unknown>> }) => {
-            const [membersFilter, cursorFilter] = filter.$and;
-            const memberConditions = membersFilter.$or as Array<Partial<FriendshipDocument>>;
+          find: (filter: { $and?: Array<Record<string, unknown>>; $or?: Array<Record<string, unknown>> }) => {
+            const membersFilter = filter.$and?.[0] ?? filter;
+            const cursorFilter = filter.$and?.[1];
+            const memberConditions = membersFilter.$or as Array<Record<string, unknown>>;
             const cursorConditions = cursorFilter?.$or as Array<{
               createdAt?: { $lt: Date } | Date;
               _id?: { $lt: ObjectId };
             }> | undefined;
+            const matchesId = (actual: ObjectId, expected: unknown) => {
+              if (expected === undefined) return true;
+              if (expected instanceof ObjectId) return actual.equals(expected);
+              if (typeof expected === "object" && expected !== null && "$in" in expected) {
+                const values = (expected as { $in: unknown }).$in;
+                return Array.isArray(values) && values.some((value) => value instanceof ObjectId && actual.equals(value));
+              }
+              return false;
+            };
             let result = data.friendships.filter((friendship) => {
               const isMember = memberConditions.some((condition) =>
-                (condition.userIdLow && friendship.userIdLow.equals(condition.userIdLow)) ||
-                (condition.userIdHigh && friendship.userIdHigh.equals(condition.userIdHigh)),
+                matchesId(friendship.userIdLow, condition.userIdLow) &&
+                matchesId(friendship.userIdHigh, condition.userIdHigh),
               );
               const afterCursor = !cursorConditions || cursorConditions.some((condition) => {
                 if (condition.createdAt instanceof Date) {
@@ -632,20 +642,22 @@ test("friends are paged as public profiles and either friend can remove the rela
   const app = createTestApp(data);
 
   const firstPage = await request(app)
-    .get("/api/friends?limit=1")
+    .get("/api/friends?limit=1&includeMutualCounts=true")
     .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
   assert.equal(firstPage.status, 200);
   assert.equal(firstPage.body.items.length, 1);
   assert.notEqual(firstPage.body.nextCursor, null);
+  assert.equal(firstPage.body.items[0].mutualFriendCount, 0);
   assert.equal("email" in firstPage.body.items[0], false);
   assert.equal("passwordHash" in firstPage.body.items[0], false);
 
   const secondPage = await request(app)
-    .get(`/api/friends?limit=1&cursor=${firstPage.body.nextCursor}`)
+    .get(`/api/friends?limit=1&includeMutualCounts=true&cursor=${firstPage.body.nextCursor}`)
     .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
   assert.equal(secondPage.status, 200);
   assert.equal(secondPage.body.items.length, 1);
   assert.equal(secondPage.body.nextCursor, null);
+  assert.equal(secondPage.body.items[0].mutualFriendCount, 0);
   assert.deepEqual(
     [firstPage.body.items[0].id, secondPage.body.items[0].id].sort(),
     [bob._id.toHexString(), charlie._id.toHexString()].sort(),
@@ -675,4 +687,36 @@ test("friends are paged as public profiles and either friend can remove the rela
     .get("/api/friends")
     .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
   assert.deepEqual(emptyList.body, { items: [], nextCursor: null });
+});
+
+test("friend list reports shared friends and excludes the signed-in viewer", async () => {
+  const alice = makeUser("000000000000000000000011", "alice@example.com", "Alice Example");
+  const bob = makeUser("000000000000000000000012", "bob@example.com", "Bob Example");
+  const charlie = makeUser("000000000000000000000013", "charlie@example.com", "Charlie Example");
+  const diana = makeUser("000000000000000000000014", "diana@example.com", "Diana Example");
+  const data = emptyData(
+    [alice, bob, charlie, diana],
+    [sessionFor(alice, aliceToken)],
+  );
+  data.friendships.push(
+    makeFriendship(alice, bob),
+    makeFriendship(alice, charlie),
+    makeFriendship(alice, diana),
+    makeFriendship(bob, charlie),
+  );
+  const app = createTestApp(data);
+
+  const response = await request(app)
+    .get("/api/friends?limit=20&includeMutualCounts=true")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    Object.fromEntries(response.body.items.map((friend: { id: string; mutualFriendCount: number }) => [friend.id, friend.mutualFriendCount])),
+    {
+      [bob._id.toHexString()]: 1,
+      [charlie._id.toHexString()]: 1,
+      [diana._id.toHexString()]: 0,
+    },
+  );
 });
