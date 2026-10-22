@@ -11,6 +11,7 @@ import { useAuth } from "./auth/AuthContext";
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage } from "./pages/AccountPages";
 import { FriendsPage } from "./pages/FriendsPage";
 import { MessagesPage } from "./pages/MessagesPage";
+import { PostPage } from "./pages/PostPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SearchPage } from "./pages/SearchPage";
 import { usePwaInstall } from "./pwa";
@@ -113,6 +114,7 @@ export default function App() {
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/friends" element={<RequireUser><FriendsPage /></RequireUser>} />
         <Route path="/messages" element={<RequireUser withLayout={false}><MessagesPage /></RequireUser>} />
+        <Route path="/posts/:postId" element={<RequireUser><PostPage /></RequireUser>} />
         <Route path="/search" element={<RequireUser><SearchPage /></RequireUser>} />
         <Route path="/profile" element={<RequireUser><ProfilePage /></RequireUser>} />
         <Route path="/profile/:userId" element={<RequireUser><ProfilePage /></RequireUser>} />
@@ -556,20 +558,19 @@ function HeaderActions() {
   async function handleOpenNotification(notification: NotificationItem) {
     setIsNotificationsOpen(false);
     if (!notification.isRead) {
-      try {
-        await apiFetch<void>(`/api/notifications/${notification.id}/read`, { method: "PATCH" });
-        setNotifications((items) => items.map((item) =>
-          item.id === notification.id ? { ...item, isRead: true } : item,
-        ));
-        setUnreadNotificationCount((count) => Math.max(0, count - 1));
-      } catch {
+      setNotifications((items) => items.map((item) =>
+        item.id === notification.id ? { ...item, isRead: true } : item,
+      ));
+      setUnreadNotificationCount((count) => Math.max(0, count - 1));
+      void apiFetch<void>(`/api/notifications/${notification.id}/read`, { method: "PATCH" }).catch(() => {
         setNotificationError("This notification couldn’t be marked as read.");
-      }
+      });
     }
     if (notification.type === "friend_request" || notification.type === "friend_accepted") {
       navigate("/friends");
     } else if (notification.postId) {
-      navigate(`/#post-${notification.postId}`);
+      const commentsQuery = notification.type === "post_comment" ? "?comments=1" : "";
+      navigate(`/posts/${encodeURIComponent(notification.postId)}${commentsQuery}`);
     }
   }
 
