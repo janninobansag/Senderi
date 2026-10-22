@@ -35,6 +35,9 @@ button { cursor: pointer; }
 .state-message-error { align-items: flex-start; flex-direction: column; gap: 2px; color: #b34b5d; }
 .state-message-error strong { color: #9c3047; }
 .loading-dot { height: 8px; width: 8px; border-radius: 50%; background: var(--color-accent); box-shadow: 0 0 0 4px rgb(147 96 0 / 12%); }
+.session-skeleton-block { display: block; border-radius: 999px; background-color: var(--color-accent-soft); background-image: linear-gradient(100deg, #f7edcd 20%, #fffdf8 42%, #f7edcd 64%); background-size: 220% 100%; animation: session-skeleton-shimmer 1.8s ease-in-out infinite; }
+@keyframes session-skeleton-shimmer { to { background-position: -220% 0; } }
+@media (prefers-reduced-motion: reduce) { .session-skeleton-block { animation: none; background-image: none; } }
 .api-status { display: inline-flex; align-items: center; gap: 8px; color: var(--color-accent-dark); font-size: 13px; font-weight: 700; }
 .status-indicator { height: 8px; width: 8px; border-radius: 50%; background: #936000; box-shadow: 0 0 0 4px rgb(147 96 0 / 12%); }
 .profile-cover { position: relative; height: clamp(190px, 28vw, 320px); border-radius: 24px; background: linear-gradient(120deg, #f7edcd, #fff4d5 55%, #e6c47a); }
