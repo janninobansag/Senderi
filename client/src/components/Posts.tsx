@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, UpdateShareResponse, Visibility } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
-import { EmptyState, LoadingState, RequestErrorState } from "./AsyncState";
+import { EmptyState, RequestErrorState } from "./AsyncState";
+import { CommentsSkeleton, PostListSkeleton } from "./Skeletons";
 
 const MAX_POST_LENGTH = 5_000;
 
@@ -130,7 +131,7 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
       {isOpen && (
         <section className="post-comments-panel space-y-4" aria-label="Post comments">
           {isLoading ? (
-            <p className="text-sm text-muted" role="status">Loading comments…</p>
+            <CommentsSkeleton />
           ) : loadError && !hasLoaded ? (
             <div className="space-y-2">
               <RequestErrorState title="Unable to load comments" message={loadError} />
@@ -176,6 +177,7 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
                 </ul>
               )}
               {loadError && <RequestErrorState title="Unable to load more comments" message={loadError} />}
+              {isLoadingMore && <CommentsSkeleton />}
               {nextCursor && (
                 <button
                   className="button-secondary w-full"
@@ -1090,7 +1092,7 @@ export function PostList({ path, refreshKey = 0 }: { path: string; refreshKey?: 
     }
   }
 
-  if (isLoading) return <LoadingState message="Loading posts…" />;
+  if (isLoading) return <PostListSkeleton />;
   if (error) {
     return (
       <div className="space-y-3">
@@ -1114,6 +1116,7 @@ export function PostList({ path, refreshKey = 0 }: { path: string; refreshKey?: 
           onDeleted={() => setRetryKey((current) => current + 1)}
         />
       ))}
+      {isLoadingMore && <PostListSkeleton count={1} />}
       {nextPageError && <RequestErrorState title="Unable to load more posts" message={nextPageError} />}
       {nextCursor && (
         <div className="flex justify-center">

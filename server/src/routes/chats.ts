@@ -6,6 +6,7 @@ import { getDatabase as getConnectedDatabase } from "../db/client";
 import { collectionNames, type MessageDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { areFriends } from "../friends/are-friends";
+import { requireClientOrigin } from "../middleware/require-client-origin";
 
 const messageHistoryQuerySchema = z.object({
   cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
@@ -20,11 +21,13 @@ interface MessageHistoryCursor {
 
 export interface ChatsRouterDependencies {
   getDatabase: () => Db;
+  getAllowedOrigins: () => readonly string[];
   now: () => Date;
 }
 
 const defaultDependencies: ChatsRouterDependencies = {
   getDatabase: getConnectedDatabase,
+  getAllowedOrigins: () => (process.env.CLIENT_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),
   now: () => new Date(),
 };
 
@@ -94,6 +97,42 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
     getDatabase: dependencies.getDatabase,
     now: dependencies.now,
   });
+
+  router.get("/unread", authenticated, async (_request, response) => {
+    const recipientId = getAuthenticatedSession(response).user._id;
+    const items = await dependencies.getDatabase()
+      .collection<MessageDocument>(collectionNames.messages)
+      .aggregate<{ _id: ObjectId; unreadCount: number }>([
+        { $match: { recipientId, isRead: false } },
+        { $group: { _id: "$senderId", unreadCount: { $sum: 1 } } },
+      ])
+      .toArray();
+
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({
+      items: items.map((item) => ({ friendId: item._id.toHexString(), unreadCount: item.unreadCount })),
+    });
+  });
+
+  router.patch(
+    "/:friendId/read",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const friendId = toFriendObjectId(String(request.params.friendId));
+      const viewerId = getAuthenticatedSession(response).user._id;
+      if (!(await areFriends(dependencies.getDatabase(), viewerId, friendId))) {
+        throw new HttpError(404, "conversation_not_found", "Conversation was not found.");
+      }
+
+      await dependencies.getDatabase().collection<MessageDocument>(collectionNames.messages).updateMany(
+        { senderId: friendId, recipientId: viewerId, isRead: false },
+        { $set: { isRead: true, readAt: dependencies.now() } },
+      );
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(204).end();
+    },
+  );
 
   router.get("/:friendId/messages", authenticated, async (request, response) => {
     const parsedQuery = messageHistoryQuerySchema.safeParse(request.query);

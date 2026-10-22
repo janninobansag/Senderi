@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ApiError, apiFetch, apiUpload } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { LoadingState, RequestErrorState } from "../components/AsyncState";
+import { RequestErrorState } from "../components/AsyncState";
+import { ProfileSkeleton } from "../components/Skeletons";
 import { PostList } from "../components/Posts";
 import type { ProfileResponse, User } from "../../../shared";
 
@@ -266,7 +267,7 @@ export function ProfilePage() {
   }
 
   if (!profileId) return <RequestErrorState title="Profile unavailable" message="Sign in to view your profile." />;
-  if (isLoading) return <LoadingState message="Loading profile..." />;
+  if (isLoading) return <ProfileSkeleton />;
   if (error || !profile || !form) return <RequestErrorState title="Unable to load profile" message={error ?? "Please try again."} />;
 
   return (

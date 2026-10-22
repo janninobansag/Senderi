@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Link, useLocation } from "react-router-dom";
 import type {
   CreateFriendRequestResponse,
   FriendListResponse,
@@ -12,9 +12,10 @@ import type {
   UserSearchResponse,
 } from "../../../shared";
 import { ApiError, apiFetch } from "../api/client";
-import { EmptyState, LoadingState, RequestErrorState } from "../components/AsyncState";
+import { EmptyState, RequestErrorState } from "../components/AsyncState";
+import { PeopleCardsSkeleton, PeopleRowsSkeleton } from "../components/Skeletons";
 
-type FriendsView = "search" | "requests" | "friends";
+type FriendsView = "home" | "requests" | "suggestions" | "friends" | "search";
 type RequestView = "incoming" | "outgoing";
 type SearchRelationship = "incoming" | "outgoing" | "friends" | "none" | "unknown";
 
@@ -60,6 +61,40 @@ function FriendCard({ children, user }: { children: ReactNode; user: User }) {
   );
 }
 
+function FriendsProfileCard({ children, user }: { children: ReactNode; user: User }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const imageUrl = user.coverUrl || user.avatarUrl;
+  const initial = user.displayName.trim().charAt(0).toUpperCase() || "?";
+
+  return (
+    <li className="friends-profile-card">
+      <Link className="friends-profile-cover" to={userProfilePath(user)} aria-label={`View ${user.displayName}'s profile`}>
+        {imageUrl && !imageFailed
+          ? <img src={imageUrl} alt="" loading="lazy" onError={() => setImageFailed(true)} />
+          : <span aria-hidden="true">{initial}</span>}
+      </Link>
+      <div className="friends-profile-content">
+        <Link className="friends-profile-name" to={userProfilePath(user)}>{user.displayName}</Link>
+        <p>{user.bio || user.info.location || "Senderi member"}</p>
+        <div className="friends-profile-actions">{children}</div>
+      </div>
+    </li>
+  );
+}
+
+type FriendsIconName = "home" | "requests" | "suggestions" | "friends";
+
+function FriendsNavIcon({ name }: { name: FriendsIconName }) {
+  const paths: Record<FriendsIconName, ReactNode> = {
+    home: <><path d="m3 10 9-7 9 7" /><path d="M5 9v11h14V9M9 20v-6h6v6" /></>,
+    requests: <><circle cx="9" cy="8" r="4" /><path d="M2 21a7 7 0 0 1 14 0M19 8v6M16 11h6" /></>,
+    suggestions: <><path d="m12 3 2.2 5.4L20 10l-5.8 1.6L12 17l-2.2-5.4L4 10l5.8-1.6L12 3Z" /><path d="m19 16 .9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16Z" /></>,
+    friends: <><circle cx="9" cy="8" r="3.5" /><path d="M2 21a7 7 0 0 1 14 0M16 4.5a3.5 3.5 0 0 1 0 7M18 15a6 6 0 0 1 4 6" /></>,
+  };
+
+  return <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+}
+
 function relationshipLabel(relationship: SearchRelationship): string {
   switch (relationship) {
     case "incoming": return "Sent you a request";
@@ -71,7 +106,8 @@ function relationshipLabel(relationship: SearchRelationship): string {
 }
 
 export function FriendsPage() {
-  const [view, setView] = useState<FriendsView>("search");
+  const location = useLocation();
+  const [view, setView] = useState<FriendsView>("home");
   const [requestView, setRequestView] = useState<RequestView>("incoming");
   const [requests, setRequests] = useState<FriendRequestsResponse>(EMPTY_REQUESTS);
   const [requestsLoading, setRequestsLoading] = useState(true);
@@ -84,7 +120,6 @@ export function FriendsPage() {
   const [requestFeedback, setRequestFeedback] = useState<string | null>(null);
   const [requestFeedbackError, setRequestFeedbackError] = useState(false);
 
-  const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [searchStatuses, setSearchStatuses] = useState<Record<string, ProfileFriendshipStatus | "unknown">>({});
@@ -103,7 +138,15 @@ export function FriendsPage() {
   const [friendsFeedback, setFriendsFeedback] = useState<string | null>(null);
   const [friendsFeedbackError, setFriendsFeedbackError] = useState(false);
 
-  async function refreshRequests(): Promise<FriendRequestsResponse> {
+  const [suggestions, setSuggestions] = useState<User[]>([]);
+  const [suggestionsCursor, setSuggestionsCursor] = useState<string | null>(null);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const [suggestionsFeedback, setSuggestionsFeedback] = useState<string | null>(null);
+  const [suggestionsFeedbackError, setSuggestionsFeedbackError] = useState(false);
+  const [hiddenSuggestionIds, setHiddenSuggestionIds] = useState<string[]>([]);
+
+  const refreshRequests = useCallback(async (): Promise<FriendRequestsResponse> => {
     setRequestsLoading(true);
     setRequestsError(null);
     try {
@@ -116,7 +159,7 @@ export function FriendsPage() {
     } finally {
       setRequestsLoading(false);
     }
-  }
+  }, []);
 
   async function refreshFriends(): Promise<void> {
     setFriendsLoading(true);
@@ -132,13 +175,30 @@ export function FriendsPage() {
     }
   }
 
+  async function loadSuggestions(cursor: string | null = null, append = false): Promise<void> {
+    setSuggestionsLoading(true);
+    setSuggestionsError(null);
+    try {
+      const params = new URLSearchParams({ limit: "20" });
+      if (cursor) params.set("cursor", cursor);
+      const response = await apiFetch<UserSearchResponse>(`/api/users/suggestions?${params.toString()}`);
+      setSuggestions((current) => append ? [...current, ...response.items] : response.items);
+      setSuggestionsCursor(response.nextCursor);
+    } catch (error) {
+      setSuggestionsError(errorMessage(error, "Could not load friend suggestions."));
+    } finally {
+      setSuggestionsLoading(false);
+    }
+  }
+
   useEffect(() => {
     void refreshRequests().catch(() => undefined);
     void refreshFriends();
-  }, []);
+    void loadSuggestions();
+  }, [refreshRequests]);
 
   useEffect(() => {
-    if (view !== "requests" || requestsLoading) return;
+    if ((view !== "requests" && view !== "home") || requestsLoading) return;
     const targetIds = [...new Set([
       ...requests.incoming.map((request) => request.senderId),
       ...requests.outgoing.map((request) => request.recipientId),
@@ -169,7 +229,7 @@ export function FriendsPage() {
     return status === "friends" ? "friends" : "none";
   }
 
-  async function fetchSearchStatuses(users: User[]): Promise<void> {
+  const fetchSearchStatuses = useCallback(async (users: User[]): Promise<void> => {
     const statuses = await Promise.all(users.map(async (user) => {
       try {
         const profile = await apiFetch<ProfileResponse>(`/api/users/${encodeURIComponent(user.id)}`);
@@ -179,9 +239,9 @@ export function FriendsPage() {
       }
     }));
     setSearchStatuses((current) => ({ ...current, ...Object.fromEntries(statuses) }));
-  }
+  }, []);
 
-  async function loadSearchPage(query: string, cursor: string | null, append: boolean): Promise<void> {
+  const loadSearchPage = useCallback(async (query: string, cursor: string | null, append: boolean): Promise<void> => {
     setSearchLoading(true);
     setSearchError(null);
     setSearchFeedback(null);
@@ -200,38 +260,43 @@ export function FriendsPage() {
     } finally {
       setSearchLoading(false);
     }
-  }
+  }, [fetchSearchStatuses, refreshRequests]);
 
-  function submitSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const query = searchInput.trim();
-    if (!query) {
-      setSearchError("Enter a name to search for people.");
-      setSearchResults([]);
-      setSearchCursor(null);
-      setSearchQuery("");
-      return;
-    }
+  useEffect(() => {
+    const query = new URLSearchParams(location.search).get("query")?.trim();
+    if (!query) return;
+    setView("search");
     setSearchResults([]);
     setSearchStatuses({});
     setSearchCursor(null);
     void loadSearchPage(query, null, false);
-  }
+  }, [location.key, location.search, loadSearchPage]);
 
   async function sendRequest(user: User): Promise<void> {
     setRequestingUserId(user.id);
     setSearchFeedback(null);
     setSearchFeedbackError(false);
+    setSuggestionsFeedback(null);
+    setSuggestionsFeedbackError(false);
     try {
       const response = await apiFetch<CreateFriendRequestResponse>("/api/friend-requests", {
         method: "POST",
         body: { recipientId: user.id },
       });
       setRequests((current) => ({ ...current, outgoing: [response.request, ...current.outgoing] }));
-      setSearchFeedback(`Friend request sent to ${user.displayName}.`);
+      setSuggestions((current) => current.filter((item) => item.id !== user.id));
+      const message = `Friend request sent to ${user.displayName}.`;
+      if (view === "search") setSearchFeedback(message);
+      else setSuggestionsFeedback(message);
     } catch (error) {
-      setSearchFeedback(errorMessage(error, `Could not send a request to ${user.displayName}.`));
-      setSearchFeedbackError(true);
+      const message = errorMessage(error, `Could not send a request to ${user.displayName}.`);
+      if (view === "search") {
+        setSearchFeedback(message);
+        setSearchFeedbackError(true);
+      } else {
+        setSuggestionsFeedback(message);
+        setSuggestionsFeedbackError(true);
+      }
     } finally {
       setRequestingUserId(null);
     }
@@ -298,6 +363,15 @@ export function FriendsPage() {
     }
   }
 
+  async function loadMoreSuggestions(): Promise<void> {
+    if (!suggestionsCursor || suggestionsLoading) return;
+    await loadSuggestions(suggestionsCursor, true);
+  }
+
+  function hideSuggestion(user: User): void {
+    setHiddenSuggestionIds((current) => [...current, user.id]);
+  }
+
   async function removeFriend(user: User): Promise<void> {
     setRemovingFriendId(user.id);
     setFriendsFeedback(null);
@@ -317,46 +391,99 @@ export function FriendsPage() {
 
   const incoming = requestView === "incoming";
   const visibleRequests = incoming ? requests.incoming : requests.outgoing;
+  const visibleSuggestions = suggestions.filter((user) => !hiddenSuggestionIds.includes(user.id));
+  const friendsNavigation: Array<{ view: FriendsView; label: string; icon: FriendsIconName; count?: number }> = [
+    { view: "home", label: "Home", icon: "home" },
+    { view: "requests", label: "Friend requests", icon: "requests", count: requests.incoming.length },
+    { view: "suggestions", label: "Suggestions", icon: "suggestions" },
+    { view: "friends", label: "All friends", icon: "friends" },
+  ];
 
   return (
-    <div className="space-y-5">
-      <section className="surface-card p-6 sm:p-8">
-        <span className="eyebrow">Your circle</span>
-        <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="text-3xl font-bold tracking-[-0.04em] text-ink">Friends</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-muted">Find people, respond to requests, and manage the connections you have made.</p>
-          </div>
-          <span className="friend-count">{friends.length} friends loaded</span>
-        </div>
-
-        <div className="friend-tabs" role="tablist" aria-label="Friend pages">
-          {([
-            ["search", "Find people"],
-            ["requests", `Requests${requests.incoming.length ? ` · ${requests.incoming.length}` : ""}`],
-            ["friends", "My friends"],
-          ] as const).map(([tab, label]) => (
-            <button key={tab} className={`friend-tab ${view === tab ? "friend-tab-active" : ""}`} type="button" role="tab" aria-selected={view === tab} onClick={() => { setView(tab); setSearchFeedback(null); setRequestFeedback(null); setFriendsFeedback(null); }}>
-              {label}
+    <div className="friends-page-layout">
+      <aside className="friends-page-sidebar">
+        <h1>Friends</h1>
+        <nav aria-label="Friends navigation">
+          {friendsNavigation.map((item) => (
+            <button
+              key={item.view}
+              className={`friends-page-nav${view === item.view ? " friends-page-nav-active" : ""}`}
+              type="button"
+              aria-current={view === item.view ? "page" : undefined}
+              onClick={() => { setView(item.view); setSearchFeedback(null); setRequestFeedback(null); setFriendsFeedback(null); }}
+            >
+              <span className="friends-page-nav-icon"><FriendsNavIcon name={item.icon} /></span>
+              <span>{item.label}</span>
+              {item.count ? <span className="friends-page-nav-count">{item.count}</span> : null}
             </button>
           ))}
-        </div>
-      </section>
+        </nav>
+      </aside>
 
-      {view === "search" && (
-        <section className="surface-card p-5 sm:p-7" aria-labelledby="find-people-title">
+      <main className="friends-page-main">
+        {view === "home" && (
+          <div className="friends-home-sections">
+            <section aria-labelledby="friend-requests-home-title">
+              <div className="friends-section-heading">
+                <div>
+                  <h2 id="friend-requests-home-title">Friend requests</h2>
+                  <p>{requests.incoming.length ? `${requests.incoming.length} waiting for your response` : "Requests you receive will appear here."}</p>
+                </div>
+                <button className="friends-see-all" type="button" onClick={() => setView("requests")}>See all</button>
+              </div>
+              {requestFeedback && <p className={requestFeedbackError ? "friend-feedback friend-feedback-error" : "friend-feedback"} role={requestFeedbackError ? "alert" : "status"}>{requestFeedback}</p>}
+              {requestsLoading || requestProfilesLoading ? <PeopleCardsSkeleton message="Loading friend requests" /> : requestsError ? <RequestErrorState title="Requests unavailable" message={requestsError} /> : requestProfilesError ? <RequestErrorState title="Profiles unavailable" message={requestProfilesError} /> : requests.incoming.length === 0 ? <EmptyState title="No new requests" message="When someone asks to connect, their request will appear here." /> : (
+                <ul className="friends-card-grid" aria-label="Incoming friend requests">
+                  {requests.incoming.slice(0, 6).map((request) => {
+                    const person = requestProfiles[request.senderId];
+                    if (!person) return null;
+                    return (
+                      <FriendsProfileCard key={request.id} user={person}>
+                        <button className="button-accent" type="button" onClick={() => void respondToRequest(request, "accept")} disabled={requestActionId === request.id}>{requestActionId === request.id ? "Saving…" : "Confirm"}</button>
+                        <button className="button-secondary" type="button" onClick={() => void respondToRequest(request, "decline")} disabled={requestActionId === request.id}>Delete</button>
+                      </FriendsProfileCard>
+                    );
+                  })}
+                </ul>
+              )}
+              {requestsError && <button className="button-secondary mt-4" type="button" onClick={() => void refreshRequests().catch(() => undefined)}>Try again</button>}
+              {requestProfilesError && <button className="button-secondary mt-4" type="button" onClick={() => { setRequestProfilesError(null); setRequestProfilesRetry((current) => current + 1); }}>Retry profiles</button>}
+            </section>
+
+            <section aria-labelledby="suggestions-home-title">
+              <div className="friends-section-heading">
+                <div>
+                  <h2 id="suggestions-home-title">People you may know</h2>
+                  <p>Discover more people on Senderi.</p>
+                </div>
+                <button className="friends-see-all" type="button" onClick={() => setView("suggestions")}>See all</button>
+              </div>
+              {suggestionsFeedback && <p className={suggestionsFeedbackError ? "friend-feedback friend-feedback-error" : "friend-feedback"} role={suggestionsFeedbackError ? "alert" : "status"}>{suggestionsFeedback}</p>}
+              {suggestionsLoading && suggestions.length === 0 ? <PeopleCardsSkeleton message="Finding people to connect with" /> : suggestionsError ? <RequestErrorState title="Suggestions unavailable" message={suggestionsError} /> : visibleSuggestions.length === 0 ? <EmptyState title="No suggestions right now" message="Check back later or find someone by searching their name." /> : (
+                <ul className="friends-card-grid" aria-label="People you may know">
+                  {visibleSuggestions.slice(0, 6).map((person) => (
+                    <FriendsProfileCard key={person.id} user={person}>
+                      <button className="button-accent" type="button" onClick={() => void sendRequest(person)} disabled={requestingUserId === person.id}>{requestingUserId === person.id ? "Sending…" : "Add friend"}</button>
+                      <button className="button-secondary" type="button" onClick={() => hideSuggestion(person)}>Hide</button>
+                    </FriendsProfileCard>
+                  ))}
+                </ul>
+              )}
+              {suggestionsError && <button className="button-secondary mt-4" type="button" onClick={() => void loadSuggestions()}>Try again</button>}
+            </section>
+          </div>
+        )}
+
+        {view === "search" && (
+          <section className="friends-content-section" aria-labelledby="find-people-title">
           <div className="mb-5">
             <h2 id="find-people-title" className="text-xl font-bold tracking-[-0.03em] text-ink">Find people</h2>
-            <p className="mt-1 text-sm text-muted">Search by display name. Only public profile details are shown.</p>
+            <p className="mt-1 text-sm text-muted">Search by display name from the bar beside the Senderi logo. Only public profile details are shown.</p>
           </div>
-          <form className="friend-search-form" onSubmit={submitSearch}>
-            <label className="sr-only" htmlFor="friend-search">Search by display name</label>
-            <input id="friend-search" className="form-input" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} maxLength={80} placeholder="Type a name..." />
-            <button className="button-accent" type="submit" disabled={searchLoading}>{searchLoading ? "Searching…" : "Search"}</button>
-          </form>
           {searchError && <p className="friend-feedback friend-feedback-error" role="alert">{searchError}</p>}
           {searchFeedback && <p className={searchFeedbackError ? "friend-feedback friend-feedback-error" : "friend-feedback"} role={searchFeedbackError ? "alert" : "status"}>{searchFeedback}</p>}
-          {searchLoading && searchResults.length === 0 ? <div className="mt-5"><LoadingState message="Searching for people…" /></div> : null}
+          {!searchQuery && <EmptyState title="Search for people" message="Enter a name in the search bar beside the Senderi logo." />}
+          {searchLoading && searchResults.length === 0 ? <div className="mt-5"><PeopleRowsSkeleton message="Searching for people" /></div> : null}
           {!searchLoading && searchQuery && searchResults.length === 0 && !searchError && <div className="mt-5"><EmptyState title="No people found" message={`No profiles matched “${searchQuery}”. Try another name.`} /></div>}
           {searchResults.length > 0 && (
             <ul className="friend-list mt-5" aria-label="Search results">
@@ -381,12 +508,13 @@ export function FriendsPage() {
               })}
             </ul>
           )}
+          {searchLoading && searchResults.length > 0 && <PeopleRowsSkeleton count={2} message="Loading more people" />}
           {searchCursor && <button className="button-secondary mt-5" type="button" onClick={() => void loadMoreSearchResults()} disabled={searchLoading}>{searchLoading ? "Loading…" : "Load more people"}</button>}
-        </section>
-      )}
+          </section>
+        )}
 
       {view === "requests" && (
-        <section className="surface-card p-5 sm:p-7" aria-labelledby="requests-title">
+        <section className="friends-content-section" aria-labelledby="requests-title">
           <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div><h2 id="requests-title" className="text-xl font-bold tracking-[-0.03em] text-ink">Friend requests</h2><p className="mt-1 text-sm text-muted">Review invitations and see requests you have sent.</p></div>
             <div className="friend-subtabs" role="tablist" aria-label="Request direction">
@@ -395,21 +523,21 @@ export function FriendsPage() {
             </div>
           </div>
           {requestFeedback && <p className={requestFeedbackError ? "friend-feedback friend-feedback-error" : "friend-feedback"} role={requestFeedbackError ? "alert" : "status"}>{requestFeedback}</p>}
-          {requestsLoading ? <LoadingState message="Loading friend requests…" /> : requestsError ? <RequestErrorState title="Requests unavailable" message={requestsError} /> : requestProfilesError ? <RequestErrorState title="Profiles unavailable" message={requestProfilesError} /> : requestProfilesLoading ? <LoadingState message="Loading request profiles…" /> : visibleRequests.length === 0 ? <EmptyState title={incoming ? "No incoming requests" : "No sent requests"} message={incoming ? "New friend invitations will appear here." : "Requests you send will appear here until they respond."} /> : (
-            <ul className="friend-list" aria-label={incoming ? "Incoming friend requests" : "Sent friend requests"}>
+          {requestsLoading ? <PeopleCardsSkeleton message="Loading friend requests" /> : requestsError ? <RequestErrorState title="Requests unavailable" message={requestsError} /> : requestProfilesError ? <RequestErrorState title="Profiles unavailable" message={requestProfilesError} /> : requestProfilesLoading ? <PeopleCardsSkeleton message="Loading request profiles" /> : visibleRequests.length === 0 ? <EmptyState title={incoming ? "No incoming requests" : "No sent requests"} message={incoming ? "New friend invitations will appear here." : "Requests you send will appear here until they respond."} /> : (
+            <ul className="friends-card-grid" aria-label={incoming ? "Incoming friend requests" : "Sent friend requests"}>
               {visibleRequests.map((request) => {
                 const targetId = incoming ? request.senderId : request.recipientId;
                 const person = requestProfiles[targetId];
                 if (!person) return null;
                 return (
-                  <FriendCard key={request.id} user={person}>
+                  <FriendsProfileCard key={request.id} user={person}>
                     {incoming ? (
                       <>
-                        <button className="button-accent friend-action" type="button" onClick={() => void respondToRequest(request, "accept")} disabled={requestActionId === request.id}>{requestActionId === request.id ? "Saving…" : "Accept"}</button>
-                        <button className="button-secondary friend-action" type="button" onClick={() => void respondToRequest(request, "decline")} disabled={requestActionId === request.id}>Decline</button>
+                        <button className="button-accent" type="button" onClick={() => void respondToRequest(request, "accept")} disabled={requestActionId === request.id}>{requestActionId === request.id ? "Saving…" : "Confirm"}</button>
+                        <button className="button-secondary" type="button" onClick={() => void respondToRequest(request, "decline")} disabled={requestActionId === request.id}>Delete</button>
                       </>
                     ) : <span className="friend-relationship" role="status">Request sent</span>}
-                  </FriendCard>
+                  </FriendsProfileCard>
                 );
               })}
             </ul>
@@ -419,25 +547,50 @@ export function FriendsPage() {
         </section>
       )}
 
-      {view === "friends" && (
-        <section className="surface-card p-5 sm:p-7" aria-labelledby="my-friends-title">
-          <div className="mb-5"><h2 id="my-friends-title" className="text-xl font-bold tracking-[-0.03em] text-ink">My friends</h2><p className="mt-1 text-sm text-muted">People connected with you on Senderi.</p></div>
-          {friendsFeedback && <p className={friendsFeedbackError ? "friend-feedback friend-feedback-error" : "friend-feedback"} role={friendsFeedbackError ? "alert" : "status"}>{friendsFeedback}</p>}
-          {friendsLoading && friends.length === 0 ? <LoadingState message="Loading your friends…" /> : friendsError && friends.length === 0 ? <RequestErrorState title="Friends unavailable" message={friendsError} /> : friends.length === 0 ? <EmptyState title="Your friend list is empty" message="Search for people and send a friend request to get started." /> : (
-            <ul className="friend-list" aria-label="Your friends">
-              {friends.map((friend) => (
-                <FriendCard key={friend.id} user={friend}>
-                  <Link className="button-secondary friend-action" to={userProfilePath(friend)}>View profile</Link>
-                  <button className="button-secondary friend-action friend-remove-action" type="button" onClick={() => void removeFriend(friend)} disabled={removingFriendId === friend.id}>{removingFriendId === friend.id ? "Removing…" : "Remove"}</button>
-                </FriendCard>
+      {view === "suggestions" && (
+        <section className="friends-content-section" aria-labelledby="suggestions-title">
+          <div className="friends-section-heading">
+            <div><h2 id="suggestions-title">People you may know</h2><p>Discover more people on Senderi.</p></div>
+            <button className="friends-see-all" type="button" onClick={() => setView("search")}>Find people</button>
+          </div>
+          {suggestionsFeedback && <p className={suggestionsFeedbackError ? "friend-feedback friend-feedback-error" : "friend-feedback"} role={suggestionsFeedbackError ? "alert" : "status"}>{suggestionsFeedback}</p>}
+          {suggestionsLoading && suggestions.length === 0 ? <PeopleCardsSkeleton message="Finding people to connect with" /> : suggestionsError ? <RequestErrorState title="Suggestions unavailable" message={suggestionsError} /> : visibleSuggestions.length === 0 ? <EmptyState title="No suggestions right now" message="Check back later or find someone by searching their name." /> : (
+            <ul className="friends-card-grid" aria-label="People you may know">
+              {visibleSuggestions.map((person) => (
+                <FriendsProfileCard key={person.id} user={person}>
+                  <button className="button-accent" type="button" onClick={() => void sendRequest(person)} disabled={requestingUserId === person.id}>{requestingUserId === person.id ? "Sending…" : "Add friend"}</button>
+                  <button className="button-secondary" type="button" onClick={() => hideSuggestion(person)}>Hide</button>
+                </FriendsProfileCard>
               ))}
             </ul>
           )}
+          {suggestionsLoading && suggestions.length > 0 && <PeopleCardsSkeleton count={2} message="Loading more suggestions" />}
+          {suggestionsError && <button className="button-secondary mt-4" type="button" onClick={() => void loadSuggestions()}>Try again</button>}
+          {suggestionsCursor && <button className="button-secondary mt-5" type="button" onClick={() => void loadMoreSuggestions()} disabled={suggestionsLoading}>{suggestionsLoading ? "Loading…" : "See more"}</button>}
+        </section>
+      )}
+
+      {view === "friends" && (
+        <section className="friends-content-section" aria-labelledby="my-friends-title">
+          <div className="mb-5"><h2 id="my-friends-title" className="text-xl font-bold tracking-[-0.03em] text-ink">My friends</h2><p className="mt-1 text-sm text-muted">People connected with you on Senderi.</p></div>
+          {friendsFeedback && <p className={friendsFeedbackError ? "friend-feedback friend-feedback-error" : "friend-feedback"} role={friendsFeedbackError ? "alert" : "status"}>{friendsFeedback}</p>}
+          {friendsLoading && friends.length === 0 ? <PeopleCardsSkeleton message="Loading your friends" wide /> : friendsError && friends.length === 0 ? <RequestErrorState title="Friends unavailable" message={friendsError} /> : friends.length === 0 ? <EmptyState title="Your friend list is empty" message="Search for people and send a friend request to get started." /> : (
+            <ul className="friend-list" aria-label="Your friends">
+              {friends.map((friend) => (
+                <FriendsProfileCard key={friend.id} user={friend}>
+                  <Link className="button-secondary" to={userProfilePath(friend)}>View profile</Link>
+                  <button className="button-secondary friend-remove-action" type="button" onClick={() => void removeFriend(friend)} disabled={removingFriendId === friend.id}>{removingFriendId === friend.id ? "Removing…" : "Remove"}</button>
+                </FriendsProfileCard>
+              ))}
+            </ul>
+          )}
+          {friendsLoading && friends.length > 0 && <PeopleCardsSkeleton count={2} message="Loading more friends" wide />}
           {friendsError && friends.length > 0 && <p className="friend-feedback friend-feedback-error" role="alert">{friendsError}</p>}
           {friendsCursor && <button className="button-secondary mt-5" type="button" onClick={() => void loadMoreFriends()} disabled={friendsLoading}>{friendsLoading ? "Loading…" : "Load more friends"}</button>}
           {friendsError && friends.length === 0 && <button className="button-secondary mt-4" type="button" onClick={() => void refreshFriends()}>Try again</button>}
         </section>
       )}
+      </main>
     </div>
   );
 }

@@ -6,7 +6,12 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toAuthUserResponse, toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type UserDocument } from "../db/documents";
+import {
+  collectionNames,
+  type FriendRequestDocument,
+  type FriendshipDocument,
+  type UserDocument,
+} from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { areFriends } from "../friends/are-friends";
 import { requireClientOrigin } from "../middleware/require-client-origin";
@@ -32,6 +37,11 @@ const websiteSchema = z
 
 const userSearchQuerySchema = z.object({
   query: z.string().trim().min(1).max(80),
+  cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+}).strict();
+
+const suggestionsQuerySchema = z.object({
   cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 }).strict();
@@ -129,6 +139,69 @@ export function createUsersRouter(
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024 },
+  });
+
+  router.get("/suggestions", authenticated, async (request, response) => {
+    const parsedQuery = suggestionsQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) {
+      throw new HttpError(400, "validation_error", "Suggestions query is invalid.");
+    }
+
+    const { cursor: cursorToken, limit } = parsedQuery.data;
+    const cursor = cursorToken ? decodeUserSearchCursor(cursorToken) : undefined;
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const database = dependencies.getDatabase();
+    const [friendships, pendingRequests] = await Promise.all([
+      database.collection<FriendshipDocument>(collectionNames.friendships).find({
+        $or: [{ userIdLow: viewerId }, { userIdHigh: viewerId }],
+      }, { projection: { userIdLow: 1, userIdHigh: 1 } }).toArray(),
+      database.collection<FriendRequestDocument>(collectionNames.friendRequests).find({
+        status: "pending",
+        $or: [{ senderId: viewerId }, { recipientId: viewerId }],
+      }, { projection: { senderId: 1, recipientId: 1 } }).toArray(),
+    ]);
+
+    const excludedIds = [viewerId];
+    for (const friendship of friendships) {
+      excludedIds.push(friendship.userIdLow.equals(viewerId) ? friendship.userIdHigh : friendship.userIdLow);
+    }
+    for (const requestItem of pendingRequests) {
+      excludedIds.push(requestItem.senderId.equals(viewerId) ? requestItem.recipientId : requestItem.senderId);
+    }
+
+    const filter: Filter<UserDocument> = {
+      _id: { $nin: excludedIds },
+      ...(cursor ? {
+        $or: [
+          { createdAt: { $lt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, _id: { $lt: cursor.userId } },
+        ],
+      } : {}),
+    };
+    const users = await database.collection<UserDocument>(collectionNames.users)
+      .find(filter, {
+        projection: {
+          _id: 1,
+          displayName: 1,
+          bio: 1,
+          info: 1,
+          avatarId: 1,
+          coverId: 1,
+          createdAt: 1,
+        },
+      })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit + 1)
+      .toArray();
+
+    const hasMore = users.length > limit;
+    const pageUsers = users.slice(0, limit);
+    const lastUser = pageUsers.at(-1);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({
+      items: pageUsers.map((user) => toPublicUserResponse(user, dependencies.getCloudinaryCloudName())),
+      nextCursor: hasMore && lastUser ? encodeUserSearchCursor(lastUser) : null,
+    });
   });
 
   router.get("/", authenticated, async (request, response) => {
