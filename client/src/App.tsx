@@ -2,7 +2,6 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import { Link, Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import type { NotificationItem, NotificationsResponse } from "../../shared";
 import { apiFetch } from "./api/client";
-import { LoadingState } from "./components/AsyncState";
 import { PostComposer, PostList } from "./components/Posts";
 import { useAuth } from "./auth/AuthContext";
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage } from "./pages/AccountPages";
@@ -359,7 +358,65 @@ function formatNotificationTime(value: string): string {
 }
 
 function PageLoading() {
-  return <main className="mx-auto flex min-h-[55vh] max-w-7xl items-center px-5 sm:px-8"><LoadingState message="Restoring your Senderi session…" /></main>;
+  return (
+    <main className="mx-auto max-w-7xl px-5 py-6 sm:px-8 sm:py-10" aria-busy="true" aria-label="Loading Senderi">
+      <p className="sr-only" role="status">Restoring your Senderi session…</p>
+      <div className="grid gap-6 lg:grid-cols-[224px_minmax(0,1fr)]" aria-hidden="true">
+        <aside>
+          <div className="mb-2 hidden px-3 lg:block"><SkeletonBlock className="h-3 w-16" /></div>
+          <nav className="flex gap-2 overflow-hidden pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
+            {["profile", "home", "friends", "messages"].map((item) => (
+              <div className="flex h-11 min-w-28 items-center gap-3 rounded-[14px] px-3 lg:w-full" key={item}>
+                <SkeletonBlock className="h-5 w-5 rounded-md" />
+                <SkeletonBlock className="h-3 w-20" />
+              </div>
+            ))}
+          </nav>
+        </aside>
+
+        <div className="min-w-0 space-y-5">
+          <section className="surface-card space-y-5 p-5 sm:p-6">
+            <SkeletonBlock className="h-3 w-24" />
+            <SkeletonBlock className="h-24 w-full rounded-2xl" />
+            <div className="flex items-center justify-between gap-4">
+              <SkeletonBlock className="h-9 w-28 rounded-xl" />
+              <SkeletonBlock className="h-10 w-28 rounded-full" />
+            </div>
+          </section>
+
+          <section className="space-y-4">
+            <div className="space-y-2 px-1">
+              <SkeletonBlock className="h-3 w-24" />
+              <SkeletonBlock className="h-7 w-36" />
+            </div>
+            {["first", "second"].map((post) => (
+              <article className="surface-card space-y-5 p-5 sm:p-6" key={post}>
+                <div className="flex items-center gap-3">
+                  <SkeletonBlock className="h-11 w-11 shrink-0 rounded-full" />
+                  <div className="flex-1 space-y-2">
+                    <SkeletonBlock className="h-3 w-36 max-w-full" />
+                    <SkeletonBlock className="h-3 w-48 max-w-full" />
+                  </div>
+                  <SkeletonBlock className="h-10 w-10 shrink-0 rounded-full" />
+                </div>
+                <SkeletonBlock className="h-4 w-2/3 max-w-full" />
+                {post === "second" && <SkeletonBlock className="h-56 w-full rounded-2xl" />}
+                <div className="flex gap-4 border-t border-line pt-4">
+                  <SkeletonBlock className="h-8 w-20 rounded-xl" />
+                  <SkeletonBlock className="h-8 w-20 rounded-xl" />
+                  <SkeletonBlock className="h-8 w-20 rounded-xl" />
+                </div>
+              </article>
+            ))}
+          </section>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function SkeletonBlock({ className }: { className: string }) {
+  return <span className={`session-skeleton-block ${className}`} />;
 }
 
 function PublicAccountRoute({ children }: { children: ReactNode }) {
