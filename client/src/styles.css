@@ -506,7 +506,6 @@ button { cursor: pointer; }
   .post-detail-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(200px, 38dvh) minmax(0, 1fr); }
   .post-detail-media { padding: 14px; }
   .post-detail-sidebar { padding: 16px; }
-  .search-results-grid { grid-template-columns: minmax(0, 1fr); }
   .auth-grid { max-width: 560px; grid-template-columns: 1fr; gap: 22px; }
   .auth-copy { padding: 0 3px; }
   .auth-copy h1 { max-width: 520px; font-size: clamp(2.2rem, 8vw, 3.3rem); }
@@ -631,6 +630,10 @@ button { cursor: pointer; }
 .search-results-section .state-message { margin: 12px 0; }
 .search-results-section > .space-y-4 > article { padding: 15px; }
 
+@media (max-width: 820px) {
+  .search-results-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (max-width: 900px) {
   .friends-page-layout { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .friends-page-sidebar { position: sticky; z-index: 10; top: 72px; min-height: 0; border-right: 0; border-bottom: 1px solid var(--color-line); padding: 11px 16px 10px; }
@@ -659,21 +662,19 @@ button { cursor: pointer; }
   .app-header-inner { gap: 7px; padding-inline: 12px; }
   .header-brand-group { gap: clamp(5px, 1.5vw, 10px); }
   .mobile-main-nav { display: flex; flex: 0 0 auto; align-items: center; gap: clamp(2px, 1vw, 6px); }
-  .app-header-inner:has(.header-search-control:focus-within) .mobile-main-nav { display: none; }
   .header-brand > span { display: none; }
   .header-brand { gap: 6px; font-size: 18px; }
   .header-brand > img { height: 32px; width: 32px; }
-  .header-search-control { width: 36px; flex: 0 0 36px; transition: width .18s ease, flex-basis .18s ease; }
-  .header-search-control:focus-within { width: min(180px, calc(100vw - 174px)); flex-basis: min(180px, calc(100vw - 174px)); }
+  .header-search-control { position: static; width: 36px; flex: 0 0 36px; }
   .skeleton-header-search { width: 36px; height: 36px; flex: 0 0 36px; }
   .header-people-search { height: 36px; justify-content: center; gap: 0; padding: 0; }
   .header-people-search > .header-search-desktop-icon { display: none; }
   .header-mobile-search-trigger { display: grid; height: 36px; width: 36px; flex: 0 0 36px; place-items: center; border: 0; border-radius: 50%; background: transparent; padding: 0; color: var(--color-muted); }
   .header-mobile-search-trigger svg { height: 18px; width: 18px; }
-  .header-people-search:focus-within { justify-content: flex-start; gap: 5px; padding-inline: 9px; }
-  .header-people-search:focus-within .header-mobile-search-trigger { display: none; }
+  .header-search-control.is-open .header-people-search { position: absolute; z-index: 81; top: 50%; right: 12px; left: 12px; width: auto; transform: translateY(-50%); justify-content: flex-start; gap: 5px; border-color: #d6c79f; background: var(--color-surface); padding-inline: 9px; box-shadow: 0 0 0 3px rgb(147 96 0 / 9%); }
   .header-people-search input { width: 1px; max-width: 1px; height: 1px; flex: 0 0 1px; padding: 0; opacity: 0; }
-  .header-people-search:focus-within input { width: 100%; max-width: none; height: auto; flex: 1 1 auto; padding: 0; font-size: 12px; opacity: 1; }
+  .header-search-control.is-open .header-people-search input { width: 100%; max-width: none; height: auto; flex: 1 1 auto; padding: 0; font-size: 13px; opacity: 1; }
+  .header-search-popover { top: calc(100% + 8px); right: 12px; left: 12px; width: auto; }
   .app-header-inner > .relative { gap: 6px; }
   .app-header-inner .icon-button, .app-header-inner .header-profile-trigger { height: 34px; width: 34px; }
 }
@@ -683,7 +684,8 @@ button { cursor: pointer; }
   .header-brand { gap: 5px; font-size: 16px; }
   .header-brand > img { height: 28px; width: 28px; }
   .header-search-control { width: 32px; flex-basis: 32px; }
-  .header-search-control:focus-within { width: min(160px, calc(100vw - 156px)); flex-basis: min(160px, calc(100vw - 156px)); }
+  .header-search-control.is-open .header-people-search { right: 8px; left: 8px; }
+  .header-search-popover { right: 8px; left: 8px; }
   .skeleton-header-search { width: 32px; height: 32px; flex-basis: 32px; }
   .header-people-search { height: 32px; }
   .header-mobile-search-trigger { height: 32px; width: 32px; flex-basis: 32px; }
