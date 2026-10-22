@@ -809,16 +809,18 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
   );
 }
 
-function PostCard({
+export function PostCard({
   post,
   onUpdated,
   onShared,
   onDeleted,
+  commentsInitiallyOpen = false,
 }: {
   post: Post;
   onUpdated: (updated: Post) => void;
   onShared: () => void;
   onDeleted: () => void;
+  commentsInitiallyOpen?: boolean;
 }) {
   const { user } = useAuth();
   const [isUpdating, setIsUpdating] = useState(false);
@@ -1152,7 +1154,7 @@ function PostCard({
           <span className="post-action-count" aria-live="polite">{cardLikeState.likeCount.toLocaleString()}</span>
           {isCardLikePending ? (cardLikeState.isLikedByViewer ? "Removing Like…" : "Liking…") : cardLikeState.isLikedByViewer ? "Liked" : "Like"}
         </button>
-        <CommentsPanel postId={post.id} />
+        <CommentsPanel postId={post.id} initiallyOpen={commentsInitiallyOpen} />
         <ShareControl post={post} onShared={onShared} />
       </div>
       {detailMode && (
