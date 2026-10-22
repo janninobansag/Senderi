@@ -51,7 +51,7 @@ export interface FriendRequestDocument {
   recipientId: ObjectId;
   userIdLow: ObjectId;
   userIdHigh: ObjectId;
-  status: "pending" | "accepted" | "declined";
+  status: "pending" | "accepted" | "declined" | "cancelled";
   createdAt: Date;
   respondedAt?: Date;
 }
@@ -99,6 +99,8 @@ export interface ShareDocument {
   _id: ObjectId;
   authorId: ObjectId;
   sourcePostId: ObjectId;
+  /** Set when this share was created from another share of the same post. */
+  sourceShareId?: ObjectId;
   /** Optional text the author added when sharing the source post. */
   caption?: string;
   visibility: PostVisibility;

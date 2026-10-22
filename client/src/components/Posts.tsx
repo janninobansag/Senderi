@@ -44,6 +44,7 @@ function PostActionIcon({ name }: { name: "like" | "comment" | "share" }) {
 }
 
 function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; initiallyOpen?: boolean }) {
+  const commentInputId = useId();
   const [isOpen, setIsOpen] = useState(initiallyOpen);
   const [comments, setComments] = useState<Comment[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -120,7 +121,7 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
   return (
     <>
       <button
-        className="post-action"
+        className="post-action post-action-comment"
         type="button"
         aria-expanded={isOpen}
         onClick={toggleComments}
@@ -190,14 +191,16 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
               )}
             </>
           )}
-          <form className="space-y-2" onSubmit={(event) => void submitComment(event)}>
-            <label className="block">
-              <span className="sr-only">Write a comment</span>
+          <form className="comment-composer-form" onSubmit={(event) => void submitComment(event)}>
+            <div className="comment-composer-field">
+              <label className="sr-only" htmlFor={commentInputId}>Write a comment</label>
               <textarea
-                className="min-h-20 w-full resize-y rounded-2xl border border-line bg-canvas px-4 py-3 text-sm leading-6 text-ink outline-none transition placeholder:text-muted focus:border-accent disabled:opacity-60"
+                className="comment-composer-input"
+                id={commentInputId}
                 aria-label="Write a comment"
                 placeholder="Write a comment…"
                 value={text}
+                rows={1}
                 maxLength={MAX_COMMENT_LENGTH}
                 onChange={(event) => {
                   setText(event.target.value);
@@ -206,12 +209,11 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
                 }}
                 disabled={isSubmitting}
               />
-            </label>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-xs text-muted">{text.length}/{MAX_COMMENT_LENGTH}</span>
-              <button className="button-accent" type="submit" disabled={isSubmitting || !text.trim()}>
-                {isSubmitting ? "Posting comment…" : "Comment"}
-              </button>
+              {text.trim() && (
+                <button className="comment-composer-send" type="submit" aria-label={isSubmitting ? "Sending comment" : "Send comment"} title="Send comment" disabled={isSubmitting}>
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M22 2 11 13" /><path d="m22 2-7 20-4-9-9-4 20-7Z" /></svg>
+                </button>
+              )}
             </div>
             {submitError && <p className="form-error" role="alert">{submitError}</p>}
             {submitMessage && <p className="form-success" role="status">{submitMessage}</p>}
@@ -240,7 +242,7 @@ function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) 
     if (!isDialogOpen && dialog.open) dialog.close();
   }, [isDialogOpen]);
 
-  if (post.visibility !== "public") return null;
+  if (post.visibility !== "public" || (post.share && post.share.visibility !== "public")) return null;
 
   async function submitShare(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -253,6 +255,7 @@ function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) 
       const body: CreateShareRequest = {
         visibility,
         ...(normalizedCaption ? { caption: normalizedCaption } : {}),
+        ...(post.share ? { sourceShareId: post.share.id } : {}),
       };
       await apiFetch<CreateShareResponse>(`/api/posts/${post.id}/shares`, {
         method: "POST",
@@ -285,6 +288,7 @@ function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) 
       >
         <PostActionIcon name="share" />
         {isSharing ? "Sharing…" : "Share"}
+        <span className="post-action-count" aria-live="polite">{(post.share?.shareCount ?? post.shareCount).toLocaleString()}</span>
       </button>
       {message && !isDialogOpen && (
         <span className={message.isError ? "form-error" : "form-success"} role={message.isError ? "alert" : "status"}>
@@ -388,6 +392,7 @@ function PostDetailsDialog({
   isLikePending,
   likeMessage,
   onToggleLike,
+  onShared,
 }: {
   post: Post;
   isOpen: boolean;
@@ -397,10 +402,13 @@ function PostDetailsDialog({
   isLikePending: boolean;
   likeMessage?: { text: string; isError: boolean } | null;
   onToggleLike: () => void;
+  onShared: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const initial = post.author.displayName.trim().charAt(0).toUpperCase() || "S";
+  const shareInitial = post.share?.author.displayName.trim().charAt(0).toUpperCase() || "S";
   const createdAt = new Date(post.createdAt);
+  const shareCreatedAt = post.share ? new Date(post.share.createdAt) : null;
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -413,7 +421,7 @@ function PostDetailsDialog({
     <dialog
       ref={dialogRef}
       className={`post-detail-dialog${photoViewer ? " post-photo-viewer-dialog" : ""}`}
-      aria-label={`Post by ${post.author.displayName}`}
+      aria-label={post.share ? `Post shared by ${post.share.author.displayName}` : `Post by ${post.author.displayName}`}
       onClose={onClose}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
@@ -440,6 +448,31 @@ function PostDetailsDialog({
             : <p>{post.text || "Shared a post."}</p>}
         </div>
         <aside className="post-detail-sidebar">
+          {post.share && (
+            <div className="post-detail-share-context">
+              <header className="share-post-header">
+                <Link
+                  className="share-post-avatar"
+                  to={`/profile/${post.share.author.id}`}
+                  aria-label={`${post.share.author.displayName}'s profile`}
+                >
+                  {post.share.author.avatarUrl ? <img src={post.share.author.avatarUrl} alt="" /> : shareInitial}
+                </Link>
+                <div className="share-post-identity-copy">
+                  <Link className="share-post-author" to={`/profile/${post.share.author.id}`}>
+                    {post.share.author.displayName}
+                  </Link>
+                  <time dateTime={post.share.createdAt}>
+                    {shareCreatedAt && !Number.isNaN(shareCreatedAt.getTime())
+                      ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(shareCreatedAt)
+                      : "Just now"}
+                    <span> · {audienceLabel(post.share.visibility)} audience</span>
+                  </time>
+                </div>
+              </header>
+              {post.share.caption && <p className="share-post-caption">{post.share.caption}</p>}
+            </div>
+          )}
           <header className="post-detail-author">
             <Link
               className="share-post-avatar"
@@ -472,12 +505,13 @@ function PostDetailsDialog({
               onClick={onToggleLike}
             >
               <PostActionIcon name="like" />
+              <span className="post-action-count" aria-live="polite">{likeState.likeCount.toLocaleString()}</span>
               {likeState.isLikedByViewer ? "Liked" : "Like"}
             </button>
-            <span className="post-action-count">{likeState.likeCount.toLocaleString()}</span>
+            <CommentsPanel postId={post.id} initiallyOpen />
+            <ShareControl post={post} onShared={onShared} />
           </div>
           {likeMessage && <p className={likeMessage.isError ? "form-error" : "form-success"} role={likeMessage.isError ? "alert" : "status"}>{likeMessage.text}</p>}
-          <CommentsPanel postId={post.id} initiallyOpen />
         </aside>
       </div>
     </dialog>
@@ -488,10 +522,12 @@ export function PostPhotoViewer({
   post,
   onClose,
   onLikeUpdated,
+  onShared = () => {},
 }: {
   post: Post;
   onClose: () => void;
   onLikeUpdated?: (state: LikeResponse) => void;
+  onShared?: () => void;
 }) {
   const [likeState, setLikeState] = useState({ likeCount: post.likeCount, isLikedByViewer: post.isLikedByViewer });
   const [isLikePending, setIsLikePending] = useState(false);
@@ -531,6 +567,7 @@ export function PostPhotoViewer({
       isLikePending={isLikePending}
       likeMessage={likeMessage}
       onToggleLike={() => void toggleLike()}
+      onShared={onShared}
     />
   );
 }
@@ -1019,7 +1056,7 @@ function PostCard({
   const likeSubject = post.share ? "shared post" : "post";
 
   return (
-    <article id={`post-${post.id}`} className={`surface-card p-5 sm:p-6${post.share ? " shared-post-card" : ""}`}>
+    <article id={`post-${post.id}`} className={`post-card surface-card p-5 sm:p-6${post.share ? " shared-post-card" : ""}`}>
       {post.share && (
         <div className="share-post-context">
           <header className="share-post-header">
@@ -1096,6 +1133,11 @@ function PostCard({
         </button>
       ) : originalPostContent}
       </div>
+      {likeMessage && (
+        <p className={likeMessage.isError ? "form-error mt-3" : "form-success mt-3"} role={likeMessage.isError ? "alert" : "status"}>
+          {likeMessage.text}
+        </p>
+      )}
       <div className="post-action-bar mt-4">
         <button
           className={`post-action post-action-like${cardLikeState.isLikedByViewer ? " post-action-active" : ""}`}
@@ -1107,28 +1149,23 @@ function PostCard({
           onClick={() => void toggleLike()}
         >
           <PostActionIcon name="like" />
+          <span className="post-action-count" aria-live="polite">{cardLikeState.likeCount.toLocaleString()}</span>
           {isCardLikePending ? (cardLikeState.isLikedByViewer ? "Removing Like…" : "Liking…") : cardLikeState.isLikedByViewer ? "Liked" : "Like"}
         </button>
-        <span className="post-action-count" aria-live="polite">
-          {cardLikeState.likeCount.toLocaleString()}
-        </span>
-        {likeMessage && (
-          <p className={likeMessage.isError ? "form-error" : "form-success"} role={likeMessage.isError ? "alert" : "status"}>
-            {likeMessage.text}
-          </p>
-        )}
+        <CommentsPanel postId={post.id} />
         <ShareControl post={post} onShared={onShared} />
       </div>
-      <CommentsPanel postId={post.id} />
       {detailMode && (
         <PostDetailsDialog
           post={post}
           isOpen
           photoViewer={detailMode === "photo"}
           onClose={() => setDetailMode(null)}
-          likeState={postLikeState}
+          likeState={cardLikeState}
           isLikePending={pendingLikeTarget !== null}
-          onToggleLike={() => void toggleLike("post")}
+          likeMessage={likeMessage}
+          onToggleLike={() => void toggleLike()}
+          onShared={onShared}
         />
       )}
     </article>

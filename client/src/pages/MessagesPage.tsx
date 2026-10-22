@@ -92,6 +92,7 @@ export function MessagesPage() {
   const [friendsError, setFriendsError] = useState<string | null>(null);
   const [friendsMoreError, setFriendsMoreError] = useState<string | null>(null);
   const [selectedFriendId, setSelectedFriendId] = useState<string | null>(() => searchParams.get("friend"));
+  const [mobileConversationOpen, setMobileConversationOpen] = useState(() => Boolean(searchParams.get("friend")));
   const [conversationSearch, setConversationSearch] = useState("");
   const [chatFilter, setChatFilter] = useState<"all" | "unread">("all");
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -218,6 +219,7 @@ export function MessagesPage() {
         const requested = initialFriendIdRef.current;
         if (requested && response.items.some((friend) => friend.id === requested)) return requested;
         if (current && response.items.some((friend) => friend.id === current)) return current;
+        if (window.matchMedia("(max-width: 680px)").matches) return null;
         return response.items[0]?.id ?? null;
       });
       void Promise.all(response.items.map(async (friend) => {
@@ -429,7 +431,14 @@ export function MessagesPage() {
 
   function openConversation(friendId: string): void {
     setSelectedFriendId(friendId);
+    setMobileConversationOpen(true);
     setSearchParams({ friend: friendId }, { replace: true });
+  }
+
+  function closeConversation(): void {
+    setSelectedFriendId(null);
+    setMobileConversationOpen(false);
+    setSearchParams({}, { replace: true });
   }
 
   const selectedFriend = friends.find((friend) => friend.id === selectedFriendId) ?? null;
@@ -472,7 +481,7 @@ export function MessagesPage() {
   }, [composerText]);
 
   return (
-    <main className="messages-shell">
+    <main className={`messages-shell${mobileConversationOpen ? " messages-shell-conversation-open" : ""}`}>
       <aside className="messages-sidebar" aria-label="Chats">
         <header className="messages-sidebar-heading">
           <h1>Chats</h1>
@@ -539,11 +548,16 @@ export function MessagesPage() {
           {selectedFriend ? (
             <>
               <header className="chat-conversation-header">
-                <div className="friend-person">
-                  <span className="chat-presence-avatar"><ChatFriendAvatar user={selectedFriend} />{selectedPresence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
-                  <div className="friend-person-copy">
-                    <h2 className="friend-person-name">{selectedFriend.displayName}</h2>
-                    {(connectionError || selectedPresence?.isOnline || selectedLastActive) && <p>{connectionError ? "Connection interrupted" : selectedPresence?.isOnline ? "Online" : `Active ${selectedLastActive}`}</p>}
+                <div className="messages-conversation-identity">
+                  <button className="messages-mobile-back" type="button" onClick={closeConversation} aria-label="Back to chats" title="Back to chats">
+                    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /><path d="M9 12h12" /></svg>
+                  </button>
+                  <div className="friend-person">
+                    <span className="chat-presence-avatar"><ChatFriendAvatar user={selectedFriend} />{selectedPresence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
+                    <div className="friend-person-copy">
+                      <h2 className="friend-person-name">{selectedFriend.displayName}</h2>
+                      {(connectionError || selectedPresence?.isOnline || selectedLastActive) && <p>{connectionError ? "Connection interrupted" : selectedPresence?.isOnline ? "Online" : `Active ${selectedLastActive}`}</p>}
+                    </div>
                   </div>
                 </div>
                 <div className="messages-chat-actions">

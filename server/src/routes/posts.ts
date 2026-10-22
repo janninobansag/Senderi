@@ -48,6 +48,7 @@ const createCommentSchema = z.object({
 const createShareSchema = z.object({
   visibility: z.enum(["public", "friends", "onlyMe"]),
   caption: z.string().trim().max(2_000).optional(),
+  sourceShareId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
 }).strict();
 
 interface PostResponseItem {
@@ -59,6 +60,7 @@ interface PostResponseItem {
   createdAt: string;
   likeCount: number;
   isLikedByViewer: boolean;
+  shareCount: number;
   share?: ShareResponseItem;
 }
 
@@ -66,11 +68,13 @@ interface ShareResponseItem {
   id: string;
   author: ReturnType<typeof toPublicUserResponse>;
   sourcePostId: string;
+  sourceShareId?: string;
   caption?: string;
   visibility: PostVisibility;
   createdAt: string;
   likeCount: number;
   isLikedByViewer: boolean;
+  shareCount: number;
 }
 
 interface LikeSummary {
@@ -82,6 +86,11 @@ interface AggregatedLikeSummary {
   _id: ObjectId;
   likeCount: number;
   viewerLikeCount: number;
+}
+
+interface AggregatedShareCount {
+  _id: ObjectId;
+  shareCount: number;
 }
 
 interface PostListResponse {
@@ -194,6 +203,7 @@ function toPostResponse(
   author: UserDocument,
   likeSummary: LikeSummary,
   cloudName?: string,
+  shareCount = 0,
 ): PostResponseItem {
   return {
     id: post._id.toHexString(),
@@ -203,7 +213,76 @@ function toPostResponse(
     visibility: post.visibility,
     createdAt: post.createdAt.toISOString(),
     ...likeSummary,
+    shareCount,
   };
+}
+
+async function getVisiblePostShareCounts(
+  database: Db,
+  posts: PostDocument[],
+  viewerId: ObjectId,
+): Promise<Map<string, number>> {
+  const publicPosts = posts.filter((post) => post.visibility === "public");
+  if (publicPosts.length === 0) return new Map();
+
+  const postIds = publicPosts.map((post) => post._id);
+  const friendships = await database.collection<FriendshipDocument>(collectionNames.friendships)
+    .find({ $or: [{ userIdLow: viewerId }, { userIdHigh: viewerId }] })
+    .toArray();
+  const friendIds = friendships.map((friendship) =>
+    friendship.userIdLow.equals(viewerId) ? friendship.userIdHigh : friendship.userIdLow,
+  );
+  const visibleShareConditions: Filter<ShareDocument>[] = [
+    { visibility: "public" },
+    ...(friendIds.length ? [{ visibility: "friends" as const, authorId: { $in: friendIds } }] : []),
+    { authorId: viewerId },
+  ];
+  const summaries = await database.collection<ShareDocument>(collectionNames.shares)
+    .aggregate<AggregatedShareCount>([
+      {
+        $match: {
+          sourcePostId: { $in: postIds },
+          $or: visibleShareConditions,
+        },
+      },
+      { $group: { _id: "$sourcePostId", shareCount: { $sum: 1 } } },
+    ])
+    .toArray();
+  return new Map(summaries.map((summary) => [summary._id.toHexString(), summary.shareCount]));
+}
+
+async function getVisibleShareShareCounts(
+  database: Db,
+  shares: ShareDocument[],
+  viewerId: ObjectId,
+): Promise<Map<string, number>> {
+  const publicShares = shares.filter((share) => share.visibility === "public");
+  if (publicShares.length === 0) return new Map();
+
+  const shareIds = publicShares.map((share) => share._id);
+  const friendships = await database.collection<FriendshipDocument>(collectionNames.friendships)
+    .find({ $or: [{ userIdLow: viewerId }, { userIdHigh: viewerId }] })
+    .toArray();
+  const friendIds = friendships.map((friendship) =>
+    friendship.userIdLow.equals(viewerId) ? friendship.userIdHigh : friendship.userIdLow,
+  );
+  const visibleShareConditions: Filter<ShareDocument>[] = [
+    { visibility: "public" },
+    ...(friendIds.length ? [{ visibility: "friends" as const, authorId: { $in: friendIds } }] : []),
+    { authorId: viewerId },
+  ];
+  const summaries = await database.collection<ShareDocument>(collectionNames.shares)
+    .aggregate<AggregatedShareCount>([
+      {
+        $match: {
+          sourceShareId: { $in: shareIds },
+          $or: visibleShareConditions,
+        },
+      },
+      { $group: { _id: "$sourceShareId", shareCount: { $sum: 1 } } },
+    ])
+    .toArray();
+  return new Map(summaries.map((summary) => [summary._id.toHexString(), summary.shareCount]));
 }
 
 function toCommentResponse(comment: CommentDocument, author: UserDocument, cloudName?: string): CommentResponseItem {
@@ -260,7 +339,7 @@ async function toPostResponses(
     post.authorId,
   ])).values()];
   const postIds = posts.map((post) => post._id);
-  const [authors, likeSummaries] = await Promise.all([
+  const [authors, likeSummaries, shareCounts] = await Promise.all([
     database
       .collection<UserDocument>(collectionNames.users)
       .find({ _id: { $in: authorIds } }, {
@@ -285,6 +364,7 @@ async function toPostResponses(
         },
       },
     ]).toArray(),
+    getVisiblePostShareCounts(database, posts, viewerId),
   ]);
   const authorsById = new Map(authors.map((author) => [author._id.toHexString(), author]));
   const likesByPostId = new Map(likeSummaries.map((summary) => [summary._id.toHexString(), {
@@ -299,6 +379,7 @@ async function toPostResponses(
       author,
       likesByPostId.get(post._id.toHexString()) ?? { likeCount: 0, isLikedByViewer: false },
       cloudName,
+      shareCounts.get(post._id.toHexString()) ?? 0,
     )] : [];
   });
 }
@@ -308,15 +389,18 @@ function toShareResponse(
   author: UserDocument,
   cloudName?: string,
   likeSummary: LikeSummary = { likeCount: 0, isLikedByViewer: false },
+  shareCount = 0,
 ): ShareResponseItem {
   return {
     id: share._id.toHexString(),
     author: toPublicUserResponse(author, cloudName),
     sourcePostId: share.sourcePostId.toHexString(),
+    ...(share.sourceShareId ? { sourceShareId: share.sourceShareId.toHexString() } : {}),
     ...(share.caption ? { caption: share.caption } : {}),
     visibility: share.visibility,
     createdAt: share.createdAt.toISOString(),
     ...likeSummary,
+    shareCount,
   };
 }
 
@@ -330,7 +414,7 @@ async function toFeedResponses(
   const posts = records.map((record) => record.kind === "post" ? record.post : record.sourcePost);
   const shares = records.flatMap((record) => record.kind === "share" ? [record.share] : []);
   const shareIds = shares.map((share) => share._id);
-  const [postResponses, shareAuthors, shareLikeSummaries] = await Promise.all([
+  const [postResponses, shareAuthors, shareLikeSummaries, shareShareCounts] = await Promise.all([
     toPostResponses(database, posts, viewerId, cloudName),
     shares.length > 0
       ? database
@@ -363,6 +447,7 @@ async function toFeedResponses(
         },
       ]).toArray()
       : Promise.resolve([] as AggregatedLikeSummary[]),
+    getVisibleShareShareCounts(database, shares, viewerId),
   ]);
   const postResponsesById = new Map(postResponses.map((post) => [post.id, post]));
   const shareAuthorsById = new Map(shareAuthors.map((author) => [author._id.toHexString(), author]));
@@ -385,6 +470,7 @@ async function toFeedResponses(
           shareAuthor,
           cloudName,
           shareLikesById.get(record.share._id.toHexString()) ?? { likeCount: 0, isLikedByViewer: false },
+          shareShareCounts.get(record.share._id.toHexString()) ?? 0,
         ),
       }]
       : [];
@@ -492,9 +578,10 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
 
       const session = getAuthenticatedSession(response);
       const likeSummary = await getPostLikeSummary(database, updated._id, session.user._id);
+      const shareCounts = await getVisiblePostShareCounts(database, [updated], session.user._id);
       response.setHeader("Cache-Control", "private, no-store");
       response.json({
-        post: toPostResponse(updated, session.user, likeSummary, dependencies.getCloudinaryCloudName()),
+        post: toPostResponse(updated, session.user, likeSummary, dependencies.getCloudinaryCloudName(), shareCounts.get(updated._id.toHexString()) ?? 0),
       } satisfies PostResponse);
     },
   );
@@ -550,9 +637,10 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       if (!updated) throw new HttpError(404, "not_found", "Post was not found.");
 
       const likeSummary = await getPostLikeSummary(database, updated._id, session.user._id);
+      const shareCounts = await getVisiblePostShareCounts(database, [updated], session.user._id);
       response.setHeader("Cache-Control", "private, no-store");
       response.json({
-        post: toPostResponse(updated, session.user, likeSummary, dependencies.getCloudinaryCloudName()),
+        post: toPostResponse(updated, session.user, likeSummary, dependencies.getCloudinaryCloudName(), shareCounts.get(updated._id.toHexString()) ?? 0),
       } satisfies PostResponse);
     },
   );
@@ -838,10 +926,23 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         throw new HttpError(400, "validation_error", "Share audience is invalid.");
       }
 
+      const sourceShareId = parsed.data.sourceShareId ? new ObjectId(parsed.data.sourceShareId) : undefined;
+      if (sourceShareId) {
+        const sourceShare = await database.collection<ShareDocument>(collectionNames.shares).findOne({
+          _id: sourceShareId,
+          sourcePostId: sourcePost._id,
+          visibility: "public",
+        });
+        if (!sourceShare || !(await canViewShare(database, session.user._id, sourceShare))) {
+          throw new HttpError(404, "not_found", "Shared post was not found.");
+        }
+      }
+
       const share: ShareDocument = {
         _id: new ObjectId(),
         authorId: session.user._id,
         sourcePostId: sourcePost._id,
+        ...(sourceShareId ? { sourceShareId } : {}),
         ...(parsed.data.caption ? { caption: parsed.data.caption } : {}),
         visibility: parsed.data.visibility,
         createdAt: new Date(),
@@ -1105,8 +1206,9 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     if (!author) throw new HttpError(404, "not_found", "Post was not found.");
 
     const likeSummary = await getPostLikeSummary(database, postId, viewerId);
+    const shareCounts = await getVisiblePostShareCounts(database, [post], viewerId);
     const body: PostResponse = {
-      post: toPostResponse(post, author, likeSummary, dependencies.getCloudinaryCloudName()),
+      post: toPostResponse(post, author, likeSummary, dependencies.getCloudinaryCloudName(), shareCounts.get(postId.toHexString()) ?? 0),
     };
     response.setHeader("Cache-Control", "private, no-store");
     response.json(body);

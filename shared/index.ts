@@ -54,7 +54,7 @@ export interface Page<T> {
 export type UserSearchResponse = Page<User>;
 
 /** Lifecycle states for a request; only pending requests are created here. */
-export type FriendRequestStatus = "pending" | "accepted" | "declined";
+export type FriendRequestStatus = "pending" | "accepted" | "declined" | "cancelled";
 
 /** Public representation of a friend request. */
 export interface FriendRequest {
@@ -133,6 +133,8 @@ export interface PostLikeState {
 export interface Post extends PostLikeState {
   id: string;
   author: User;
+  /** Number of shares visible to the current viewer. */
+  shareCount: number;
   text?: string;
   /** Same-origin API route; photo bytes remain protected by the post audience check. */
   photoUrl?: string;
@@ -171,6 +173,9 @@ export interface Share extends PostLikeState {
   id: string;
   author: User;
   sourcePostId: string;
+  /** Number of visible shares made from this specific share card. */
+  shareCount: number;
+  sourceShareId?: string;
   /** Optional text the author added when sharing the source post. */
   caption?: string;
   visibility: Visibility;
@@ -180,6 +185,7 @@ export interface Share extends PostLikeState {
 export interface CreateShareRequest {
   visibility: Visibility;
   caption?: string;
+  sourceShareId?: string;
 }
 
 export interface CreateShareResponse {

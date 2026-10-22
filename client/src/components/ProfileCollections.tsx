@@ -152,6 +152,7 @@ export function ProfilePhotos({ profile }: { profile: User }) {
               post={collection.items.find((post) => post.id === selectedPostId)!}
               onClose={() => setSelectedPostId(null)}
               onLikeUpdated={(state) => collection.setItems((items) => items.map((post) => post.id === selectedPostId ? { ...post, ...state } : post))}
+              onShared={() => collection.setItems((items) => items.map((post) => post.id === selectedPostId ? { ...post, shareCount: post.shareCount + 1 } : post))}
             />
           )}
           {collection.nextPageError && <RequestErrorState title="Unable to load more photos" message={collection.nextPageError} />}

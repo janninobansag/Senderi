@@ -101,6 +101,11 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "shares_visibility_newest_first" },
   },
   {
+    collection: collectionNames.shares,
+    keys: { sourceShareId: 1, visibility: 1 },
+    options: { name: "shares_source_share_visibility" },
+  },
+  {
     collection: collectionNames.notifications,
     keys: { recipientId: 1, createdAt: -1, _id: -1 },
     options: { name: "notifications_recipient_newest_first" },

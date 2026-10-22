@@ -19,7 +19,7 @@ const sendFriendRequestSchema = z.object({
   recipientId: z.string().trim().regex(/^[a-f\d]{24}$/i),
 }).strict();
 const respondToFriendRequestSchema = z.object({
-  action: z.enum(["accept", "decline"]),
+  action: z.enum(["accept", "decline", "cancel"]),
 }).strict();
 
 type SendFriendRequestInput = z.infer<typeof sendFriendRequestSchema>;
@@ -181,18 +181,29 @@ export function createFriendRequestsRouter(
       if (!existing) {
         throw new HttpError(404, "friend_request_not_found", "Friend request was not found.");
       }
-      if (!existing.recipientId.equals(viewerId)) {
-        throw new HttpError(403, "not_friend_request_recipient", "Only the recipient can respond to this friend request.");
+      const { action } = request.body as z.infer<typeof respondToFriendRequestSchema>;
+      const isAuthorizedUser = action === "cancel"
+        ? existing.senderId.equals(viewerId)
+        : existing.recipientId.equals(viewerId);
+      if (!isAuthorizedUser) {
+        throw new HttpError(
+          403,
+          action === "cancel" ? "not_friend_request_sender" : "not_friend_request_recipient",
+          action === "cancel"
+            ? "Only the sender can cancel this friend request."
+            : "Only the recipient can respond to this friend request.",
+        );
       }
       if (existing.status !== "pending") {
         throw new HttpError(409, "friend_request_already_resolved", "Friend request is no longer pending.");
       }
 
-      const { action } = request.body as z.infer<typeof respondToFriendRequestSchema>;
       const respondedAt = dependencies.now();
+      const resolvedStatus = action === "accept" ? "accepted" : action === "cancel" ? "cancelled" : "declined";
+      const directionFilter = action === "cancel" ? { senderId: viewerId } : { recipientId: viewerId };
       const transition = await requests.updateOne(
-        { _id: requestId, recipientId: viewerId, status: "pending" },
-        { $set: { status: action === "accept" ? "accepted" : "declined", respondedAt } },
+        { _id: requestId, ...directionFilter, status: "pending" },
+        { $set: { status: resolvedStatus, respondedAt } },
       );
 
       if (transition.matchedCount !== 1) {
@@ -200,15 +211,24 @@ export function createFriendRequestsRouter(
         if (!current) {
           throw new HttpError(404, "friend_request_not_found", "Friend request was not found.");
         }
-        if (!current.recipientId.equals(viewerId)) {
-          throw new HttpError(403, "not_friend_request_recipient", "Only the recipient can respond to this friend request.");
+        const stillAuthorized = action === "cancel"
+          ? current.senderId.equals(viewerId)
+          : current.recipientId.equals(viewerId);
+        if (!stillAuthorized) {
+          throw new HttpError(
+            403,
+            action === "cancel" ? "not_friend_request_sender" : "not_friend_request_recipient",
+            action === "cancel"
+              ? "Only the sender can cancel this friend request."
+              : "Only the recipient can respond to this friend request.",
+          );
         }
         throw new HttpError(409, "friend_request_already_resolved", "Friend request is no longer pending.");
       }
 
       const resolved: FriendRequestDocument = {
         ...existing,
-        status: action === "accept" ? "accepted" : "declined",
+        status: resolvedStatus,
         respondedAt,
       };
 

@@ -589,6 +589,40 @@ test("only the recipient can decline a pending request and declined requests do 
   assert.equal(data.requests[1].status, "pending");
 });
 
+test("only the sender can cancel a pending friend request", async () => {
+  const alice = makeUser("000000000000000000000001", "alice@example.com", "Alice Example");
+  const bob = makeUser("000000000000000000000002", "bob@example.com", "Bob Example");
+  const data = emptyData(
+    [alice, bob],
+    [sessionFor(alice, aliceToken), sessionFor(bob, bobToken)],
+  );
+  const app = createTestApp(data);
+  const created = await request(app)
+    .post("/api/friend-requests")
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`)
+    .send({ recipientId: bob._id.toHexString() });
+  const requestId = created.body.request.id as string;
+
+  const recipientCannotCancel = await request(app)
+    .patch(`/api/friend-requests/${requestId}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${bobToken}`)
+    .send({ action: "cancel" });
+  assert.equal(recipientCannotCancel.status, 403);
+  assert.equal(data.requests[0].status, "pending");
+
+  const cancelled = await request(app)
+    .patch(`/api/friend-requests/${requestId}`)
+    .set("Origin", origin)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`)
+    .send({ action: "cancel" });
+  assert.equal(cancelled.status, 200);
+  assert.equal(cancelled.body.request.status, "cancelled");
+  assert.equal(data.requests[0].status, "cancelled");
+  assert.equal(data.friendships.length, 0);
+});
+
 test("concurrent acceptance resolves once and creates one mutual friendship", async () => {
   const alice = makeUser("000000000000000000000001", "alice@example.com", "Alice Example");
   const bob = makeUser("000000000000000000000002", "bob@example.com", "Bob Example");
