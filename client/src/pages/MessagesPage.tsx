@@ -16,6 +16,7 @@ import type {
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch } from "../api/client";
 import { notifyChatUnreadChanged } from "../chat/unread-events";
+import { lastActiveLabel, useFriendPresence } from "../chat/use-friend-presence";
 import { EmptyState, RequestErrorState } from "../components/AsyncState";
 import { ChatListSkeleton, MessageBubblesSkeleton, SkeletonBlock, SkeletonRegion } from "../components/Skeletons";
 import {
@@ -432,6 +433,9 @@ export function MessagesPage() {
   }
 
   const selectedFriend = friends.find((friend) => friend.id === selectedFriendId) ?? null;
+  const { presenceById, now: presenceNow } = useFriendPresence(friends.map((friend) => friend.id));
+  const selectedPresence = selectedFriend ? presenceById[selectedFriend.id] : undefined;
+  const selectedLastActive = lastActiveLabel(selectedPresence, presenceNow);
   const selectedMessages = selectedFriendId ? conversations[selectedFriendId] ?? [] : [];
   const visibleFriends = friends.filter((friend) => {
     const latestMessage = conversations[friend.id]?.at(-1);
@@ -502,6 +506,8 @@ export function MessagesPage() {
             <ul className="chat-friend-list" aria-label="Friend conversations">
               {visibleFriends.map((friend) => {
                 const recentMessage = conversations[friend.id]?.at(-1);
+                const presence = presenceById[friend.id];
+                const lastActive = lastActiveLabel(presence, presenceNow);
                 return (
                   <li key={friend.id}>
                     <button
@@ -510,12 +516,12 @@ export function MessagesPage() {
                       aria-pressed={selectedFriendId === friend.id}
                       onClick={() => openConversation(friend.id)}
                     >
-                      <ChatFriendAvatar user={friend} />
+                      <span className="chat-presence-avatar"><ChatFriendAvatar user={friend} />{presence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
                       <span className="chat-friend-copy">
                         <strong>{friend.displayName}</strong>
                         <span>{recentMessage ? `${recentMessage.senderId === userId ? "You: " : ""}${recentMessage.text}` : "Start a conversation"}</span>
                       </span>
-                      {recentMessage && <time className="chat-friend-time" dateTime={recentMessage.createdAt}>{messageTime(recentMessage.createdAt)}</time>}
+                      {lastActive && <time className="chat-friend-time chat-presence-time" dateTime={presence?.lastActiveAt} title="Last active">{lastActive}</time>}
                       {(unreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${unreadCounts[friend.id]} unread messages`} />}
                     </button>
                   </li>
@@ -534,10 +540,10 @@ export function MessagesPage() {
             <>
               <header className="chat-conversation-header">
                 <div className="friend-person">
-                  <ChatFriendAvatar user={selectedFriend} />
+                  <span className="chat-presence-avatar"><ChatFriendAvatar user={selectedFriend} />{selectedPresence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
                   <div className="friend-person-copy">
                     <h2 className="friend-person-name">{selectedFriend.displayName}</h2>
-                    <p>{connectionError ? "Connection interrupted" : connectionState === "connected" ? "Active conversation" : "Connecting…"}</p>
+                    {(connectionError || selectedPresence?.isOnline || selectedLastActive) && <p>{connectionError ? "Connection interrupted" : selectedPresence?.isOnline ? "Online" : `Active ${selectedLastActive}`}</p>}
                   </div>
                 </div>
                 <div className="messages-chat-actions">

@@ -663,6 +663,9 @@ button { cursor: pointer; }
 .messages-page-search { flex: 0 0 auto; margin: 4px 8px 10px; }
 .messages-page-tabs { flex: 0 0 auto; padding-inline: 5px; }
 .chat-unread-dot { display: inline-block; width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: #1877f2; }
+.chat-presence-avatar { position: relative; display: inline-flex; flex: 0 0 auto; }
+.chat-online-dot { position: absolute; right: 1px; bottom: 1px; width: 13px; height: 13px; border: 2px solid var(--color-surface); border-radius: 50%; background: #31a65d; }
+.chat-presence-time { white-space: nowrap; }
 .messages-page-requests { flex: 0 0 auto; margin: 2px 0 6px; }
 .messages-page-list { min-height: 0; flex: 1; overflow-y: auto; padding-top: 3px; }
 .messages-page-list .chat-friend-list { gap: 2px; }

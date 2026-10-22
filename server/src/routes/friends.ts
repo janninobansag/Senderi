@@ -12,11 +12,16 @@ import {
 import { HttpError } from "../errors/http-error";
 import { orderedUserPair } from "../friends/are-friends";
 import { requireClientOrigin } from "../middleware/require-client-origin";
+import { isUserOnline } from "../socket/presence";
 
 const friendListQuerySchema = z.object({
   cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   includeMutualCounts: z.literal("true").optional(),
+}).strict();
+
+const presenceQuerySchema = z.object({
+  ids: z.string().min(24).max(1249).regex(/^[a-f\d]{24}(,[a-f\d]{24}){0,49}$/i),
 }).strict();
 
 type FriendListCursor = { createdAt: Date; friendshipId: ObjectId };
@@ -80,6 +85,31 @@ export function createFriendsRouter(overrides: Partial<FriendsRouterDependencies
   const dependencies = { ...defaultDependencies, ...overrides };
   const router = Router();
   const authenticated = requireSession({ getDatabase: dependencies.getDatabase });
+
+  router.get("/presence", authenticated, async (request, response) => {
+    const parsedQuery = presenceQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) throw new HttpError(400, "validation_error", "Presence query is invalid.");
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const ids = [...new Set(parsedQuery.data.ids.toLowerCase().split(","))].map((id) => new ObjectId(id));
+    const database = dependencies.getDatabase();
+    const pairs = ids.filter((id) => !id.equals(viewerId)).map((id) => {
+      const [userIdLow, userIdHigh] = orderedUserPair(viewerId, id);
+      return { userIdLow, userIdHigh };
+    });
+    const friendships = pairs.length ? await database.collection<FriendshipDocument>(collectionNames.friendships)
+      .find({ $or: pairs }, { projection: { userIdLow: 1, userIdHigh: 1 } }).toArray() : [];
+    const friendIds = friendships.map((friendship) =>
+      friendship.userIdLow.equals(viewerId) ? friendship.userIdHigh : friendship.userIdLow,
+    );
+    const users = friendIds.length ? await database.collection<UserDocument>(collectionNames.users)
+      .find({ _id: { $in: friendIds } }, { projection: { _id: 1, lastActiveAt: 1 } }).toArray() : [];
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ items: users.map((user) => ({
+      userId: user._id.toHexString(),
+      isOnline: isUserOnline(user._id.toHexString()),
+      ...(user.lastActiveAt ? { lastActiveAt: user.lastActiveAt.toISOString() } : {}),
+    })) });
+  });
 
   router.get("/", authenticated, async (request, response) => {
     const parsedQuery = friendListQuerySchema.safeParse(request.query);

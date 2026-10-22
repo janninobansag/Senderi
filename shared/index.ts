@@ -113,6 +113,17 @@ export interface FriendListItem extends User {
 
 export type FriendListResponse = Page<FriendListItem>;
 
+/** Presence is visible only to accepted friends. */
+export interface FriendPresenceItem {
+  userId: UserId;
+  isOnline: boolean;
+  lastActiveAt?: string;
+}
+
+export interface FriendPresenceResponse {
+  items: FriendPresenceItem[];
+}
+
 /** A visible post with its public author profile; never contains storage secrets. */
 export interface PostLikeState {
   likeCount: number;
