@@ -13,8 +13,9 @@ import { FriendsPage } from "./pages/FriendsPage";
 import { MessagesPage } from "./pages/MessagesPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SearchPage } from "./pages/SearchPage";
+import { usePwaInstall } from "./pwa";
 
-type IconName = "home" | "users" | "message" | "user" | "userPlus" | "bell" | "plus";
+type IconName = "home" | "users" | "message" | "user" | "userPlus" | "bell" | "plus" | "install";
 
 function Icon({ name, size = 19 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -25,6 +26,7 @@ function Icon({ name, size = 19 }: { name: IconName; size?: number }) {
     userPlus: <><circle cx="8" cy="7" r="4" /><path d="M2.5 20v-1a5.5 5.5 0 0 1 11 0v1M19 8v7M15.5 11.5h7" /></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
+    install: <><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></>,
   };
 
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
@@ -345,6 +347,8 @@ function HeaderActions() {
   const location = useLocation();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [installMessage, setInstallMessage] = useState<string | null>(null);
+  const { canInstall, install, isInstalled } = usePwaInstall();
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isMessagesOpen, setIsMessagesOpen] = useState(false);
@@ -519,6 +523,22 @@ function HeaderActions() {
       setError("We couldn’t sign you out. Check your connection and try again.");
     } finally {
       setPending(false);
+    }
+  }
+
+  async function handleInstall() {
+    setInstallMessage(null);
+    try {
+      const outcome = await install();
+      if (outcome === "accepted") {
+        setIsAccountMenuOpen(false);
+      } else if (outcome === "dismissed") {
+        setInstallMessage("Installation was cancelled. You can try again anytime.");
+      } else {
+        setInstallMessage("Install Senderi from your browser menu by choosing Add to Home Screen or Install app.");
+      }
+    } catch {
+      setInstallMessage("Senderi couldn’t start the installer. Try Install app from your browser menu.");
     }
   }
 
@@ -724,6 +744,18 @@ function HeaderActions() {
                 <span>View your profile</span>
               </span>
             </Link>
+            {!isInstalled && (
+              <button
+                className="header-profile-menu-install"
+                type="button"
+                onClick={() => void handleInstall()}
+                title={canInstall ? "Install Senderi on this device" : "Install from your browser menu"}
+              >
+                <Icon name="install" size={18} />
+                <span>Install Senderi</span>
+              </button>
+            )}
+            {installMessage && <p className="header-profile-menu-install-message" role="status">{installMessage}</p>}
             <button
               className="header-profile-menu-signout"
               type="button"

@@ -168,6 +168,11 @@ button { cursor: pointer; }
 .header-profile-menu-copy strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .header-profile-menu-copy span { color: var(--color-muted); font-size: 12px; }
 .header-profile-menu-error { margin: 9px 10px 2px; color: #9c3047; font-size: 12px; line-height: 1.5; }
+.header-profile-menu-install { display: flex; width: 100%; min-height: 42px; align-items: center; gap: 10px; border: 0; border-radius: 10px; background: var(--color-accent-soft); padding: 0 12px; color: var(--color-accent-dark); font: inherit; font-size: 13px; font-weight: 700; text-align: left; }
+.header-profile-menu-install:hover { background: #f1e3b9; }
+.header-profile-menu-install:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.header-profile-menu-install svg { flex: 0 0 auto; }
+.header-profile-menu-install-message { margin: 7px 10px 9px; color: var(--color-muted); font-size: 11px; line-height: 1.45; }
 .header-profile-menu-signout { display: flex; width: 100%; min-height: 42px; align-items: center; border: 0; border-radius: 10px; background: var(--color-canvas); padding: 0 12px; color: var(--color-ink); font-size: 13px; font-weight: 700; text-align: left; }
 .header-profile-menu-signout:hover { background: var(--color-accent-soft); }
 .header-profile-menu-signout:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
