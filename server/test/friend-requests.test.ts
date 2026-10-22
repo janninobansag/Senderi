@@ -16,6 +16,7 @@ import {
 } from "../src/db/documents";
 import { createFriendRequestsRouter } from "../src/routes/friend-requests";
 import { createFriendsRouter } from "../src/routes/friends";
+import { addPresenceConnection, removePresenceConnection } from "../src/socket/presence";
 import { areFriends } from "../src/friends/are-friends";
 import { createUsersRouter } from "../src/routes/users";
 
@@ -719,4 +720,38 @@ test("friend list reports shared friends and excludes the signed-in viewer", asy
       [diana._id.toHexString()]: 0,
     },
   );
+});
+
+test("presence is restricted to friends and reflects all live connections", async () => {
+  const alice = makeUser("000000000000000000000021", "alice@example.com", "Alice Example");
+  const bob = makeUser("000000000000000000000022", "bob@example.com", "Bob Example");
+  const stranger = makeUser("000000000000000000000023", "stranger@example.com", "Stranger");
+  bob.lastActiveAt = new Date("2026-10-01T00:58:00.000Z");
+  const data = emptyData([alice, bob, stranger], [sessionFor(alice, aliceToken)]);
+  data.friendships.push(makeFriendship(alice, bob));
+  const app = createTestApp(data);
+  const ids = [bob, stranger, alice].map((user) => user._id.toHexString()).join(",");
+  const url = `/api/friends/presence?ids=${ids}`;
+  const bobId = bob._id.toHexString();
+
+  const unauthenticated = await request(app).get(url);
+  assert.equal(unauthenticated.status, 401);
+  const invalid = await request(app).get("/api/friends/presence?ids=invalid")
+    .set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
+  assert.equal(invalid.status, 400);
+
+  const offline = await request(app).get(url).set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
+  assert.deepEqual(offline.body.items, [{ userId: bobId, isOnline: false, lastActiveAt: bob.lastActiveAt.toISOString() }]);
+  assert.equal(offline.headers["cache-control"], "private, no-store");
+
+  addPresenceConnection(bobId, "tab-one");
+  addPresenceConnection(bobId, "tab-two");
+  try {
+    removePresenceConnection(bobId, "tab-one");
+    const online = await request(app).get(url).set("Cookie", `${SESSION_COOKIE_NAME}=${aliceToken}`);
+    assert.deepEqual(online.body.items, [{ userId: bobId, isOnline: true, lastActiveAt: bob.lastActiveAt.toISOString() }]);
+  } finally {
+    removePresenceConnection(bobId, "tab-one");
+    removePresenceConnection(bobId, "tab-two");
+  }
 });

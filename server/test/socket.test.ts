@@ -21,6 +21,7 @@ import { createAuthRouter } from "../src/routes/auth";
 import { createChatsRouter } from "../src/routes/chats";
 import type { MessageAckEvent, MessageErrorEvent, MessageNewEvent, MessageSendRequest } from "../src/socket/contracts";
 import { createSocketServer } from "../src/socket/server";
+import { isUserOnline } from "../src/socket/presence";
 
 const CLIENT_ORIGIN = "http://localhost:5173";
 const FIXED_NOW = new Date("2026-10-01T12:00:00.000Z");
@@ -87,6 +88,13 @@ function createDatabase(data: SocketTestData): Db {
         return {
           findOne: async (filter: { _id?: ObjectId }) =>
             data.users.find((user) => filter._id === undefined || user._id.equals(filter._id)) ?? null,
+          updateOne: async (filter: { _id: ObjectId }, update: { $max: { lastActiveAt: Date } }) => {
+            const user = data.users.find((item) => item._id.equals(filter._id));
+            if (user && (!user.lastActiveAt || user.lastActiveAt < update.$max.lastActiveAt)) {
+              user.lastActiveAt = update.$max.lastActiveAt;
+            }
+            return { acknowledged: true };
+          },
         };
       }
       if (name === "sessions") {
@@ -286,6 +294,41 @@ function waitForMessageError(socket: TestClient): Promise<MessageErrorEvent> {
 function closeClients(...clients: TestClient[]): void {
   for (const client of clients) client.disconnect();
 }
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(predicate(), "Expected presence to update before timeout.");
+}
+
+test("presence stays online across tabs and saves the final disconnect time", async () => {
+  const fixture = await createFixture();
+  const userId = fixture.data.users[0]!._id.toHexString();
+  let first: TestClient | undefined;
+  let second: TestClient | undefined;
+  try {
+    first = openClient(fixture, (await issueTicket(fixture)).body.ticket as string);
+    await waitForConnect(first);
+    await waitUntil(() => isUserOnline(userId));
+    assert.equal(fixture.data.users[0]?.lastActiveAt?.toISOString(), FIXED_NOW.toISOString());
+
+    second = openClient(fixture, (await issueTicket(fixture)).body.ticket as string);
+    await waitForConnect(second);
+    first.disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(isUserOnline(userId), true);
+
+    fixture.setNow(new Date(FIXED_NOW.getTime() + 120_000));
+    second.disconnect();
+    await waitUntil(() => !isUserOnline(userId));
+    assert.equal(fixture.data.users[0]?.lastActiveAt?.toISOString(), new Date(FIXED_NOW.getTime() + 120_000).toISOString());
+  } finally {
+    closeClients(...[first, second].filter((socket): socket is TestClient => socket !== undefined));
+    await fixture.close();
+  }
+});
 
 test("socket tickets are issued to a live session and consumed once after origin and ticket checks", async () => {
   const fixture = await createFixture();

@@ -9,8 +9,9 @@ import type {
 } from "./contracts";
 import { consumeSocketTicket } from "../auth/socket-ticket";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type MessageDocument, type SessionDocument } from "../db/documents";
+import { collectionNames, type MessageDocument, type SessionDocument, type UserDocument } from "../db/documents";
 import { areFriends } from "../friends/are-friends";
+import { addPresenceConnection, removePresenceConnection } from "./presence";
 import { z } from "zod";
 
 interface ClientToServerEvents {
@@ -225,6 +226,18 @@ export function createSocketServer(
 
   io.on("connection", (socket) => {
     socket.join(userRoom(socket.data.userId));
+    const userId = socket.data.userId;
+    const userKey = userId.toHexString();
+    addPresenceConnection(userKey, socket.id);
+    const saveLastActive = () => {
+      void dependencies.getDatabase().collection<UserDocument>(collectionNames.users)
+        .updateOne({ _id: userId }, { $max: { lastActiveAt: dependencies.now() } })
+        .catch(() => { /* Presence remains available while the database retries. */ });
+    };
+    saveLastActive();
+    socket.on("disconnect", () => {
+      if (removePresenceConnection(userKey, socket.id)) saveLastActive();
+    });
     socket.on("message:send", (payload) => {
       void sendMessage(socket, io, dependencies, payload);
     });

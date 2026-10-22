@@ -33,6 +33,7 @@ export interface UserDocument {
   coverId?: string;
   createdAt: Date;
   updatedAt: Date;
+  lastActiveAt?: Date;
 }
 
 /** Store the lexicographically ordered ObjectIds as userIdLow/userIdHigh. */

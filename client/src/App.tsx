@@ -4,6 +4,7 @@ import { io } from "socket.io-client";
 import type { ChatUnreadResponse, FriendListResponse, Message, MessageHistoryResponse, NotificationItem, NotificationsResponse, Post, PostListResponse, SocketTicketResponse, User, UserSearchResponse } from "../../shared";
 import { apiFetch } from "./api/client";
 import { CHAT_UNREAD_CHANGED_EVENT, notifyChatUnreadChanged } from "./chat/unread-events";
+import { lastActiveLabel, useFriendPresence } from "./chat/use-friend-presence";
 import { CompactRowsSkeleton, SessionSkeleton, SkeletonBlock, SkeletonRegion } from "./components/Skeletons";
 import { PostComposer, PostList } from "./components/Posts";
 import { useAuth } from "./auth/AuthContext";
@@ -519,6 +520,7 @@ function HeaderActions() {
     return text.toLocaleLowerCase().includes(messageSearch.trim().toLocaleLowerCase()) &&
       (messageFilter === "all" || (messageUnreadCounts[friend.id] ?? 0) > 0);
   });
+  const { presenceById, now: presenceNow } = useFriendPresence(messageFriends.map((friend) => friend.id), isMessagesOpen);
   const unreadMessageCount = Object.values(messageUnreadCounts).reduce((total, count) => total + count, 0);
 
   return (
@@ -577,11 +579,13 @@ function HeaderActions() {
               {!messagesLoading && filteredMessageFriends.length === 0 && <p className="header-messages-empty">{messageFilter === "unread" ? "No unread messages." : messageFriends.length === 0 ? "Your chats will appear here." : "No chats match your search."}</p>}
               {!messagesLoading && filteredMessageFriends.map((friend) => {
                 const preview = messagePreviews[friend.id];
+                const presence = presenceById[friend.id];
+                const lastActive = lastActiveLabel(presence, presenceNow);
                 return (
                   <button className="header-message-row" key={friend.id} type="button" onClick={() => { setIsMessagesOpen(false); navigate(`/messages?friend=${encodeURIComponent(friend.id)}`); }}>
-                    <span className="header-message-avatar">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" /> : friend.displayName.trim().charAt(0).toUpperCase()}</span>
+                    <span className="chat-presence-avatar"><span className="header-message-avatar">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" /> : friend.displayName.trim().charAt(0).toUpperCase()}</span>{presence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
                     <span className="header-message-copy"><strong>{friend.displayName}</strong><span>{preview ? `${preview.senderId === currentUserId ? "You: " : ""}${preview.text}` : "Start a conversation"}</span></span>
-                    {preview && <time>{formatMessagePreviewTime(preview.createdAt)}</time>}
+                    {lastActive && <time className="chat-presence-time" dateTime={presence?.lastActiveAt} title="Last active">{lastActive}</time>}
                     {(messageUnreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${messageUnreadCounts[friend.id]} unread messages`} />}
                   </button>
                 );
@@ -722,14 +726,6 @@ function formatNotificationTime(value: string): string {
   const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
   const unit = units.find(([, secondsPerUnit]) => Math.abs(seconds) >= secondsPerUnit);
   return unit ? formatter.format(Math.round(seconds / unit[1]), unit[0]) : formatter.format(seconds, "second");
-}
-
-function formatMessagePreviewTime(value: string): string {
-  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1_000));
-  if (seconds < 60) return "now";
-  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h`;
-  return `${Math.floor(seconds / 86_400)}d`;
 }
 
 function PageLoading() {
