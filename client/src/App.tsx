@@ -83,7 +83,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-canvas text-ink">
-      <header className="relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
+      <header className="app-site-header relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
         <div className="app-header-inner flex h-[72px] w-full items-center justify-between px-5 sm:px-8">
           <div className="header-brand-group">
             <NavLink to="/" aria-label="Senderi home" className="header-brand flex items-center gap-2.5 text-xl font-extrabold tracking-[-0.06em] text-ink sm:text-2xl">

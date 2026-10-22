@@ -638,6 +638,7 @@ button { cursor: pointer; }
 }
 
 @media (max-width: 640px) {
+  .app-site-header { position: sticky; top: 0; }
   .member-layout-sidebar { display: none; }
   .friends-page-sidebar h1 { display: none; }
   .friends-page-sidebar nav { justify-content: center; }
