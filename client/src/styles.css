@@ -59,6 +59,24 @@ button { cursor: pointer; }
 .profile-image-feedback-error { background: #fff4f4; color: #9c3047; }
 .profile-image-feedback progress { width: min(100%, 340px); height: 8px; accent-color: var(--color-accent); }
 .profile-status { display: inline-flex; width: fit-content; border-radius: 999px; background: #f7edcd; padding: 8px 12px; color: var(--color-accent-dark); font-size: 12px; font-weight: 700; }
+.profile-edit-button { display: inline-flex; min-height: 39px; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--color-line); border-radius: 10px; background: #f1ede4; padding: 0 15px; color: var(--color-ink); font: inherit; font-size: 13px; font-weight: 700; white-space: nowrap; }
+.profile-edit-button:hover { background: var(--color-accent-soft); }
+.profile-edit-button:focus-visible, .profile-edit-dialog-close:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.profile-edit-button svg { width: 16px; height: 16px; }
+.profile-edit-dialog { position: fixed; inset: 0; width: min(640px, calc(100vw - 28px)); max-width: none; max-height: min(90dvh, 760px); margin: auto; overflow: hidden; border: 1px solid var(--color-line); border-radius: 20px; padding: 0; background: var(--color-surface); color: var(--color-ink); box-shadow: 0 24px 70px rgb(51 41 22 / 26%); }
+.profile-edit-dialog:not([open]) { display: none; }
+.profile-edit-dialog::backdrop { background: rgb(43 34 19 / 55%); backdrop-filter: blur(3px); }
+.profile-edit-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--color-line); padding: 22px 24px 18px; }
+.profile-edit-dialog-header h2 { margin: 8px 0 0; font-family: var(--font-display); font-size: 23px; font-weight: 700; letter-spacing: -.03em; }
+.profile-edit-dialog-close { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border: 0; border-radius: 50%; background: var(--color-canvas); color: var(--color-muted); }
+.profile-edit-dialog-close:hover { background: var(--color-accent-soft); color: var(--color-ink); }
+.profile-edit-dialog-close:disabled { cursor: wait; opacity: .5; }
+.profile-edit-dialog-close svg { width: 18px; height: 18px; }
+.profile-edit-form { display: flex; max-height: calc(min(90dvh, 760px) - 84px); flex-direction: column; }
+.profile-edit-dialog-body { display: grid; gap: 20px; overflow-y: auto; padding: 23px 24px 26px; }
+.profile-edit-field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.profile-edit-dialog-footer { display: flex; justify-content: flex-end; gap: 9px; border-top: 1px solid var(--color-line); padding: 14px 24px; }
+.profile-edit-dialog-footer button:disabled { cursor: wait; opacity: .65; }
 .profile-info { display: grid; gap: 16px; border-radius: 16px; background: var(--color-canvas); padding: 18px; }
 .profile-info dt { color: var(--color-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 .profile-info dd { margin-top: 4px; overflow-wrap: anywhere; color: var(--color-ink); font-size: 14px; }
@@ -68,6 +86,7 @@ button { cursor: pointer; }
 .profile-field textarea { resize: vertical; }
 .profile-field input:focus, .profile-field textarea:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px rgb(147 96 0 / 12%); }
 .profile-field > span { color: var(--color-muted); font-size: 12px; font-weight: 500; text-align: right; }
+@media (max-width: 520px) { .profile-edit-dialog-header { padding: 18px 18px 15px; } .profile-edit-dialog-body { padding: 19px 18px; } .profile-edit-dialog-footer { padding: 12px 18px; } .profile-edit-field-row { grid-template-columns: 1fr; } }
 .form-success { color: #28643e; font-size: 14px; font-weight: 700; }
 .form-error { color: #9c3047; font-size: 14px; font-weight: 700; }
 .accent-card { border-radius: 24px; background: #f7edcd; }
@@ -81,6 +100,7 @@ button { cursor: pointer; }
 .nav-item-active { background: var(--color-ink); color: white; box-shadow: 0 8px 18px rgb(51 41 22 / 12%); }
 .nav-item-active:hover { background: var(--color-ink); color: white; transform: none; }
 .home-feed-column { width: min(100%, 720px); margin-inline: auto; }
+.profile-page, .skeleton-profile { width: min(100%, 1120px); margin-inline: auto; }
 .icon-button { position: relative; display: grid; height: 38px; width: 38px; place-items: center; border: 1px solid var(--color-line); border-radius: 50%; background: var(--color-surface); color: var(--color-muted); }
 .icon-button:hover { color: var(--color-accent); }
 .header-messages-link { text-decoration: none; transition: background .18s, color .18s; }
