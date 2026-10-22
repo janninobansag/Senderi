@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ApiError, apiFetch, apiUpload } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -137,10 +137,20 @@ export function ProfilePage() {
   const [form, setForm] = useState<FormValues | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [imageUpload, setImageUpload] = useState<ImageUploadState | null>(null);
+  const editorDialogRef = useRef<HTMLDialogElement>(null);
+  const editorTitleId = useId();
   const uploadInProgress = useRef(false);
+
+  useEffect(() => {
+    const dialog = editorDialogRef.current;
+    if (!dialog) return;
+    if (isEditorOpen && !dialog.open) dialog.showModal();
+    if (!isEditorOpen && dialog.open) dialog.close();
+  }, [isEditorOpen]);
 
   useEffect(() => {
     const previewUrl = imageUpload?.previewUrl;
@@ -153,6 +163,7 @@ export function ProfilePage() {
     if (!profileId) return;
     let active = true;
     setIsLoading(true);
+    setIsEditorOpen(false);
     setError(null);
     setSaveMessage(null);
 
@@ -184,6 +195,13 @@ export function ProfilePage() {
   function updateField(field: keyof FormValues, value: string) {
     setForm((current) => current ? { ...current, [field]: value } : current);
     setSaveMessage(null);
+  }
+
+  function openEditor() {
+    if (!profile) return;
+    setForm(formFromProfile(profile.user));
+    setSaveMessage(null);
+    setIsEditorOpen(true);
   }
 
   async function uploadProfileImage(kind: ProfileImageKind, file: File) {
@@ -259,6 +277,7 @@ export function ProfilePage() {
       setForm(formFromProfile(response.user));
       setSaveMessage("Profile saved.");
       await refreshUser();
+      setIsEditorOpen(false);
     } catch (requestError: unknown) {
       setSaveMessage(requestError instanceof ApiError ? requestError.message : "We couldn’t save your profile.");
     } finally {
@@ -271,7 +290,7 @@ export function ProfilePage() {
   if (error || !profile || !form) return <RequestErrorState title="Unable to load profile" message={error ?? "Please try again."} />;
 
   return (
-    <div className="space-y-5">
+    <div className="profile-page space-y-5">
       <section className="profile-cover">
         <ProfileCover
           imageUrl={imageUpload?.status === "uploading" && imageUpload.kind === "cover"
@@ -311,10 +330,19 @@ export function ProfilePage() {
             <h1 className="mt-3 text-3xl font-bold tracking-[-0.04em] text-ink">{profile.user.displayName}</h1>
             <p className="mt-2 text-sm text-muted">Member since {memberSince}</p>
           </div>
-          <span className="profile-status" aria-label={`Friendship status: ${friendshipLabel(profile.friendshipStatus)}`}>
-            {friendshipLabel(profile.friendshipStatus)}
-          </span>
+          {isOwner ? (
+            <button className="profile-edit-button" type="button" onClick={openEditor} aria-haspopup="dialog">
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 5 4 4M4 20l4.5-1 10.7-10.7a2.1 2.1 0 0 0-3-3L5.5 16 4 20Z" /></svg>
+              Edit profile
+            </button>
+          ) : (
+            <span className="profile-status" aria-label={`Friendship status: ${friendshipLabel(profile.friendshipStatus)}`}>
+              {friendshipLabel(profile.friendshipStatus)}
+            </span>
+          )}
         </div>
+
+        {isOwner && saveMessage === "Profile saved." && <p className="form-success mt-4" role="status">{saveMessage}</p>}
 
         <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.65fr)]">
           <div>
@@ -337,19 +365,40 @@ export function ProfilePage() {
       </section>
 
       {isOwner && (
-        <section className="surface-card p-6 sm:p-8">
-          <div className="mb-6"><span className="eyebrow">Edit profile</span><h2 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-ink">Keep it current.</h2></div>
-          <form className="grid gap-5" onSubmit={saveProfile}>
-            <label className="profile-field">Display name<input value={form.displayName} onChange={(event) => updateField("displayName", event.target.value)} maxLength={80} /></label>
-            <label className="profile-field">Bio<textarea value={form.bio} onChange={(event) => updateField("bio", event.target.value)} maxLength={500} rows={4} /><span>{form.bio.length}/500</span></label>
-            <div className="grid gap-5 sm:grid-cols-2">
-              <label className="profile-field">Location<input value={form.location} onChange={(event) => updateField("location", event.target.value)} maxLength={120} /></label>
-              <label className="profile-field">Website<input value={form.website} onChange={(event) => updateField("website", event.target.value)} placeholder="https://example.com" maxLength={2_048} /></label>
+        <dialog
+          ref={editorDialogRef}
+          className="profile-edit-dialog"
+          aria-labelledby={editorTitleId}
+          onClose={() => setIsEditorOpen(false)}
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !isSaving) setIsEditorOpen(false);
+          }}
+          onCancel={(event) => {
+            if (isSaving) event.preventDefault();
+          }}
+        >
+          <header className="profile-edit-dialog-header">
+            <div><span className="eyebrow">Edit profile</span><h2 id={editorTitleId}>Keep it current.</h2></div>
+            <button className="profile-edit-dialog-close" type="button" aria-label="Close edit profile" disabled={isSaving} onClick={() => setIsEditorOpen(false)}>
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 5 19 19M19 5 5 19" /></svg>
+            </button>
+          </header>
+          <form className="profile-edit-form" onSubmit={saveProfile}>
+            <div className="profile-edit-dialog-body">
+              <label className="profile-field">Display name<input value={form.displayName} onChange={(event) => updateField("displayName", event.target.value)} maxLength={80} /></label>
+              <label className="profile-field">Bio<textarea value={form.bio} onChange={(event) => updateField("bio", event.target.value)} maxLength={500} rows={4} /><span>{form.bio.length}/500</span></label>
+              <div className="profile-edit-field-row">
+                <label className="profile-field">Location<input value={form.location} onChange={(event) => updateField("location", event.target.value)} maxLength={120} /></label>
+                <label className="profile-field">Website<input value={form.website} onChange={(event) => updateField("website", event.target.value)} placeholder="https://example.com" maxLength={2_048} /></label>
+              </div>
+              {saveMessage && saveMessage !== "Profile saved." && <p className="form-error" role="alert">{saveMessage}</p>}
             </div>
-            {saveMessage && <p className={saveMessage === "Profile saved." ? "form-success" : "form-error"} role={saveMessage === "Profile saved." ? "status" : "alert"}>{saveMessage}</p>}
-            <div><button className="button-accent" type="submit" disabled={isSaving}>{isSaving ? "Saving..." : "Save changes"}</button></div>
+            <footer className="profile-edit-dialog-footer">
+              <button className="button-secondary" type="button" disabled={isSaving} onClick={() => setIsEditorOpen(false)}>Cancel</button>
+              <button className="button-accent" type="submit" disabled={isSaving}>{isSaving ? "Saving..." : "Save changes"}</button>
+            </footer>
           </form>
-        </section>
+        </dialog>
       )}
     </div>
   );

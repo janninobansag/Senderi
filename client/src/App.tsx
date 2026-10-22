@@ -707,7 +707,7 @@ function MemberLayout({ children }: { children: ReactNode }) {
   const isFriendsPage = location.pathname === "/friends";
 
   return (
-    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row${isFriendsPage ? " friends-member-layout" : ""}`}>
+    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""}`}>
       {!isFriendsPage && <aside className="lg:w-56 lg:shrink-0">
         <nav aria-label="Main navigation" className="flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
           <p className="mb-2 hidden px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted lg:block">Explore</p>
