@@ -302,7 +302,7 @@ export function FriendsPage() {
     }
   }
 
-  async function respondToRequest(request: FriendRequest, action: "accept" | "decline"): Promise<void> {
+  async function respondToRequest(request: FriendRequest, action: "accept" | "decline" | "cancel"): Promise<void> {
     setRequestActionId(request.id);
     setRequestFeedback(null);
     setRequestFeedbackError(false);
@@ -318,7 +318,9 @@ export function FriendsPage() {
         incoming: current.incoming.filter((item) => item.id !== request.id),
         outgoing: current.outgoing.filter((item) => item.id !== request.id),
       }));
-      const message = action === "accept" ? "Friend request accepted." : "Friend request declined.";
+      const message = action === "accept"
+        ? "Friend request accepted."
+        : action === "cancel" ? "Friend request cancelled." : "Friend request declined.";
       if (view === "search") setSearchFeedback(message);
       else setRequestFeedback(message);
       if (action === "accept") {
@@ -409,11 +411,13 @@ export function FriendsPage() {
               key={item.view}
               className={`friends-page-nav${view === item.view ? " friends-page-nav-active" : ""}`}
               type="button"
+              aria-label={item.count ? `${item.label}, ${item.count}` : item.label}
               aria-current={view === item.view ? "page" : undefined}
+              title={item.label}
               onClick={() => { setView(item.view); setSearchFeedback(null); setRequestFeedback(null); setFriendsFeedback(null); }}
             >
               <span className="friends-page-nav-icon"><FriendsNavIcon name={item.icon} /></span>
-              <span>{item.label}</span>
+              <span className="friends-page-nav-label">{item.label}</span>
               {item.count ? <span className="friends-page-nav-count">{item.count}</span> : null}
             </button>
           ))}
@@ -536,7 +540,9 @@ export function FriendsPage() {
                         <button className="button-accent" type="button" onClick={() => void respondToRequest(request, "accept")} disabled={requestActionId === request.id}>{requestActionId === request.id ? "Saving…" : "Confirm"}</button>
                         <button className="button-secondary" type="button" onClick={() => void respondToRequest(request, "decline")} disabled={requestActionId === request.id}>Delete</button>
                       </>
-                    ) : <span className="friend-relationship" role="status">Request sent</span>}
+                    ) : (
+                      <button className="button-secondary" type="button" onClick={() => void respondToRequest(request, "cancel")} disabled={requestActionId === request.id}>Cancel</button>
+                    )}
                   </FriendsProfileCard>
                 );
               })}

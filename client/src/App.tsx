@@ -54,12 +54,36 @@ function HomePage() {
   );
 }
 
+function MobileMainNavigation() {
+  return (
+    <nav className="mobile-main-nav" aria-label="Main navigation">
+      <NavLink
+        to="/"
+        end
+        aria-label="Home"
+        title="Home"
+        className={({ isActive }) => `icon-button mobile-main-nav-link${isActive ? " header-icon-active" : ""}`}
+      >
+        <Icon name="home" size={18} />
+      </NavLink>
+      <NavLink
+        to="/friends"
+        aria-label="Friends"
+        title="Friends"
+        className={({ isActive }) => `icon-button mobile-main-nav-link${isActive ? " header-icon-active" : ""}`}
+      >
+        <Icon name="users" size={18} />
+      </NavLink>
+    </nav>
+  );
+}
+
 export default function App() {
   const { user, isLoading, initializationError, refreshUser } = useAuth();
 
   return (
     <div className="min-h-screen bg-canvas text-ink">
-      <header className="relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
+      <header className="app-site-header relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
         <div className="app-header-inner flex h-[72px] w-full items-center justify-between px-5 sm:px-8">
           <div className="header-brand-group">
             <NavLink to="/" aria-label="Senderi home" className="header-brand flex items-center gap-2.5 text-xl font-extrabold tracking-[-0.06em] text-ink sm:text-2xl">
@@ -114,6 +138,7 @@ function HeaderPeopleSearch() {
   const [isLoadingMatches, setIsLoadingMatches] = useState(false);
   const [matchesError, setMatchesError] = useState<string | null>(null);
   const searchControlRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const normalizedQuery = query.trim();
 
   useEffect(() => {
@@ -162,11 +187,13 @@ function HeaderPeopleSearch() {
     function closeSearch(event: PointerEvent) {
       if (event.target instanceof Node && !searchControlRef.current?.contains(event.target)) {
         setIsOpen(false);
+        searchInputRef.current?.blur();
       }
     }
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setIsOpen(false);
+        searchInputRef.current?.blur();
       }
     }
     document.addEventListener("pointerdown", closeSearch);
@@ -215,12 +242,24 @@ function HeaderPeopleSearch() {
   return (
     <div className="header-search-control" ref={searchControlRef}>
       <form className="header-people-search" role="search" onSubmit={submitSearch}>
-        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="header-search-desktop-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="10.8" cy="10.8" r="6.8" />
           <path d="m16 16 5 5" />
         </svg>
+        <button
+          className="header-mobile-search-trigger"
+          type="button"
+          aria-label="Open search"
+          onClick={() => { setIsOpen(true); searchInputRef.current?.focus(); }}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="10.8" cy="10.8" r="6.8" />
+            <path d="m16 16 5 5" />
+          </svg>
+        </button>
         <label className="sr-only" htmlFor="header-people-search-input">Search Senderi</label>
         <input
+          ref={searchInputRef}
           id="header-people-search-input"
           value={query}
           onFocus={() => setIsOpen(true)}
@@ -529,6 +568,7 @@ function HeaderActions() {
         <SkeletonRegion message="Restoring session" className="skeleton-header-actions"><div className="skeleton-header-icons"><SkeletonBlock className="skeleton-avatar" /><SkeletonBlock className="skeleton-avatar" /><SkeletonBlock className="skeleton-avatar" /></div></SkeletonRegion>
       ) : user ? (
         <>
+          <MobileMainNavigation />
           <NavLink
             ref={messagesButtonRef}
             className={({ isActive }) => `icon-button header-messages-link${isActive || isMessagesOpen ? " header-icon-active" : ""}`}
@@ -762,7 +802,7 @@ function MemberLayout({ children }: { children: ReactNode }) {
           {navigation.map((item) => <NavLink
             key={item.to}
             to={item.to}
-            aria-label={item.to === "/profile" && user ? `${user.displayName} profile` : undefined}
+            aria-label={item.to === "/profile" && user ? `${user.displayName} profile` : item.label}
             className={({ isActive }) => `nav-item${item.to === "/profile" && user ? " nav-profile-item" : ""} ${isActive ? "nav-item-active" : ""}`}
           >
             {item.to === "/profile" && user ? (
@@ -774,7 +814,7 @@ function MemberLayout({ children }: { children: ReactNode }) {
                 </span>
                 <span className="nav-profile-name">{user.displayName}</span>
               </>
-            ) : <><Icon name={item.icon} size={19} />{item.label}</>}
+            ) : <><Icon name={item.icon} size={19} /><span className="nav-item-label">{item.label}</span></>}
           </NavLink>)}
         </nav>
       </aside>}

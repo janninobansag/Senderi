@@ -107,16 +107,19 @@ function matchesComment(comment: CommentDocument, filter: MongoFilter): boolean 
 }
 
 function matchesShare(share: ShareDocument, filter: MongoFilter): boolean {
-  if ("$and" in filter) {
-    return (filter.$and as MongoFilter[]).every((condition) => matchesShare(share, condition));
-  }
-  if ("$or" in filter) {
-    return (filter.$or as MongoFilter[]).some((condition) => matchesShare(share, condition));
-  }
+  if ("$and" in filter && !(filter.$and as MongoFilter[]).every((condition) => matchesShare(share, condition))) return false;
+  if ("$or" in filter && !(filter.$or as MongoFilter[]).some((condition) => matchesShare(share, condition))) return false;
 
   return Object.entries(filter).every(([field, expected]) => {
+    if (field === "$and" || field === "$or") return true;
     if (field === "authorId") return matchesObjectId(share.authorId, expected);
     if (field === "sourcePostId") return matchesObjectId(share.sourcePostId, expected);
+    if (field === "sourceShareId") {
+      if (typeof expected === "object" && expected !== null && "$exists" in expected) {
+        return Boolean(share.sourceShareId) === Boolean(expected.$exists);
+      }
+      return share.sourceShareId ? matchesObjectId(share.sourceShareId, expected) : false;
+    }
     if (field === "_id") return matchesObjectId(share._id, expected);
     if (field === "createdAt") return matchesDate(share.createdAt, expected);
     if (field === "caption" && typeof expected === "object" && expected !== null && "$regex" in expected) {
@@ -326,6 +329,24 @@ function createDatabase(data: PostTestData): Db {
 
       if (name === collectionNames.shares) {
         return {
+          aggregate: (pipeline: Document[]) => ({
+            toArray: async () => {
+              const match = pipeline[0]?.["$match"] as MongoFilter;
+              const group = pipeline[1]?.["$group"] as MongoFilter;
+              const groupField = String(group._id).slice(1) as "sourcePostId" | "sourceShareId";
+              const summaries = new Map<string, { _id: ObjectId; shareCount: number }>();
+              for (const share of data.shares) {
+                if (!matchesShare(share, match)) continue;
+                const sourceId = share[groupField];
+                if (!sourceId) continue;
+                const key = sourceId.toHexString();
+                const summary = summaries.get(key) ?? { _id: sourceId, shareCount: 0 };
+                summary.shareCount += 1;
+                summaries.set(key, summary);
+              }
+              return [...summaries.values()];
+            },
+          }),
           findOne: async (filter: MongoFilter) =>
             data.shares.find((share) => matchesShare(share, filter)) ?? null,
           insertOne: async (share: ShareDocument) => {
@@ -774,6 +795,58 @@ test("share creation accepts only a Public source and returns its public author 
   assert.equal(data.shares.length, 1, "rejected requests must not create share records");
 });
 
+test("share counts stay with the original post or the specific shared card", async () => {
+  const { data, tokens } = matrixFixture();
+  const sourcePost = data.posts.find((post) => post._id.toHexString() === ids.public)!;
+  const parentShare = makeShare(
+    "0000000000000000000000a1",
+    new ObjectId(ids.friend),
+    sourcePost._id,
+    "public",
+    new Date(),
+  );
+  data.shares.push(parentShare);
+  const app = createApp(data);
+  const sharesPath = `/api/posts/${ids.public}/shares`;
+  const origin = "http://localhost:5173";
+
+  const directShare = await request(app)
+    .post(sharesPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ visibility: "public" })
+    .expect(201);
+  const feedAfterDirectShare = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  const originalAfterDirectShare = feedAfterDirectShare.body.items.find((item: { id: string; share?: unknown }) =>
+    item.id === ids.public && !item.share);
+  const parentAfterDirectShare = feedAfterDirectShare.body.items.find((item: { share?: { id: string; shareCount: number } }) =>
+    item.share?.id === parentShare._id.toHexString());
+  assert.equal(originalAfterDirectShare.shareCount, 2, "sharing the original increments its total");
+  assert.equal(parentAfterDirectShare.share.shareCount, 0, "sharing the original does not count as sharing Jan's card");
+
+  const nestedShare = await request(app)
+    .post(sharesPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ visibility: "public", sourceShareId: parentShare._id.toHexString() })
+    .expect(201);
+
+  assert.equal(nestedShare.body.share.sourceShareId, parentShare._id.toHexString());
+  const feed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  const originalPost = feed.body.items.find((item: { id: string; share?: unknown }) =>
+    item.id === ids.public && !item.share);
+  const sharedPosts = feed.body.items.flatMap((item: { share?: { id: string; shareCount: number } }) =>
+    item.share ? [item.share] : []);
+  const parentCard = sharedPosts.find((share: { id: string }) => share.id === parentShare._id.toHexString());
+  const directCard = sharedPosts.find((share: { id: string }) => share.id === directShare.body.share.id);
+  const nestedCard = sharedPosts.find((share: { id: string }) => share.id === nestedShare.body.share.id);
+
+  assert.equal(originalPost.shareCount, 3, "shares made from a shared card also increase the original post total");
+  assert.equal(parentCard?.shareCount, 1, "a share card counts shares made from that card");
+  assert.equal(directCard?.shareCount, 0);
+  assert.equal(nestedCard?.shareCount, 0);
+});
+
 test("share audience changes are owner-only and never change the source post audience", async () => {
   const { data, tokens } = matrixFixture();
   const sourcePost = data.posts.find((post) => post._id.toHexString() === ids.public)!;
@@ -1121,8 +1194,17 @@ test("share reactions are independent from the source post and other shares", as
     .expect(404);
 
   const outsiderFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  const authorFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.author)).expect(200);
+  const friendFeed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.friend)).expect(200);
   const sourcePost = outsiderFeed.body.items.find((item: { id: string; share?: unknown }) =>
     item.id === ids.public && !item.share);
+  const authorSourcePost = authorFeed.body.items.find((item: { id: string; share?: unknown }) =>
+    item.id === ids.public && !item.share);
+  const friendSourcePost = friendFeed.body.items.find((item: { id: string; share?: unknown }) =>
+    item.id === ids.public && !item.share);
+  assert.equal(authorSourcePost.shareCount, 2, "authors see the public and friends-only shares available to them");
+  assert.equal(friendSourcePost.shareCount, 3, "viewers see their own private shares as well as public shares");
+  assert.equal(sourcePost.shareCount, 2, "viewers cannot infer the existence of shares hidden from them");
   const visibleShares = outsiderFeed.body.items.flatMap((item: { share?: { id: string; likeCount: number; isLikedByViewer: boolean } }) =>
     item.share ? [item.share] : []);
   const firstShareInFeed = visibleShares.find((share: { id: string }) => share.id === shareOne._id.toHexString());
