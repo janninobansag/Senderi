@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
 import { EmptyState, RequestErrorState } from "./AsyncState";
 import { CommentsSkeleton, PostListSkeleton } from "./Skeletons";
+import { SupporterBadge } from "./SupporterBadge";
 
 const MAX_POST_LENGTH = 5_000;
 
@@ -161,7 +162,7 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                             <Link className="text-xs font-bold text-ink hover:text-accent" to={`/profile/${comment.author.id}`}>
-                              {comment.author.displayName}
+                              {comment.author.displayName} <SupporterBadge user={comment.author} />
                             </Link>
                             <time className="text-[11px] text-muted" dateTime={comment.createdAt}>
                               {Number.isNaN(createdAt.getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
@@ -460,7 +461,7 @@ function PostDetailsDialog({
                 </Link>
                 <div className="share-post-identity-copy">
                   <Link className="share-post-author" to={`/profile/${post.share.author.id}`}>
-                    {post.share.author.displayName}
+                    {post.share.author.displayName} <SupporterBadge user={post.share.author} />
                   </Link>
                   <time dateTime={post.share.createdAt}>
                     {shareCreatedAt && !Number.isNaN(shareCreatedAt.getTime())
@@ -483,7 +484,7 @@ function PostDetailsDialog({
             </Link>
             <div className="share-post-identity-copy">
               <Link className="share-post-author" to={`/profile/${post.author.id}`}>
-                {post.author.displayName}
+                {post.author.displayName} <SupporterBadge user={post.author} />
               </Link>
               <time dateTime={post.createdAt}>
                 {Number.isNaN(createdAt.getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
@@ -1073,7 +1074,7 @@ export function PostCard({
             </Link>
             <div className="share-post-identity-copy">
               <Link className="share-post-author" to={`/profile/${post.share.author.id}`}>
-                {post.share.author.displayName}
+                {post.share.author.displayName} <SupporterBadge user={post.share.author} />
               </Link>
               <time dateTime={post.share.createdAt}>
                 {Number.isNaN(new Date(post.share.createdAt).getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
@@ -1106,7 +1107,7 @@ export function PostCard({
         </Link>
         <div className="min-w-0 flex-1">
           <Link className="block truncate text-sm font-bold text-ink hover:text-accent" to={`/profile/${post.author.id}`}>
-            {post.author.displayName}
+            {post.author.displayName} <SupporterBadge user={post.author} />
           </Link>
           <time className="mt-0.5 block text-xs text-muted" dateTime={post.createdAt}>
             {Number.isNaN(createdAt.getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {

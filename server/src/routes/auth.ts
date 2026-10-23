@@ -285,6 +285,10 @@ export function createAuthRouter(
         throw new HttpError(401, "invalid_credentials", "Email or password is incorrect.");
       }
 
+      if (user.suspendedAt) {
+        throw new HttpError(403, "account_suspended", "This account is suspended.");
+      }
+
       await Promise.all([
         releaseRateLimitAttempt(database, emailKey.id),
         releaseRateLimitAttempt(database, ipKey.id),

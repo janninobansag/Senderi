@@ -98,7 +98,7 @@ export async function listVisibleShareRecords(
     ])).values()];
     const sourcePosts = await database
       .collection<PostDocument>(collectionNames.posts)
-      .find({ _id: { $in: sourceIds }, visibility: "public" })
+      .find({ _id: { $in: sourceIds }, visibility: "public", hiddenAt: { $exists: false } })
       .toArray();
     const sourcesById = new Map(sourcePosts.map((post) => [post._id.toHexString(), post]));
 

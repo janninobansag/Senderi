@@ -20,7 +20,7 @@ import { orderedUserPair } from "../src/friends/are-friends";
 import { createAuthRouter } from "../src/routes/auth";
 import { createChatsRouter } from "../src/routes/chats";
 import type { MessageAckEvent, MessageErrorEvent, MessageNewEvent, MessageSendRequest } from "../src/socket/contracts";
-import { createSocketServer } from "../src/socket/server";
+import { createSocketServer, disconnectUserSockets } from "../src/socket/server";
 import { isUserOnline } from "../src/socket/presence";
 
 const CLIENT_ORIGIN = "http://localhost:5173";
@@ -420,6 +420,28 @@ test("a ticket cannot authenticate after its issuing session is revoked", async 
     assert.equal(fixture.data.socketTickets.length, 0);
   } finally {
     closeClients(...(client ? [client] : []));
+    await fixture.close();
+  }
+});
+
+test("suspension rejects tickets and disconnects an active socket", async () => {
+  const fixture = await createFixture();
+  let connected: TestClient | undefined;
+  let denied: TestClient | undefined;
+  try {
+    const first = await issueTicket(fixture);
+    connected = openClient(fixture, first.body.ticket as string);
+    await waitForConnect(connected);
+    const second = await issueTicket(fixture);
+    fixture.data.users[0]!.suspendedAt = new Date();
+    denied = openClient(fixture, second.body.ticket as string);
+    await waitForConnectError(denied);
+    const disconnected = new Promise<void>((resolve) => connected!.once("disconnect", () => resolve()));
+    disconnectUserSockets(fixture.data.users[0]!._id);
+    await disconnected;
+    assert.equal(connected.connected, false);
+  } finally {
+    closeClients(...(connected ? [connected] : []), ...(denied ? [denied] : []));
     await fixture.close();
   }
 });

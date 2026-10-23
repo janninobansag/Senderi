@@ -316,6 +316,8 @@ async function toCommentResponses(
         avatarId: 1,
         coverId: 1,
         createdAt: 1,
+        supporterBadge: 1,
+        verifiedBadge: 1,
       },
     })
     .toArray();
@@ -351,6 +353,8 @@ async function toPostResponses(
           avatarId: 1,
           coverId: 1,
           createdAt: 1,
+          supporterBadge: 1,
+          verifiedBadge: 1,
         },
       })
       .toArray(),
@@ -431,6 +435,8 @@ async function toFeedResponses(
             avatarId: 1,
             coverId: 1,
             createdAt: 1,
+            supporterBadge: 1,
+            verifiedBadge: 1,
           },
         })
         .toArray()
@@ -523,7 +529,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       .findOne({ _id: postId });
     const viewerId = getAuthenticatedSession(response).user._id;
 
-    if (!post || !post.authorId.equals(viewerId)) {
+    if (!post || post.hiddenAt || !post.authorId.equals(viewerId)) {
       throw new HttpError(404, "not_found", "Post was not found.");
     }
 
@@ -629,7 +635,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const updated = await database
         .collection<PostDocument>(collectionNames.posts)
         .findOneAndUpdate(
-          { _id: postId, authorId: session.user._id },
+          { _id: postId, authorId: session.user._id, hiddenAt: { $exists: false } },
           { $set: { visibility: parsed.data.visibility, updatedAt: new Date() } },
           { returnDocument: "after" },
         );
@@ -767,7 +773,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         database.collection<ShareDocument>(collectionNames.shares).findOne({ _id: shareId, sourcePostId: postId }),
         database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId }),
       ]);
-      if (!share || !sourcePost || sourcePost.visibility !== "public" || !(await canViewShare(database, session.user._id, share))) {
+      if (!share || !sourcePost || sourcePost.visibility !== "public" || sourcePost.hiddenAt || !(await canViewShare(database, session.user._id, share))) {
         throw new HttpError(404, "not_found", "Shared post was not found.");
       }
 
@@ -816,7 +822,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         database.collection<ShareDocument>(collectionNames.shares).findOne({ _id: shareId, sourcePostId: postId }),
         database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId }),
       ]);
-      if (!share || !sourcePost || sourcePost.visibility !== "public" || !(await canViewShare(database, session.user._id, share))) {
+      if (!share || !sourcePost || sourcePost.visibility !== "public" || sourcePost.hiddenAt || !(await canViewShare(database, session.user._id, share))) {
         throw new HttpError(404, "not_found", "Shared post was not found.");
       }
 
@@ -849,8 +855,8 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       }
       : undefined;
     const filter: Filter<CommentDocument> = cursorFilter
-      ? { $and: [{ postId }, cursorFilter] }
-      : { postId };
+      ? { $and: [{ postId, hiddenAt: { $exists: false } }, cursorFilter] }
+      : { postId, hiddenAt: { $exists: false } };
     const comments = await database
       .collection<CommentDocument>(collectionNames.comments)
       .find(filter)
@@ -917,7 +923,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const session = getAuthenticatedSession(response);
       const database = dependencies.getDatabase();
       const sourcePost = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
-      if (!sourcePost || sourcePost.visibility !== "public") {
+      if (!sourcePost || sourcePost.visibility !== "public" || sourcePost.hiddenAt) {
         throw new HttpError(404, "not_found", "Post was not found.");
       }
 
@@ -979,6 +985,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const sourcePost = await database.collection<PostDocument>(collectionNames.posts).findOne({
         _id: postId,
         visibility: "public",
+        hiddenAt: { $exists: false },
       });
       if (!sourcePost) throw new HttpError(404, "not_found", "Shared post was not found.");
 
@@ -1115,13 +1122,13 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     const [matchingPosts, matchingPublicSources] = await Promise.all([
       database.collection<PostDocument>(collectionNames.posts)
         .find({
-          $and: [postAudienceFilter, { text: { $regex: pattern, $options: "i" } }, ...(postCursorFilter ? [postCursorFilter] : [])],
+          $and: [postAudienceFilter, { hiddenAt: { $exists: false } }, { text: { $regex: pattern, $options: "i" } }, ...(postCursorFilter ? [postCursorFilter] : [])],
         })
         .sort({ createdAt: -1, _id: -1 })
         .limit(limit + 1)
         .toArray(),
       database.collection<PostDocument>(collectionNames.posts)
-        .find({ visibility: "public", text: { $regex: pattern, $options: "i" } }, { projection: { _id: 1 } })
+        .find({ visibility: "public", hiddenAt: { $exists: false }, text: { $regex: pattern, $options: "i" } }, { projection: { _id: 1 } })
         .sort({ createdAt: -1, _id: -1 })
         .limit(500)
         .toArray(),
@@ -1139,7 +1146,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       .toArray();
     const shareSourceIds = [...new Map(matchingShares.map((share) => [share.sourcePostId.toHexString(), share.sourcePostId])).values()];
     const shareSources = await database.collection<PostDocument>(collectionNames.posts)
-      .find({ _id: { $in: shareSourceIds }, visibility: "public" })
+      .find({ _id: { $in: shareSourceIds }, visibility: "public", hiddenAt: { $exists: false } })
       .toArray();
     const shareSourcesById = new Map(shareSources.map((post) => [post._id.toHexString(), post]));
 

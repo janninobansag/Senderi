@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
+import { SupporterBadge } from "../components/SupporterBadge";
 import type {
   CreateFriendRequestResponse,
   FriendListResponse,
@@ -45,7 +46,7 @@ function UserSummary({ user }: { user: User }) {
     <div className="friend-person">
       <UserAvatar user={user} />
       <div className="friend-person-copy">
-        <Link className="friend-person-name" to={userProfilePath(user)}>{user.displayName}</Link>
+        <Link className="friend-person-name" to={userProfilePath(user)}>{user.displayName} <SupporterBadge user={user} /></Link>
         <p>{user.bio || user.info.location || "Senderi member"}</p>
       </div>
     </div>
@@ -74,7 +75,7 @@ function FriendsProfileCard({ children, user }: { children: ReactNode; user: Use
           : <span aria-hidden="true">{initial}</span>}
       </Link>
       <div className="friends-profile-content">
-        <Link className="friends-profile-name" to={userProfilePath(user)}>{user.displayName}</Link>
+        <Link className="friends-profile-name" to={userProfilePath(user)}>{user.displayName} <SupporterBadge user={user} /></Link>
         <p>{user.bio || user.info.location || "Senderi member"}</p>
         <div className="friends-profile-actions">{children}</div>
       </div>

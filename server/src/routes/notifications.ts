@@ -51,7 +51,7 @@ export function createNotificationsRouter(overrides: Partial<NotificationsRouter
     const actorIds = [...new Map(notifications.map((item) => [item.actorId.toHexString(), item.actorId])).values()];
     const actors = actorIds.length
       ? await database.collection<UserDocument>(collectionNames.users).find({ _id: { $in: actorIds } }, {
-        projection: { _id: 1, displayName: 1, bio: 1, info: 1, avatarId: 1, coverId: 1, createdAt: 1 },
+        projection: { _id: 1, displayName: 1, bio: 1, info: 1, avatarId: 1, coverId: 1, createdAt: 1, supporterBadge: 1, verifiedBadge: 1 },
       }).toArray()
       : [];
     const actorsById = new Map(actors.map((actor) => [actor._id.toHexString(), actor]));

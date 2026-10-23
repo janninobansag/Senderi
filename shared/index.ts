@@ -18,6 +18,8 @@ export interface User {
   coverId?: string;
   coverUrl?: string;
   createdAt: string;
+  supporterBadge: boolean;
+  verifiedBadge: boolean;
 }
 
 /** Relationship of the signed-in viewer to the requested profile. */
@@ -31,6 +33,7 @@ export interface ProfileResponse {
 /** Additional private fields returned only for the authenticated user. */
 export interface CurrentUser extends User {
   email: string;
+  isAdmin: boolean;
 }
 
 export interface ApiErrorResponse {

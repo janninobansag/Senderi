@@ -67,6 +67,7 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
     [
       [{ authorId: 1, createdAt: -1, _id: -1 }, "posts_author_newest_first"],
       [{ visibility: 1, createdAt: -1, _id: -1 }, "posts_visibility_newest_first"],
+      [{ createdAt: -1, _id: -1 }, "posts_admin_newest_first"],
     ],
   );
   assert.deepEqual(

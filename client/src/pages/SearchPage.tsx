@@ -5,6 +5,7 @@ import { ApiError, apiFetch } from "../api/client";
 import { EmptyState, RequestErrorState } from "../components/AsyncState";
 import { PostList } from "../components/Posts";
 import { PeopleRowsSkeleton } from "../components/Skeletons";
+import { SupporterBadge } from "../components/SupporterBadge";
 
 export function SearchPage() {
   const [searchParams] = useSearchParams();
@@ -87,7 +88,7 @@ export function SearchPage() {
                       <span className="search-person-avatar">
                         {person.avatarUrl ? <img src={person.avatarUrl} alt="" /> : person.displayName.trim().charAt(0).toUpperCase() || "?"}
                       </span>
-                      <span className="search-person-copy"><strong>{person.displayName}</strong><span>{person.bio || person.info.location || "Senderi member"}</span></span>
+                      <span className="search-person-copy"><strong>{person.displayName} <SupporterBadge user={person} /></strong><span>{person.bio || person.info.location || "Senderi member"}</span></span>
                       <span className="search-person-action">View profile</span>
                     </Link>
                   </li>

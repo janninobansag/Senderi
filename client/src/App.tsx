@@ -7,6 +7,7 @@ import { CHAT_UNREAD_CHANGED_EVENT, notifyChatUnreadChanged } from "./chat/unrea
 import { lastActiveLabel, useFriendPresence } from "./chat/use-friend-presence";
 import { CompactRowsSkeleton, SessionSkeleton, SkeletonBlock, SkeletonRegion } from "./components/Skeletons";
 import { PostComposer, PostList } from "./components/Posts";
+import { SupporterBadge } from "./components/SupporterBadge";
 import { useAuth } from "./auth/AuthContext";
 import { ForgotPasswordPage, LoginPage, ResetPasswordPage, SignupPage } from "./pages/AccountPages";
 import { FriendsPage } from "./pages/FriendsPage";
@@ -14,6 +15,7 @@ import { MessagesPage } from "./pages/MessagesPage";
 import { PostPage } from "./pages/PostPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SearchPage } from "./pages/SearchPage";
+import { AdminPage } from "./pages/AdminPage";
 import { usePwaInstall } from "./pwa";
 
 type IconName = "home" | "users" | "message" | "user" | "userPlus" | "bell" | "plus" | "install";
@@ -118,6 +120,7 @@ export default function App() {
         <Route path="/messages" element={<RequireUser withLayout={false}><MessagesPage /></RequireUser>} />
         <Route path="/posts/:postId" element={<RequireUser><PostPage /></RequireUser>} />
         <Route path="/search" element={<RequireUser><SearchPage /></RequireUser>} />
+        <Route path="/admin" element={isLoading ? <PageLoading /> : user?.isAdmin ? <MemberLayout><AdminPage /></MemberLayout> : <Navigate to="/" replace />} />
         <Route path="/profile" element={<RequireUser><ProfilePage /></RequireUser>} />
         <Route path="/profile/:userId" element={<RequireUser><ProfilePage /></RequireUser>} />
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -330,7 +333,7 @@ function HeaderPeopleSearch() {
                       <li key={person.id}>
                         <Link className="header-search-result" to={`/profile/${encodeURIComponent(person.id)}`} onClick={() => { storeRecentSearch(normalizedQuery); setIsOpen(false); searchInputRef.current?.blur(); }}>
                           <span className="header-search-result-avatar">{person.avatarUrl ? <img src={person.avatarUrl} alt="" /> : person.displayName.trim().charAt(0).toUpperCase() || "?"}</span>
-                          <span className="header-search-result-copy"><strong>{person.displayName}</strong><span>{person.bio || person.info.location || "Senderi member"}</span></span>
+                          <span className="header-search-result-copy"><strong>{person.displayName} <SupporterBadge user={person} /></strong><span>{person.bio || person.info.location || "Senderi member"}</span></span>
                         </Link>
                       </li>
                     ))}
@@ -345,7 +348,7 @@ function HeaderPeopleSearch() {
                       <li key={post.share?.id ?? post.id}>
                         <button className="header-search-result" type="button" onClick={() => openFullSearch(normalizedQuery)}>
                           <span className="header-search-result-avatar">{(post.share?.author.avatarUrl || post.author.avatarUrl) ? <img src={post.share?.author.avatarUrl || post.author.avatarUrl} alt="" /> : (post.share?.author.displayName || post.author.displayName).trim().charAt(0).toUpperCase() || "?"}</span>
-                          <span className="header-search-result-copy"><strong>{post.share ? `${post.share.author.displayName} shared a post` : post.author.displayName}</strong><span>{post.share?.caption || post.text || "Photo post"}</span></span>
+                          <span className="header-search-result-copy"><strong>{post.share ? <>{post.share.author.displayName} <SupporterBadge user={post.share.author} /> shared a post</> : <>{post.author.displayName} <SupporterBadge user={post.author} /></>}</strong><span>{post.share?.caption || post.text || "Photo post"}</span></span>
                         </button>
                       </li>
                     ))}
@@ -663,7 +666,7 @@ function HeaderActions() {
                 return (
                   <button className="header-message-row" key={friend.id} type="button" onClick={() => { setIsMessagesOpen(false); navigate(`/messages?friend=${encodeURIComponent(friend.id)}`); }}>
                     <span className="chat-presence-avatar"><span className="header-message-avatar">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" /> : friend.displayName.trim().charAt(0).toUpperCase()}</span>{presence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
-                    <span className="header-message-copy"><strong>{friend.displayName}</strong><span>{preview ? `${preview.senderId === currentUserId ? "You: " : ""}${preview.text}` : "Start a conversation"}</span></span>
+                    <span className="header-message-copy"><strong>{friend.displayName} <SupporterBadge user={friend} /></strong><span>{preview ? `${preview.senderId === currentUserId ? "You: " : ""}${preview.text}` : "Start a conversation"}</span></span>
                     {lastActive && <time className="chat-presence-time" dateTime={presence?.lastActiveAt} title="Last active">{lastActive}</time>}
                     {(messageUnreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${messageUnreadCounts[friend.id]} unread messages`} />}
                   </button>
@@ -725,7 +728,7 @@ function HeaderActions() {
                         : notification.actor.displayName.trim().charAt(0).toUpperCase()}
                     </span>
                     <span className="header-notification-copy">
-                      <span><strong>{notification.actor.displayName}</strong> {notificationMessage(notification.type)}</span>
+                      <span><strong>{notification.actor.displayName} <SupporterBadge user={notification.actor} /></strong> {notificationMessage(notification.type)}</span>
                       <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
                     </span>
                     {!notification.isRead && <span className="header-notification-unread-dot" aria-hidden="true" />}
@@ -759,7 +762,7 @@ function HeaderActions() {
                   : user.displayName.trim().charAt(0).toUpperCase()}
               </span>
               <span className="header-profile-menu-copy">
-                <strong>{user.displayName}</strong>
+                <strong>{user.displayName} <SupporterBadge user={user} /></strong>
                 <span>View your profile</span>
               </span>
             </Link>
@@ -775,6 +778,11 @@ function HeaderActions() {
               </button>
             )}
             {installMessage && <p className="header-profile-menu-install-message" role="status">{installMessage}</p>}
+            {user.isAdmin && (
+              <Link className="header-profile-menu-admin" to="/admin" onClick={() => setIsAccountMenuOpen(false)}>
+                Admin
+              </Link>
+            )}
             <button
               className="header-profile-menu-signout"
               type="button"
@@ -848,9 +856,8 @@ function MemberLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""} ${isHomePage ? "home-member-layout" : ""} ${isProfilePage ? "profile-member-layout" : ""}`}>
-      {!isFriendsPage && <aside className="member-layout-sidebar lg:w-64 lg:shrink-0">
+      {!isFriendsPage && <aside className="member-layout-sidebar lg:-mt-3 lg:w-80 lg:shrink-0">
         <nav aria-label="Main navigation" className="member-primary-nav flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
-          <p className="mb-2 hidden px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted lg:block">Explore</p>
           {navigation.map((item) => <NavLink
             key={item.to}
             to={item.to}
@@ -864,10 +871,11 @@ function MemberLayout({ children }: { children: ReactNode }) {
                     ? <img src={user.avatarUrl} alt="" />
                     : user.displayName.trim().charAt(0).toUpperCase()}
                 </span>
-                <span className="nav-profile-name">{user.displayName}</span>
+                <span className="nav-profile-name">{user.displayName} <SupporterBadge user={user} /></span>
               </>
             ) : <><Icon name={item.icon} size={19} /><span className="nav-item-label">{item.label}</span></>}
           </NavLink>)}
+          {user?.isAdmin && <NavLink to="/admin" className={({ isActive }) => `nav-item ${isActive ? "nav-item-active" : ""}`}>Admin</NavLink>}
         </nav>
       </aside>}
       <main className="min-w-0 flex-1">{children}</main>

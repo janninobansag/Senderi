@@ -71,6 +71,11 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "posts_visibility_newest_first" },
   },
   {
+    collection: collectionNames.posts,
+    keys: { createdAt: -1, _id: -1 },
+    options: { name: "posts_admin_newest_first" },
+  },
+  {
     collection: collectionNames.likes,
     keys: { userId: 1, postId: 1 },
     options: { name: "likes_user_post_unique", unique: true },
@@ -89,6 +94,16 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     collection: collectionNames.comments,
     keys: { postId: 1, createdAt: -1, _id: -1 },
     options: { name: "comments_post_newest_first" },
+  },
+  {
+    collection: collectionNames.comments,
+    keys: { createdAt: -1, _id: -1 },
+    options: { name: "comments_admin_newest_first" },
+  },
+  {
+    collection: collectionNames.adminAudit,
+    keys: { createdAt: -1, _id: -1 },
+    options: { name: "admin_audit_newest_first" },
   },
   {
     collection: collectionNames.shares,

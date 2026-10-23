@@ -1,21 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApiError, apiFetch } from "../api/client";
+import type { CurrentUser } from "../../../shared";
 
-export interface AuthUser {
-  id: string;
-  email: string;
-  displayName: string;
-  bio: string;
-  info: {
-    location?: string;
-    website?: string;
-  };
-  avatarId?: string;
-  avatarUrl?: string;
-  coverId?: string;
-  coverUrl?: string;
-  createdAt: string;
-}
+export type AuthUser = CurrentUser;
 
 interface AuthContextValue {
   user: AuthUser | null;

@@ -6,6 +6,7 @@ import { RequestErrorState } from "../components/AsyncState";
 import { ProfileSkeleton } from "../components/Skeletons";
 import { PostList } from "../components/Posts";
 import { ProfileFriends, ProfileImageViewer, ProfilePhotos } from "../components/ProfileCollections";
+import { SupporterBadge } from "../components/SupporterBadge";
 import type { ProfileResponse, User } from "../../../shared";
 
 type Profile = User;
@@ -420,7 +421,7 @@ export function ProfilePage() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <span className="eyebrow">{isOwner ? "Your profile" : "Senderi profile"}</span>
-            <h1 className="mt-3 text-3xl font-bold tracking-[-0.04em] text-ink">{profile.user.displayName}</h1>
+            <h1 className="mt-3 text-3xl font-bold tracking-[-0.04em] text-ink">{profile.user.displayName} <SupporterBadge user={profile.user} /></h1>
             <p className="mt-2 text-sm text-muted">Member since {memberSince}</p>
           </div>
           {isOwner ? (

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { io, type Socket } from "socket.io-client";
 import { Link, useSearchParams } from "react-router-dom";
+import { SupporterBadge } from "../components/SupporterBadge";
 import type {
   ChatUnreadResponse,
   FriendListResponse,
@@ -527,7 +528,7 @@ export function MessagesPage() {
                     >
                       <span className="chat-presence-avatar"><ChatFriendAvatar user={friend} />{presence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
                       <span className="chat-friend-copy">
-                        <strong>{friend.displayName}</strong>
+                        <strong>{friend.displayName} <SupporterBadge user={friend} /></strong>
                         <span>{recentMessage ? `${recentMessage.senderId === userId ? "You: " : ""}${recentMessage.text}` : "Start a conversation"}</span>
                       </span>
                       {lastActive && <time className="chat-friend-time chat-presence-time" dateTime={presence?.lastActiveAt} title="Last active">{lastActive}</time>}
@@ -555,7 +556,7 @@ export function MessagesPage() {
                   <div className="friend-person">
                     <span className="chat-presence-avatar"><ChatFriendAvatar user={selectedFriend} />{selectedPresence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
                     <div className="friend-person-copy">
-                      <h2 className="friend-person-name">{selectedFriend.displayName}</h2>
+                      <h2 className="friend-person-name">{selectedFriend.displayName} <SupporterBadge user={selectedFriend} /></h2>
                       {(connectionError || selectedPresence?.isOnline || selectedLastActive) && <p>{connectionError ? "Connection interrupted" : selectedPresence?.isOnline ? "Online" : `Active ${selectedLastActive}`}</p>}
                     </div>
                   </div>
@@ -638,7 +639,7 @@ export function MessagesPage() {
           <>
             <div className="messages-info-profile">
               <ChatFriendAvatar user={selectedFriend} />
-              <h2>{selectedFriend.displayName}</h2>
+              <h2>{selectedFriend.displayName} <SupporterBadge user={selectedFriend} /></h2>
               <p>{selectedFriend.bio || "Senderi member"}</p>
               <Link className="messages-info-profile-link" to={`/profile/${encodeURIComponent(selectedFriend.id)}`}>View profile</Link>
             </div>

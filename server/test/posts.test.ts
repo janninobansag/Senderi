@@ -63,6 +63,9 @@ function matchesPost(post: PostDocument, filter: MongoFilter): boolean {
     if (field === "photoAssetId" && typeof expected === "object" && expected !== null && "$exists" in expected) {
       return (post.photoAssetId !== undefined) === expected.$exists;
     }
+    if (field === "hiddenAt" && typeof expected === "object" && expected !== null && "$exists" in expected) {
+      return (post.hiddenAt !== undefined) === expected.$exists;
+    }
     if (field === "visibility") {
       if (typeof expected === "object" && expected !== null && "$in" in expected) {
         return (expected.$in as PostDocument["visibility"][]).includes(post.visibility);
@@ -102,6 +105,9 @@ function matchesComment(comment: CommentDocument, filter: MongoFilter): boolean 
     if (field === "authorId") return matchesObjectId(comment.authorId, expected);
     if (field === "_id") return matchesObjectId(comment._id, expected);
     if (field === "createdAt") return matchesDate(comment.createdAt, expected);
+    if (field === "hiddenAt" && typeof expected === "object" && expected !== null && "$exists" in expected) {
+      return (comment.hiddenAt !== undefined) === expected.$exists;
+    }
     return false;
   });
 }
@@ -2288,4 +2294,32 @@ test("comment routes require a session and reject malformed post IDs, cursors, a
     .get(`/api/posts/${ids.public}/comments?cursor=YWJj`)
     .set("Cookie", cookie(tokens.author))
     .expect(400);
+});
+
+test("moderated posts and comments disappear from every regular read path", async () => {
+  const { data, tokens } = matrixFixture();
+  const post = data.posts.find((item) => item._id.equals(new ObjectId(ids.public)))!;
+  post.photoAssetId = "senderi/posts/test-photo";
+  post.hiddenAt = new Date();
+  data.shares.push(makeShare("0000000000000000000000ef", data.users[1]!._id, post._id, "public", new Date()));
+  const hiddenComment: CommentDocument = { _id: new ObjectId(), postId: data.posts[1]!._id, authorId: data.users[1]!._id, text: "Moderated", createdAt: new Date(), hiddenAt: new Date() };
+  data.comments.push(hiddenComment);
+  const app = createApp(data);
+  const auth = cookie(tokens.author);
+  const feed = await request(app).get("/api/posts").set("Cookie", auth).expect(200);
+  assert.equal(feed.body.items.some((item: { id: string; share?: { id: string } }) => item.id === ids.public || item.share?.id === "0000000000000000000000ef"), false);
+  const timeline = await request(app).get(`/api/users/${ids.author}/posts`).set("Cookie", auth).expect(200);
+  assert.equal(timeline.body.items.some((item: { id: string }) => item.id === ids.public), false);
+  const search = await request(app).get("/api/posts/search?query=public").set("Cookie", auth).expect(200);
+  assert.equal(search.body.items.length, 0);
+  const photos = await request(app).get(`/api/users/${ids.author}/photos`).set("Cookie", auth).expect(200);
+  assert.equal(photos.body.items.length, 0);
+  await request(app).get(`/api/posts/${ids.public}`).set("Cookie", auth).expect(404);
+  await request(app).get(`/api/posts/${ids.public}/photo`).set("Cookie", auth).expect(404);
+  const comments = await request(app).get(`/api/posts/${ids.friends}/comments`).set("Cookie", auth).expect(200);
+  assert.equal(comments.body.items.length, 0);
+  delete post.hiddenAt;
+  delete hiddenComment.hiddenAt;
+  assert.equal((await request(app).get(`/api/posts/${ids.public}`).set("Cookie", auth)).status, 200);
+  assert.equal((await request(app).get(`/api/posts/${ids.friends}/comments`).set("Cookie", auth)).body.items.length, 1);
 });

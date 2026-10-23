@@ -188,6 +188,8 @@ export function createUsersRouter(
           avatarId: 1,
           coverId: 1,
           createdAt: 1,
+          supporterBadge: 1,
+          verifiedBadge: 1,
         },
       })
       .sort({ createdAt: -1, _id: -1 })
@@ -234,6 +236,8 @@ export function createUsersRouter(
           avatarId: 1,
           coverId: 1,
           createdAt: 1,
+          supporterBadge: 1,
+          verifiedBadge: 1,
         },
       })
       .sort({ createdAt: -1, _id: -1 })

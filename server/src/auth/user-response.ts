@@ -1,4 +1,5 @@
 import type { UserDocument } from "../db/documents";
+import { isAdminId } from "./admin";
 
 export interface PublicUserResponse {
   id: string;
@@ -13,6 +14,8 @@ export interface PublicUserResponse {
   coverId?: string;
   coverUrl?: string;
   createdAt: string;
+  supporterBadge: boolean;
+  verifiedBadge: boolean;
 }
 
 export interface AuthUserResponse {
@@ -29,6 +32,9 @@ export interface AuthUserResponse {
   coverId?: string;
   coverUrl?: string;
   createdAt: string;
+  supporterBadge: boolean;
+  verifiedBadge: boolean;
+  isAdmin: boolean;
 }
 
 function cloudinaryProfileImageUrl(
@@ -65,6 +71,8 @@ export function toPublicUserResponse(
     ...(user.coverId ? { coverId: user.coverId } : {}),
     ...(coverUrl ? { coverUrl } : {}),
     createdAt: user.createdAt.toISOString(),
+    supporterBadge: user.supporterBadge === true,
+    verifiedBadge: user.verifiedBadge === true,
   };
 }
 
@@ -72,5 +80,6 @@ export function toAuthUserResponse(user: UserDocument): AuthUserResponse {
   return {
     ...toPublicUserResponse(user),
     email: user.email,
+    isAdmin: isAdminId(user._id),
   };
 }
