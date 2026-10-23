@@ -467,8 +467,8 @@ export function ProfilePage() {
 
       <div id={`${profileTabId}-panel`} role="tabpanel" aria-labelledby={`${profileTabId}-${activeTab}`}>
         {activeTab === "posts" ? (
-          <section className="surface-card space-y-5 p-6 sm:p-8">
-            <div>
+          <section className="space-y-4">
+            <div className="px-1">
               <span className="eyebrow">Posts</span>
               <h2 className="mt-2 text-2xl font-bold tracking-[-0.03em] text-ink">{isOwner ? "Your timeline" : `${profile.user.displayName}’s timeline`}</h2>
             </div>

@@ -89,9 +89,11 @@ export default function App() {
       <header className="app-site-header relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
         <div className="app-header-inner flex h-[72px] w-full items-center justify-between px-5 sm:px-8">
           <div className="header-brand-group">
-            <NavLink to="/" aria-label="Senderi home" className="header-brand flex items-center gap-2.5 text-xl font-extrabold tracking-[-0.06em] text-ink sm:text-2xl">
-              <img src="/senderi-mark.svg" alt="" className="h-9 w-9 shrink-0" />
-              <span>senderi<span className="text-accent">.</span></span>
+            <NavLink to="/" aria-label="Senderi home" className="header-brand">
+              <picture className="header-brand-picture">
+                <source media="(max-width: 640px)" srcSet="/senderi-symbol.png" />
+                <img src="/senderi-logo.png" alt="" className="header-brand-image" />
+              </picture>
             </NavLink>
             {user ? <HeaderPeopleSearch /> : isLoading ? <span className="skeleton-block skeleton-header-search" aria-hidden="true" /> : null}
           </div>
@@ -842,9 +844,10 @@ function MemberLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const isFriendsPage = location.pathname === "/friends";
   const isHomePage = location.pathname === "/";
+  const isProfilePage = location.pathname.startsWith("/profile");
 
   return (
-    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""} ${isHomePage ? "home-member-layout" : ""}`}>
+    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""} ${isHomePage ? "home-member-layout" : ""} ${isProfilePage ? "profile-member-layout" : ""}`}>
       {!isFriendsPage && <aside className="member-layout-sidebar lg:w-64 lg:shrink-0">
         <nav aria-label="Main navigation" className="member-primary-nav flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
           <p className="mb-2 hidden px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted lg:block">Explore</p>

@@ -1,7 +1,7 @@
 const CACHE_PREFIX = "senderi-app";
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v4";
 const APP_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}`;
-const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/senderi-mark.svg", "/senderi-maskable.svg"];
+const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/senderi-logo.png", "/senderi-symbol.png", "/senderi-maskable.png", "/senderi-mark.svg", "/senderi-maskable.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(APP_CACHE).then((cache) => cache.addAll(APP_SHELL)));
