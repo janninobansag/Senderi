@@ -6,7 +6,7 @@ import { isAdminId, requireAdmin } from "../auth/admin";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase } from "../db/client";
-import { collectionNames, type AdminAuditDocument, type CommentDocument, type PostDocument, type UserDocument } from "../db/documents";
+import { collectionNames, type AdminAuditDocument, type CommentDocument, type CommentReactionDocument, type PostDocument, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { cloudinaryPostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
@@ -15,6 +15,7 @@ import type { PostPhotoStorage } from "../media/post-photo";
 
 const actionSchema = z.object({ enabled: z.boolean(), reason: z.string().trim().min(3).max(500) }).strict();
 const visibilitySchema = z.object({ hidden: z.boolean(), reason: z.string().trim().min(3).max(500) }).strict();
+const deleteCommentSchema = z.object({ reason: z.string().trim().min(3).max(500) }).strict();
 const listSchema = z.object({ q: z.string().trim().max(80).optional(), offset: z.coerce.number().int().min(0).max(100000).default(0) }).strict();
 
 function id(value: string): ObjectId {
@@ -153,6 +154,34 @@ export function createAdminRouter(dependencies: { getDatabase?: () => Db; photoS
       response.json({ hidden });
     });
   }
+
+  router.delete("/comments/:itemId", requireClientOrigin(), async (request, response) => {
+    const { reason } = input(deleteCommentSchema, request.body);
+    const targetId = id(String(request.params.itemId));
+    const database = databaseFor();
+    const comments = database.collection<CommentDocument>(collectionNames.comments);
+    const comment = await comments.findOne({ _id: targetId });
+    if (!comment) throw new HttpError(404, "not_found", "Comment was not found.");
+
+    let relatedCommentIds = [targetId];
+    if (!comment.parentCommentId) {
+      const replies = await comments.find({ parentCommentId: targetId }).toArray();
+      relatedCommentIds = [...relatedCommentIds, ...replies.map((reply) => reply._id)];
+      await comments.deleteMany({ _id: { $in: relatedCommentIds } });
+    } else {
+      await comments.deleteOne({ _id: targetId });
+      await comments.updateMany(
+        { replyToCommentId: targetId },
+        { $unset: { replyToCommentId: "" } },
+      );
+    }
+
+    await database.collection<CommentReactionDocument>(collectionNames.commentReactions).deleteMany({
+      commentId: { $in: relatedCommentIds },
+    });
+    await audit(database, response.locals.authenticatedSession, targetId, "comments_deleted_permanently", reason);
+    response.status(204).end();
+  });
 
   router.get("/audit", async (request, response) => {
     const { offset } = input(listSchema, request.query);

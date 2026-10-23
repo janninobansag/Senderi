@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+const PWA_UPDATE_READY_EVENT = "senderi:pwa-update-ready";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -18,10 +20,72 @@ export function registerSenderiServiceWorker(): void {
   if (!("serviceWorker" in navigator) || !import.meta.env.PROD) return;
 
   window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).catch((error: unknown) => {
+    void navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).then((registration) => {
+      const announceWaitingWorker = () => {
+        if (registration.waiting) window.dispatchEvent(new Event(PWA_UPDATE_READY_EVENT));
+      };
+      const watchInstallingWorker = () => {
+        const installing = registration.installing;
+        installing?.addEventListener("statechange", announceWaitingWorker);
+      };
+
+      announceWaitingWorker();
+      registration.addEventListener("updatefound", watchInstallingWorker);
+      window.addEventListener("focus", () => { void registration.update().catch(() => undefined); });
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") void registration.update().catch(() => undefined);
+      });
+      window.setInterval(() => { void registration.update().catch(() => undefined); }, 60 * 60 * 1000);
+    }).catch((error: unknown) => {
       console.error("Senderi service worker registration failed.", error);
     });
   }, { once: true });
+}
+
+export function usePwaUpdate() {
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const reloadAfterUpdateRef = useRef(false);
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !import.meta.env.PROD) return;
+    let active = true;
+    const announceUpdate = () => setUpdateAvailable(true);
+    const reloadAfterControllerChange = () => {
+      if (reloadAfterUpdateRef.current) window.location.reload();
+    };
+
+    window.addEventListener(PWA_UPDATE_READY_EVENT, announceUpdate);
+    navigator.serviceWorker.addEventListener("controllerchange", reloadAfterControllerChange);
+    void navigator.serviceWorker.getRegistration("/").then((registration) => {
+      if (active && registration?.waiting) setUpdateAvailable(true);
+    }).catch(() => undefined);
+
+    return () => {
+      active = false;
+      window.removeEventListener(PWA_UPDATE_READY_EVENT, announceUpdate);
+      navigator.serviceWorker.removeEventListener("controllerchange", reloadAfterControllerChange);
+    };
+  }, []);
+
+  const applyUpdate = useCallback(async () => {
+    if (!("serviceWorker" in navigator)) return;
+    setUpdating(true);
+    try {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      if (registration?.waiting) {
+        reloadAfterUpdateRef.current = true;
+        registration.waiting.postMessage({ type: "SKIP_WAITING" });
+      } else {
+        window.location.reload();
+      }
+    } catch {
+      setUpdating(false);
+    }
+  }, []);
+
+  const dismissUpdate = useCallback(() => setUpdateAvailable(false), []);
+  return { updateAvailable, updating, applyUpdate, dismissUpdate };
 }
 
 export function usePwaInstall() {

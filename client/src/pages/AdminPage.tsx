@@ -52,6 +52,21 @@ export function AdminPage() {
     }
   }
 
+  async function deleteComment(content: AdminContent) {
+    if (reason.trim().length < 3) { setError("Enter a reason of at least 3 characters."); return; }
+    if (!window.confirm("Permanently delete this comment? Any replies to it will also be deleted. This cannot be undone.")) return;
+    setLoading(true);
+    setError("");
+    try {
+      await apiFetch(`/api/admin/comments/${content.id}`, { method: "DELETE", body: { reason: reason.trim() } });
+      setReason("");
+      setRevision((value) => value + 1);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The action failed.");
+      setLoading(false);
+    }
+  }
+
   return <div className="mx-auto w-full max-w-5xl space-y-6">
     <div><span className="eyebrow">Administration</span><h1 className="mt-2 text-3xl font-bold">Senderi admin</h1><p className="text-muted">Manage accounts, badges, and content.</p></div>
     <nav className="flex flex-wrap gap-2" aria-label="Admin sections">{(["users", "posts", "comments", "audit"] as Tab[]).map((name) =>
@@ -83,7 +98,8 @@ export function AdminPage() {
         <p className="my-2 whitespace-pre-wrap break-words">{content.text || "Photo post"}</p>
         {content.hasPhoto && <img className="mb-3 max-h-80 rounded-xl object-contain" src={`/api/admin/posts/${content.id}/photo`} alt="Post attachment" />}
         {content.postId && <p className="text-xs text-muted">Post {content.postId}</p>}
-        <button disabled={loading} className="mt-2 rounded-lg border border-line px-3 py-2" onClick={() => void change(`/api/admin/${tab}/${content.id}/visibility`, { hidden: !content.hiddenAt })}>{content.hiddenAt ? "Restore" : "Hide"} {tab === "posts" ? "post" : "comment"}</button>
+        <div className="mt-2 flex flex-wrap gap-2"><button disabled={loading} className="rounded-lg border border-line px-3 py-2" onClick={() => void change(`/api/admin/${tab}/${content.id}/visibility`, { hidden: !content.hiddenAt })}>{content.hiddenAt ? "Restore" : "Hide"} {tab === "posts" ? "post" : "comment"}</button>
+        {tab === "comments" && <button disabled={loading} className="rounded-lg border border-red-300 px-3 py-2 text-red-700 hover:bg-red-50" onClick={() => void deleteComment(content)}>Delete permanently</button>}</div>
       </article>;
     })}</div>
     {!loading && items.length === 0 && <p className="text-muted">No results.</p>}

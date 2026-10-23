@@ -26,6 +26,7 @@ import {
   mergeChatMessage,
   mergeChatMessages,
   retryChatMessage,
+  sortFriendsByLatestMessage,
   type ChatMessage,
 } from "../chat/message-state";
 
@@ -385,6 +386,22 @@ export function MessagesPage() {
         return [...current, ...response.items.filter((friend) => !knownIds.has(friend.id))];
       });
       setFriendsCursor(response.nextCursor);
+      const summaries = await Promise.all(response.items.map(async (friend) => {
+        try {
+          const latest = await apiFetch<MessageHistoryResponse>(`/api/chats/${encodeURIComponent(friend.id)}/messages?limit=1`);
+          return [friend.id, latest.items[0] ? asAcknowledged(latest.items[0]) : null] as const;
+        } catch {
+          return [friend.id, null] as const;
+        }
+      }));
+      setConversations((current) => {
+        const next = { ...current };
+        for (const [friendId, latestMessage] of summaries) {
+          if (latestMessage) next[friendId] = mergeChatMessages(next[friendId] ?? [], [latestMessage]);
+        }
+        conversationsRef.current = next;
+        return next;
+      });
     } catch (error) {
       setFriendsMoreError(errorMessage(error, "Could not load more friends."));
     } finally {
@@ -447,12 +464,12 @@ export function MessagesPage() {
   const selectedPresence = selectedFriend ? presenceById[selectedFriend.id] : undefined;
   const selectedLastActive = lastActiveLabel(selectedPresence, presenceNow);
   const selectedMessages = selectedFriendId ? conversations[selectedFriendId] ?? [] : [];
-  const visibleFriends = friends.filter((friend) => {
+  const visibleFriends = sortFriendsByLatestMessage(friends.filter((friend) => {
     const latestMessage = conversations[friend.id]?.at(-1);
     return (chatFilter === "all" || (unreadCounts[friend.id] ?? 0) > 0) && `${friend.displayName} ${latestMessage?.text ?? ""}`
       .toLocaleLowerCase()
       .includes(conversationSearch.trim().toLocaleLowerCase());
-  });
+  }), conversations);
 
   useEffect(() => {
     shouldStickToBottomRef.current = true;
@@ -497,14 +514,6 @@ export function MessagesPage() {
           <button className={chatFilter === "all" ? "messages-page-tab-active" : ""} type="button" role="tab" aria-selected={chatFilter === "all"} onClick={() => setChatFilter("all")}>All</button>
           <button className={chatFilter === "unread" ? "messages-page-tab-active" : ""} type="button" role="tab" aria-selected={chatFilter === "unread"} onClick={() => setChatFilter("unread")}>Unread</button>
         </div>
-
-        {chatFilter === "all" && (
-          <Link className="messages-page-requests" to="/friends">
-            <span className="messages-request-icon"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="7" r="4" /><path d="M2.5 20v-1a5.5 5.5 0 0 1 11 0v1M19 8v7M15.5 11.5h7" /></svg></span>
-            <span><strong>Friend requests</strong><small>Review people who want to connect</small></span>
-            <span aria-hidden="true">›</span>
-          </Link>
-        )}
         <div className="messages-page-list">
           {friendsLoading ? <ChatListSkeleton /> : friendsError ? (
             <RequestErrorState title="Conversations unavailable" message={friendsError} />

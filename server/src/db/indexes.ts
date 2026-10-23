@@ -97,6 +97,36 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
   },
   {
     collection: collectionNames.comments,
+    keys: { postId: 1, parentCommentId: 1, createdAt: 1, _id: 1 },
+    options: { name: "comments_post_parent_oldest_first" },
+  },
+  {
+    collection: collectionNames.comments,
+    keys: { shareId: 1, parentCommentId: 1, createdAt: 1, _id: 1 },
+    options: { name: "comments_share_parent_oldest_first" },
+  },
+  {
+    collection: collectionNames.comments,
+    keys: { postId: 1, replyToCommentId: 1 },
+    options: { name: "comments_post_reply_target" },
+  },
+  {
+    collection: collectionNames.commentReactions,
+    keys: { commentId: 1, userId: 1 },
+    options: { name: "comment_reactions_comment_user_unique", unique: true },
+  },
+  {
+    collection: collectionNames.commentReactions,
+    keys: { commentId: 1 },
+    options: { name: "comment_reactions_by_comment" },
+  },
+  {
+    collection: collectionNames.commentReactions,
+    keys: { postId: 1 },
+    options: { name: "comment_reactions_by_post" },
+  },
+  {
+    collection: collectionNames.comments,
     keys: { createdAt: -1, _id: -1 },
     options: { name: "comments_admin_newest_first" },
   },

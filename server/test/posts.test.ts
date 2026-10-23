@@ -6,7 +6,7 @@ import { ObjectId, type Db, type Document } from "mongodb";
 import request from "supertest";
 import sharp from "sharp";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
-import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type NotificationDocument, type PostDocument, type SessionDocument, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../src/db/documents";
+import { collectionNames, type CommentDocument, type CommentReactionDocument, type FriendshipDocument, type LikeDocument, type NotificationDocument, type PostDocument, type SessionDocument, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
 import type { PostPhotoStorage } from "../src/media/post-photo";
@@ -20,6 +20,7 @@ interface PostTestData {
   likes: LikeDocument[];
   shareLikes: ShareLikeDocument[];
   comments: CommentDocument[];
+  commentReactions: CommentReactionDocument[];
   shares: ShareDocument[];
   notifications: NotificationDocument[];
   posts: PostDocument[];
@@ -93,21 +94,45 @@ function matchesShareLike(like: ShareLikeDocument, filter: MongoFilter): boolean
 }
 
 function matchesComment(comment: CommentDocument, filter: MongoFilter): boolean {
-  if ("$and" in filter) {
-    return (filter.$and as MongoFilter[]).every((condition) => matchesComment(comment, condition));
-  }
-  if ("$or" in filter) {
-    return (filter.$or as MongoFilter[]).some((condition) => matchesComment(comment, condition));
-  }
+  if ("$and" in filter && !(filter.$and as MongoFilter[]).every((condition) => matchesComment(comment, condition))) return false;
+  if ("$or" in filter && !(filter.$or as MongoFilter[]).some((condition) => matchesComment(comment, condition))) return false;
 
   return Object.entries(filter).every(([field, expected]) => {
+    if (field === "$and" || field === "$or") return true;
     if (field === "postId") return matchesObjectId(comment.postId, expected);
+    if (field === "shareId") {
+      if (typeof expected === "object" && expected !== null && "$exists" in expected) {
+        return (comment.shareId !== undefined) === expected.$exists;
+      }
+      return comment.shareId ? matchesObjectId(comment.shareId, expected) : false;
+    }
     if (field === "authorId") return matchesObjectId(comment.authorId, expected);
     if (field === "_id") return matchesObjectId(comment._id, expected);
+    if (field === "parentCommentId") {
+      if (typeof expected === "object" && expected !== null && "$exists" in expected) {
+        return (comment.parentCommentId !== undefined) === expected.$exists;
+      }
+      return comment.parentCommentId ? matchesObjectId(comment.parentCommentId, expected) : false;
+    }
+    if (field === "replyToCommentId") {
+      if (typeof expected === "object" && expected !== null && "$exists" in expected) {
+        return (comment.replyToCommentId !== undefined) === expected.$exists;
+      }
+      return comment.replyToCommentId ? matchesObjectId(comment.replyToCommentId, expected) : false;
+    }
     if (field === "createdAt") return matchesDate(comment.createdAt, expected);
     if (field === "hiddenAt" && typeof expected === "object" && expected !== null && "$exists" in expected) {
       return (comment.hiddenAt !== undefined) === expected.$exists;
     }
+    return false;
+  });
+}
+
+function matchesCommentReaction(reaction: CommentReactionDocument, filter: MongoFilter): boolean {
+  return Object.entries(filter).every(([field, expected]) => {
+    if (field === "postId") return matchesObjectId(reaction.postId, expected);
+    if (field === "commentId") return matchesObjectId(reaction.commentId, expected);
+    if (field === "userId") return matchesObjectId(reaction.userId, expected);
     return false;
   });
 }
@@ -304,17 +329,23 @@ function createDatabase(data: PostTestData): Db {
           aggregate: (pipeline: Document[]) => ({
             toArray: async () => {
               const match = pipeline[0]?.["$match"] as MongoFilter;
+              const group = pipeline[1]?.["$group"] as MongoFilter;
+              const groupField = String(group._id).slice(1) as "postId" | "shareId";
               const summaries = new Map<string, { _id: ObjectId; commentCount: number }>();
               for (const comment of data.comments) {
                 if (!matchesComment(comment, match)) continue;
-                const key = comment.postId.toHexString();
-                const summary = summaries.get(key) ?? { _id: comment.postId, commentCount: 0 };
+                const groupId = comment[groupField];
+                if (!groupId) continue;
+                const key = groupId.toHexString();
+                const summary = summaries.get(key) ?? { _id: groupId, commentCount: 0 };
                 summary.commentCount += 1;
                 summaries.set(key, summary);
               }
               return [...summaries.values()];
             },
           }),
+          countDocuments: async (filter: MongoFilter) =>
+            data.comments.filter((comment) => matchesComment(comment, filter)).length,
           findOne: async (filter: MongoFilter) =>
             data.comments.find((comment) => matchesComment(comment, filter)) ?? null,
           insertOne: async (comment: CommentDocument) => {
@@ -326,6 +357,14 @@ function createDatabase(data: PostTestData): Db {
             if (!comment) return { acknowledged: true, matchedCount: 0, modifiedCount: 0 };
             Object.assign(comment, update.$set);
             return { acknowledged: true, matchedCount: 1, modifiedCount: 1 };
+          },
+          updateMany: async (filter: MongoFilter, update: { $unset?: Partial<Record<keyof CommentDocument, string>> }) => {
+            const matching = data.comments.filter((comment) => matchesComment(comment, filter));
+            for (const comment of matching) {
+              if (update.$unset?.parentCommentId !== undefined) delete comment.parentCommentId;
+              if (update.$unset?.replyToCommentId !== undefined) delete comment.replyToCommentId;
+            }
+            return { acknowledged: true, matchedCount: matching.length, modifiedCount: matching.length };
           },
           deleteOne: async (filter: MongoFilter) => {
             const index = data.comments.findIndex((comment) => matchesComment(comment, filter));
@@ -358,6 +397,35 @@ function createDatabase(data: PostTestData): Db {
             };
             return cursor;
           },
+        };
+      }
+
+      if (name === collectionNames.commentReactions) {
+        return {
+          countDocuments: async (filter: MongoFilter) => data.commentReactions.filter((reaction) => matchesCommentReaction(reaction, filter)).length,
+          findOne: async (filter: MongoFilter) => data.commentReactions.find((reaction) => matchesCommentReaction(reaction, filter)) ?? null,
+          updateOne: async (filter: MongoFilter, update: { $setOnInsert: CommentReactionDocument }) => {
+            if (data.commentReactions.some((reaction) => matchesCommentReaction(reaction, filter))) {
+              return { acknowledged: true, matchedCount: 1, upsertedCount: 0 };
+            }
+            data.commentReactions.push(update.$setOnInsert);
+            return { acknowledged: true, matchedCount: 0, upsertedCount: 1 };
+          },
+          deleteOne: async (filter: MongoFilter) => {
+            const index = data.commentReactions.findIndex((reaction) => matchesCommentReaction(reaction, filter));
+            if (index < 0) return { acknowledged: true, deletedCount: 0 };
+            data.commentReactions.splice(index, 1);
+            return { acknowledged: true, deletedCount: 1 };
+          },
+          deleteMany: async (filter: MongoFilter) => {
+            const remaining = data.commentReactions.filter((reaction) => !matchesCommentReaction(reaction, filter));
+            const deletedCount = data.commentReactions.length - remaining.length;
+            data.commentReactions.splice(0, data.commentReactions.length, ...remaining);
+            return { acknowledged: true, deletedCount };
+          },
+          find: (filter: MongoFilter) => ({
+            toArray: async () => data.commentReactions.filter((reaction) => matchesCommentReaction(reaction, filter)),
+          }),
         };
       }
 
@@ -613,6 +681,7 @@ function matrixFixture(): { data: PostTestData; tokens: Record<"author" | "frien
     likes: [],
     shareLikes: [],
     comments: [],
+    commentReactions: [],
     shares: [],
     notifications: [],
     posts: [
@@ -879,6 +948,67 @@ test("share counts stay with the original post or the specific shared card", asy
   assert.equal(parentCard?.shareCount, 1, "a share card counts shares made from that card");
   assert.equal(directCard?.shareCount, 0);
   assert.equal(nestedCard?.shareCount, 0);
+});
+
+test("comments on a shared post stay with the share instead of increasing the original post", async () => {
+  const { data, tokens } = matrixFixture();
+  const sourcePost = data.posts.find((post) => post._id.toHexString() === ids.public)!;
+  const share = makeShare(
+    "0000000000000000000000a2",
+    new ObjectId(ids.friend),
+    sourcePost._id,
+    "public",
+    new Date(),
+  );
+  data.shares.push(share);
+  const app = createApp(data);
+  const origin = "http://localhost:5173";
+  const sourceCommentsPath = `/api/posts/${ids.public}/comments`;
+  const shareCommentsPath = `/api/posts/${ids.public}/shares/${share._id.toHexString()}/comments`;
+
+  const sourceComment = await request(app)
+    .post(sourceCommentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Original post comment" })
+    .expect(201);
+  const shareComment = await request(app)
+    .post(shareCommentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Comment on Jan's share" })
+    .expect(201);
+  assert.equal(shareComment.body.comment.postId, ids.public);
+  assert.equal(data.comments.find((comment) => comment._id.toHexString() === shareComment.body.comment.id)?.shareId?.toHexString(), share._id.toHexString());
+
+  await request(app)
+    .post(shareCommentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .send({ text: "Reply on the share", parentCommentId: shareComment.body.comment.id })
+    .expect(201);
+
+  const sourceComments = await request(app).get(sourceCommentsPath).set("Cookie", cookie(tokens.outsider)).expect(200);
+  const shareComments = await request(app).get(shareCommentsPath).set("Cookie", cookie(tokens.outsider)).expect(200);
+  assert.deepEqual(sourceComments.body.items.map((comment: { id: string }) => comment.id), [sourceComment.body.comment.id]);
+  assert.equal(shareComments.body.items.length, 1);
+  assert.equal(shareComments.body.items[0].id, shareComment.body.comment.id);
+  assert.equal(shareComments.body.items[0].replyCount, 1);
+
+  const feed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  const originalPost = feed.body.items.find((item: { id: string; share?: unknown }) => item.id === ids.public && !item.share);
+  const sharedPost = feed.body.items.find((item: { share?: { id: string } }) => item.share?.id === share._id.toHexString());
+  assert.equal(originalPost.commentCount, 1);
+  assert.equal(sharedPost.share.commentCount, 2);
+
+  await request(app)
+    .delete(`/api/posts/${ids.public}/shares/${share._id.toHexString()}`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(204);
+  assert.equal(data.comments.some((comment) => comment.shareId?.equals(share._id)), false, "deleting a share removes its comment thread");
+  const sourceCommentsAfterShareDelete = await request(app).get(sourceCommentsPath).set("Cookie", cookie(tokens.outsider)).expect(200);
+  assert.deepEqual(sourceCommentsAfterShareDelete.body.items.map((comment: { id: string }) => comment.id), [sourceComment.body.comment.id]);
 });
 
 test("share audience changes are owner-only and never change the source post audience", async () => {
@@ -2372,6 +2502,58 @@ test("comment creation validates text, requires an allowed origin, and stops aft
   assert.deepEqual(authorPage.body.items.map((comment: { text: string }) => comment.text), ["Allowed comment"]);
 });
 
+test("comments and replies notify mentioned accounts who can view the post", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const friend = data.users.find((user) => user._id.toHexString() === ids.friend)!;
+  friend.displayName = "Jan Bansag";
+  const commentsPath = `/api/posts/${ids.public}/comments`;
+  const origin = "http://localhost:5173";
+
+  const created = await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Hello @Jan Bansag", mentionedUserIds: [ids.friend] })
+    .expect(201);
+  assert.deepEqual(data.comments[0]!.mentionedUserIds?.map((id) => id.toHexString()), [ids.friend]);
+  assert.equal(data.notifications.length, 2);
+  assert.equal(data.notifications[0]!.type, "post_comment");
+  assert.equal(data.notifications[0]!.recipientId.toHexString(), ids.author);
+  assert.equal(data.notifications[1]!.type, "post_mention");
+  assert.equal(data.notifications[1]!.recipientId.toHexString(), ids.friend);
+
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({
+      text: "A reply to myself mentioning @Jan Bansag",
+      parentCommentId: created.body.comment.id,
+      mentionedUserIds: [ids.friend],
+    })
+    .expect(201);
+  assert.equal(data.notifications.length, 3);
+  assert.equal(data.notifications[2]!.type, "post_mention");
+  assert.equal(data.notifications[2]!.recipientId.toHexString(), ids.friend);
+
+  await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "This text does not mention the account", mentionedUserIds: [ids.friend] })
+    .expect(400);
+
+  await request(app)
+    .post(`/api/posts/${ids.friends}/comments`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ text: "Hello @Outsider", mentionedUserIds: [ids.outsider] })
+    .expect(400);
+  assert.equal(data.comments.length, 2, "invalid or inaccessible mentions must not add comments");
+  assert.equal(data.notifications.length, 3, "invalid or inaccessible mentions must not notify anyone");
+});
+
 test("comment authors can edit and permanently delete only their own visible comments", async () => {
   const { data, tokens } = matrixFixture();
   const comment: CommentDocument = {
@@ -2390,6 +2572,13 @@ test("comment authors can edit and permanently delete only their own visible com
     hiddenAt: new Date(),
   };
   data.comments.push(comment, hiddenComment);
+  data.commentReactions.push({
+    _id: new ObjectId(),
+    postId: comment.postId,
+    commentId: comment._id,
+    userId: comment.authorId,
+    createdAt: new Date(),
+  });
   const app = createApp(data);
   const commentPath = `/api/posts/${ids.public}/comments/${comment._id.toHexString()}`;
   const hiddenCommentPath = `/api/posts/${ids.public}/comments/${hiddenComment._id.toHexString()}`;
@@ -2422,6 +2611,8 @@ test("comment authors can edit and permanently delete only their own visible com
   assert.equal(updated.body.comment.text, "Updated comment");
   assert.equal(updated.body.comment.id, comment._id.toHexString());
   assert.equal(updated.body.comment.author.id, ids.outsider);
+  assert.equal(updated.body.comment.reactionCount, 1);
+  assert.equal(updated.body.comment.isReactedByViewer, true);
   assert.equal(updated.headers["cache-control"], "private, no-store");
   assert.equal(comment.text, "Updated comment");
 
@@ -2449,11 +2640,163 @@ test("comment authors can edit and permanently delete only their own visible com
     .expect(204);
   assert.equal(data.comments.includes(comment), false, "deletion permanently removes the comment record");
   assert.equal(data.comments.includes(hiddenComment), true, "a hidden comment is not altered by owner actions");
+  assert.equal(data.commentReactions.length, 0, "deleting a comment removes its reactions");
   await request(app)
     .delete(commentPath)
     .set("Origin", origin)
     .set("Cookie", cookie(tokens.outsider))
     .expect(404);
+});
+
+test("comments support replies and reactions, and permanently delete a thread with its main comment", async () => {
+  const { data, tokens } = matrixFixture();
+  const root: CommentDocument = {
+    _id: new ObjectId("000000000000000000000501"),
+    postId: new ObjectId(ids.public),
+    authorId: new ObjectId(ids.author),
+    text: "A starting comment",
+    createdAt: new Date("2026-10-20T12:00:00.000Z"),
+  };
+  data.comments.push(root);
+  const app = createApp(data);
+  const commentsPath = `/api/posts/${ids.public}/comments`;
+  const rootPath = `${commentsPath}/${root._id.toHexString()}`;
+  const origin = "http://localhost:5173";
+
+  const replyResponse = await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "A reply", parentCommentId: root._id.toHexString() })
+    .expect(201);
+  const replyId = replyResponse.body.comment.id as string;
+  assert.equal(replyResponse.body.comment.parentCommentId, root._id.toHexString());
+  assert.equal(replyResponse.body.comment.reactionCount, 0);
+  assert.equal(replyResponse.body.comment.replyCount, 0);
+  assert.deepEqual(replyResponse.body.comment.replies, []);
+  assert.equal(data.notifications[0]!.recipientId.toHexString(), ids.author);
+
+  const nestedReplyResponse = await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .send({
+      text: "A reply to that reply",
+      parentCommentId: root._id.toHexString(),
+      replyToCommentId: replyId,
+    })
+    .expect(201);
+  const nestedReplyId = nestedReplyResponse.body.comment.id as string;
+  assert.equal(nestedReplyResponse.body.comment.parentCommentId, root._id.toHexString());
+  assert.equal(nestedReplyResponse.body.comment.replyToCommentId, replyId);
+  assert.equal(data.notifications[1]!.recipientId.toHexString(), ids.outsider, "replying to a reply notifies its author");
+
+  const listed = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(listed.body.items.length, 1);
+  assert.deepEqual(listed.body.items[0].replies.map((reply: { id: string }) => reply.id), [replyId, nestedReplyId]);
+  assert.equal(listed.body.items[0].replies[0].replyCount, 1);
+  assert.equal(listed.body.items[0].replies[1].replyToCommentId, replyId);
+  assert.equal(listed.body.items[0].replyCount, 2);
+  assert.equal(listed.body.items[0].isReactedByViewer, false);
+
+  const secondReplyResponse = await request(app)
+    .post(commentsPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .send({ text: "A second reply", parentCommentId: root._id.toHexString() })
+    .expect(201);
+  const secondReplyId = secondReplyResponse.body.comment.id as string;
+  const afterSecondReply = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(afterSecondReply.body.items[0].replyCount, 3);
+
+  const replyPath = `${commentsPath}/${replyId}`;
+  const editedReply = await request(app)
+    .patch(replyPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Updated reply" })
+    .expect(200);
+  assert.equal(editedReply.body.comment.replyCount, 1);
+
+  const liked = await request(app)
+    .post(`${replyPath}/reaction`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.deepEqual(liked.body, { reactionCount: 1, isReactedByViewer: true });
+  await request(app)
+    .post(`${replyPath}/reaction`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.equal(data.commentReactions.length, 1, "reacting twice does not add a duplicate");
+
+  const unliked = await request(app)
+    .delete(`${replyPath}/reaction`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.deepEqual(unliked.body, { reactionCount: 0, isReactedByViewer: false });
+
+  await request(app)
+    .delete(`${commentsPath}/${secondReplyId}`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(204);
+  const afterReplyDelete = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(afterReplyDelete.body.items[0].replyCount, 2);
+
+  await request(app)
+    .delete(replyPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(204);
+  const afterReplyTargetDelete = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.friend))
+    .expect(200);
+  assert.equal(afterReplyTargetDelete.body.items[0].replyCount, 1);
+  assert.equal(afterReplyTargetDelete.body.items[0].replies[0].id, nestedReplyId);
+  assert.equal(afterReplyTargetDelete.body.items[0].replies[0].replyToCommentId, undefined);
+
+  const editedRoot = await request(app)
+    .patch(rootPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ text: "Updated starting comment" })
+    .expect(200);
+  assert.equal(editedRoot.body.comment.replyCount, 1);
+
+  await request(app)
+    .post(`${commentsPath}/${nestedReplyId}/reaction`)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .expect(200);
+  assert.equal(data.commentReactions.length, 1);
+
+  await request(app)
+    .delete(rootPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .expect(204);
+  assert.equal(data.comments.some((comment) => comment._id.equals(root._id)), false);
+  assert.equal(data.comments.some((comment) => comment._id.toHexString() === replyId), false);
+  assert.equal(data.comments.some((comment) => comment._id.toHexString() === nestedReplyId), false);
+  assert.equal(data.commentReactions.length, 0);
+  const afterParentDelete = await request(app)
+    .get(commentsPath)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(afterParentDelete.body.items.length, 0, "all replies in the deleted thread are permanently removed");
 });
 
 test("comment routes require a session and reject malformed post IDs, cursors, and page limits", async () => {

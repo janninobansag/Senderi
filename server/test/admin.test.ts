@@ -6,7 +6,7 @@ import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
 import { isAdminId } from "../src/auth/admin";
 import { toAuthUserResponse, toPublicUserResponse } from "../src/auth/user-response";
-import { collectionNames, type AdminAuditDocument, type CommentDocument, type PostDocument, type UserDocument } from "../src/db/documents";
+import { collectionNames, type AdminAuditDocument, type CommentDocument, type CommentReactionDocument, type PostDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
 import { canViewPost } from "../src/post-access";
 import { createAdminRouter } from "../src/routes/admin";
@@ -79,6 +79,83 @@ test("admin actions require an allowlisted session, audit changes, and revoke su
     assert.equal((await action(commentPath, "admin-token", { hidden: false, reason: "Appeal accepted" })).status, 200);
     assert.equal(comment.hiddenAt, undefined);
     assert.deepEqual(audit.map((event) => event.action), ["badge_granted", "user_suspended", "posts_hidden", "posts_restored", "comments_hidden", "comments_restored"]);
+  } finally {
+    if (previousIds === undefined) delete process.env.ADMIN_USER_IDS; else process.env.ADMIN_USER_IDS = previousIds;
+    if (previousOrigins === undefined) delete process.env.CLIENT_ORIGINS; else process.env.CLIENT_ORIGINS = previousOrigins;
+  }
+});
+
+test("admin can permanently delete comments and clean up their thread data", async () => {
+  const previousIds = process.env.ADMIN_USER_IDS;
+  const previousOrigins = process.env.CLIENT_ORIGINS;
+  const admin: UserDocument = { _id: new ObjectId(), email: "admin@example.com", passwordHash: "hash", displayName: "Admin", bio: "", info: {}, createdAt: new Date(), updatedAt: new Date() };
+  const rootId = new ObjectId();
+  const replyId = new ObjectId();
+  const replyToDeleteId = new ObjectId();
+  const replyThatReferencesId = new ObjectId();
+  const unrelatedId = new ObjectId();
+  const postId = new ObjectId();
+  const root: CommentDocument = { _id: rootId, postId, authorId: admin._id, text: "Root comment", createdAt: new Date() };
+  const reply: CommentDocument = { _id: replyId, postId, authorId: admin._id, text: "Reply", parentCommentId: rootId, createdAt: new Date() };
+  const secondRoot: CommentDocument = { _id: new ObjectId(), postId, authorId: admin._id, text: "Another root", createdAt: new Date() };
+  const replyToDelete: CommentDocument = { _id: replyToDeleteId, postId, authorId: admin._id, text: "Reply to remove", parentCommentId: secondRoot._id, createdAt: new Date() };
+  const replyThatReferences: CommentDocument = { _id: replyThatReferencesId, postId, authorId: admin._id, text: "Nested reply", parentCommentId: secondRoot._id, replyToCommentId: replyToDeleteId, createdAt: new Date() };
+  const unrelated: CommentDocument = { _id: unrelatedId, postId, authorId: admin._id, text: "Keep me", createdAt: new Date() };
+  let comments = [root, reply, secondRoot, replyToDelete, replyThatReferences, unrelated];
+  const reactions: CommentReactionDocument[] = [rootId, replyId, replyToDeleteId, unrelatedId].map((commentId) => ({ _id: new ObjectId(), postId, commentId, userId: admin._id, createdAt: new Date() }));
+  const sessions = [{ tokenHash: hashSessionToken("admin-delete-token"), userId: admin._id, expiresAt: new Date(Date.now() + 60_000) }];
+  const audit: AdminAuditDocument[] = [];
+  const db = { collection: (name: string) => {
+    if (name === collectionNames.users) return { findOne: async ({ _id }: { _id: ObjectId }) => _id.equals(admin._id) ? admin : null };
+    if (name === collectionNames.sessions) return { findOne: async ({ tokenHash }: { tokenHash: string }) => sessions.find((session) => session.tokenHash === tokenHash) ?? null };
+    if (name === collectionNames.comments) return {
+      findOne: async ({ _id }: { _id: ObjectId }) => comments.find((comment) => comment._id.equals(_id)) ?? null,
+      find: ({ parentCommentId }: { parentCommentId: ObjectId }) => ({ toArray: async () => comments.filter((comment) => comment.parentCommentId?.equals(parentCommentId)) }),
+      deleteMany: async ({ _id }: { _id: { $in: ObjectId[] } }) => {
+        const before = comments.length;
+        comments = comments.filter((comment) => !_id.$in.some((deletedId) => deletedId.equals(comment._id)));
+        return { deletedCount: before - comments.length };
+      },
+      deleteOne: async ({ _id }: { _id: ObjectId }) => {
+        const before = comments.length;
+        comments = comments.filter((comment) => !comment._id.equals(_id));
+        return { deletedCount: before - comments.length };
+      },
+      updateMany: async ({ replyToCommentId }: { replyToCommentId: ObjectId }, update: { $unset: Record<string, unknown> }) => {
+        for (const comment of comments) if (comment.replyToCommentId?.equals(replyToCommentId) && Object.hasOwn(update.$unset, "replyToCommentId")) delete comment.replyToCommentId;
+        return { modifiedCount: 1 };
+      },
+    };
+    if (name === collectionNames.commentReactions) return { deleteMany: async ({ commentId }: { commentId: { $in: ObjectId[] } }) => {
+      for (let index = reactions.length - 1; index >= 0; index--) if (commentId.$in.some((deletedId) => deletedId.equals(reactions[index]!.commentId))) reactions.splice(index, 1);
+    } };
+    if (name === collectionNames.adminAudit) return { insertOne: async (event: AdminAuditDocument) => { audit.push(event); } };
+    throw new Error(`Unexpected collection ${name}`);
+  } } as unknown as Db;
+  const app = express();
+  app.use(express.json());
+  app.use("/api/admin", createAdminRouter({ getDatabase: () => db }));
+  app.use(errorHandler);
+  const deleteComment = (commentId: ObjectId, reason: string) => request(app).delete(`/api/admin/comments/${commentId}`)
+    .set("Cookie", `${SESSION_COOKIE_NAME}=admin-delete-token`)
+    .set("Origin", "http://localhost:5173")
+    .send({ reason });
+
+  try {
+    process.env.CLIENT_ORIGINS = "http://localhost:5173";
+    process.env.ADMIN_USER_IDS = admin._id.toHexString();
+    assert.equal((await deleteComment(rootId, "Remove abusive thread")).status, 204);
+    assert.deepEqual(comments.map((comment) => comment._id.toHexString()), [
+      secondRoot._id.toHexString(), replyToDeleteId.toHexString(), replyThatReferencesId.toHexString(), unrelatedId.toHexString(),
+    ]);
+    assert.deepEqual(reactions.map((reaction) => reaction.commentId.toHexString()), [replyToDeleteId.toHexString(), unrelatedId.toHexString()]);
+
+    assert.equal((await deleteComment(replyToDeleteId, "Remove abusive reply")).status, 204);
+    assert.equal(comments.some((comment) => comment._id.equals(replyToDeleteId)), false);
+    assert.equal(replyThatReferences.replyToCommentId, undefined);
+    assert.deepEqual(reactions.map((reaction) => reaction.commentId.toHexString()), [unrelatedId.toHexString()]);
+    assert.deepEqual(audit.map((event) => event.action), ["comments_deleted_permanently", "comments_deleted_permanently"]);
+    assert.equal(audit[0]?.reason, "Remove abusive thread");
   } finally {
     if (previousIds === undefined) delete process.env.ADMIN_USER_IDS; else process.env.ADMIN_USER_IDS = previousIds;
     if (previousOrigins === undefined) delete process.env.CLIENT_ORIGINS; else process.env.CLIENT_ORIGINS = previousOrigins;

@@ -9,6 +9,21 @@ export interface ChatMessage extends Message {
   retryable?: boolean;
 }
 
+export function sortFriendsByLatestMessage<T extends { id: string }>(
+  friends: T[],
+  conversations: Readonly<Record<string, readonly Pick<Message, "createdAt" | "id">[] | undefined>>,
+): T[] {
+  return [...friends].sort((left, right) => {
+    const leftLatest = conversations[left.id]?.at(-1);
+    const rightLatest = conversations[right.id]?.at(-1);
+    const leftTime = leftLatest ? Date.parse(leftLatest.createdAt) : 0;
+    const rightTime = rightLatest ? Date.parse(rightLatest.createdAt) : 0;
+    const timeDifference = rightTime - leftTime;
+    if (Number.isFinite(timeDifference) && timeDifference !== 0) return timeDifference;
+    return (rightLatest?.id ?? "").localeCompare(leftLatest?.id ?? "");
+  });
+}
+
 export function createClientMessageId(): string {
   if (!globalThis.crypto?.randomUUID) {
     throw new Error("This browser cannot create a secure message ID.");

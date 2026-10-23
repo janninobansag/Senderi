@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdateCommentRequest, UpdateCommentResponse, UpdatePostRequest, UpdateShareResponse, Visibility } from "../../../shared";
+import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdateCommentRequest, UpdateCommentResponse, UpdatePostRequest, UpdateShareResponse, User, UserSearchResponse, Visibility } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
 import { EmptyState, RequestErrorState } from "./AsyncState";
@@ -20,6 +20,214 @@ function audienceLabel(visibility: Visibility): string {
 }
 
 const MAX_COMMENT_LENGTH = 2_000;
+const VISIBLE_REPLIES_PER_THREAD = 3;
+
+function updateCommentTree(comments: Comment[], commentId: string, update: (comment: Comment) => Comment): Comment[] {
+  return comments.map((comment) => comment.id === commentId
+    ? update(comment)
+    : { ...comment, replies: updateCommentTree(comment.replies, commentId, update) });
+}
+
+function getCommentPreview(comments: Comment[], maxComments = 2): Comment[] {
+  if (maxComments > 1) {
+    const commentWithReply = comments.find((comment) => comment.replies.length > 0);
+    if (commentWithReply) {
+      return [{
+        ...commentWithReply,
+        replies: commentWithReply.replies.slice(0, maxComments - 1),
+      }];
+    }
+  }
+
+  const preview: Comment[] = [];
+  let remaining = maxComments;
+  for (const comment of comments) {
+    if (remaining <= 0) break;
+    const replies = comment.replies.slice(0, Math.max(0, remaining - 1));
+    preview.push({ ...comment, replies });
+    remaining -= 1 + replies.length;
+  }
+  return preview;
+}
+
+function formatCommentAge(value: string): string {
+  const createdAt = new Date(value);
+  if (Number.isNaN(createdAt.getTime())) return "now";
+  const ageMs = Math.max(0, Date.now() - createdAt.getTime());
+  if (ageMs < 60_000) return "now";
+  if (ageMs < 3_600_000) return `${Math.floor(ageMs / 60_000)}m`;
+  if (ageMs < 86_400_000) return `${Math.floor(ageMs / 3_600_000)}h`;
+  if (ageMs < 604_800_000) return `${Math.floor(ageMs / 86_400_000)}d`;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(createdAt);
+}
+
+interface MentionTextareaProps {
+  id: string;
+  className: string;
+  value: string;
+  placeholder: string;
+  rows: number;
+  maxLength: number;
+  disabled: boolean;
+  ariaLabel: string;
+  onChange: (value: string) => void;
+  onMentionSelect: (user: User) => void;
+  onKeyDown?: React.KeyboardEventHandler<HTMLTextAreaElement>;
+}
+
+function MentionTextarea({
+  id,
+  className,
+  value,
+  placeholder,
+  rows,
+  maxLength,
+  disabled,
+  ariaLabel,
+  onChange,
+  onMentionSelect,
+  onKeyDown,
+}: MentionTextareaProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [mentionSearch, setMentionSearch] = useState<{ query: string; start: number; end: number } | null>(null);
+  const [matches, setMatches] = useState<User[]>([]);
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+
+  useEffect(() => {
+    if (!mentionSearch || mentionSearch.query.length < 2) {
+      setMatches([]);
+      return;
+    }
+    let active = true;
+    const timeout = window.setTimeout(() => {
+      const params = new URLSearchParams({ query: mentionSearch.query, limit: "5" });
+      void apiFetch<UserSearchResponse>(`/api/users?${params.toString()}`)
+        .then((response) => {
+          if (!active) return;
+          setMatches(response.items);
+          setActiveMatchIndex(0);
+        })
+        .catch(() => {
+          if (active) setMatches([]);
+        });
+    }, 180);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [mentionSearch]);
+
+  function chooseMention(user: User) {
+    if (!mentionSearch) return;
+    const mentionText = `@${user.displayName} `;
+    const nextValue = value.slice(0, mentionSearch.start) + mentionText + value.slice(mentionSearch.end);
+    const nextCaret = mentionSearch.start + mentionText.length;
+    onChange(nextValue);
+    onMentionSelect(user);
+    setMentionSearch(null);
+    setMatches([]);
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(nextCaret, nextCaret);
+    });
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (matches.length > 0 && event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveMatchIndex((current) => (current + 1) % matches.length);
+      return;
+    }
+    if (matches.length > 0 && event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveMatchIndex((current) => (current - 1 + matches.length) % matches.length);
+      return;
+    }
+    if (matches.length > 0 && event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      chooseMention(matches[activeMatchIndex]!);
+      return;
+    }
+    if (event.key === "Escape" && mentionSearch) {
+      setMentionSearch(null);
+      setMatches([]);
+      return;
+    }
+    onKeyDown?.(event);
+  }
+
+  return (
+    <div className="mention-input-wrap">
+      <textarea
+        ref={textareaRef}
+        className={className}
+        id={id}
+        aria-label={ariaLabel}
+        aria-autocomplete="list"
+        aria-expanded={matches.length > 0}
+        aria-controls={`${id}-mention-options`}
+        placeholder={placeholder}
+        value={value}
+        rows={rows}
+        maxLength={maxLength}
+        onChange={(event) => {
+          const nextValue = event.target.value;
+          const caret = event.currentTarget.selectionStart;
+          onChange(nextValue);
+          const beforeCaret = nextValue.slice(0, caret);
+          const atIndex = beforeCaret.lastIndexOf("@");
+          if (atIndex < 0 || (atIndex > 0 && !/[\s(]/.test(beforeCaret[atIndex - 1]!))) {
+            setMentionSearch(null);
+            setMatches([]);
+            return;
+          }
+          const query = beforeCaret.slice(atIndex + 1);
+          if (query.includes("\n") || query.includes("@")) {
+            setMentionSearch(null);
+            setMatches([]);
+            return;
+          }
+          setMentionSearch({ query: query.trim(), start: atIndex, end: caret });
+        }}
+        onKeyDown={handleKeyDown}
+        disabled={disabled}
+      />
+      {matches.length > 0 && mentionSearch && (
+        <div className="mention-suggestions" id={`${id}-mention-options`} role="listbox" aria-label="People to mention">
+          {matches.map((user, index) => {
+            const initial = user.displayName.trim().charAt(0).toUpperCase() || "S";
+            return (
+              <button
+                className={`mention-suggestion${index === activeMatchIndex ? " mention-suggestion-active" : ""}`}
+                key={user.id}
+                type="button"
+                role="option"
+                aria-selected={index === activeMatchIndex}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => chooseMention(user)}
+              >
+                <span className="mention-suggestion-avatar">
+                  {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initial}
+                </span>
+                <span className="mention-suggestion-name">{user.displayName}</span>
+                <SupporterBadge user={user} />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getActiveMentionIds(value: string, selected: User[]): string[] {
+  return [...new Set(selected.filter((user) => {
+    const escapedName = user.displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`@${escapedName}(?=$|[\\s.,!?;:])`, "u").test(value);
+  }).map((user) => user.id))];
+}
 
 function PostActionIcon({ name }: { name: "like" | "comment" | "share" }) {
   const commonProps = {
@@ -44,11 +252,24 @@ function PostActionIcon({ name }: { name: "like" | "comment" | "share" }) {
   return <svg {...commonProps}><path d="M14 5 21 12l-7 7" /><path d="M21 12H9a6 6 0 0 0-6 6" /></svg>;
 }
 
-function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId: string; commentCount: number; initiallyOpen?: boolean }) {
+function CommentsPanel({
+  postId,
+  shareId,
+  commentCount,
+  preview = false,
+  refreshKey = 0,
+  onViewMore,
+}: {
+  postId: string;
+  shareId?: string;
+  commentCount: number;
+  preview?: boolean;
+  refreshKey?: number;
+  onViewMore?: () => void;
+}) {
   const { user } = useAuth();
   const commentInputId = useId();
   const commentMenuIdPrefix = useId();
-  const [isOpen, setIsOpen] = useState(initiallyOpen);
   const [comments, setComments] = useState<Comment[]>([]);
   const [visibleCommentCount, setVisibleCommentCount] = useState(commentCount);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -57,9 +278,16 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
   const [hasLoaded, setHasLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const [text, setText] = useState("");
+  const [selectedMentions, setSelectedMentions] = useState<User[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [replyingToId, setReplyingToId] = useState<string | null>(null);
+  const [replyingToCommentId, setReplyingToCommentId] = useState<string | null>(null);
+  const [expandedReplyThreads, setExpandedReplyThreads] = useState<Set<string>>(() => new Set());
+  const [replyText, setReplyText] = useState("");
+  const [selectedReplyMentions, setSelectedReplyMentions] = useState<User[]>([]);
+  const [isSubmittingReply, setIsSubmittingReply] = useState(false);
+  const [pendingCommentReactionIds, setPendingCommentReactionIds] = useState<Set<string>>(() => new Set());
   const [openCommentMenuId, setOpenCommentMenuId] = useState<string | null>(null);
   const [openCommentMenuAbove, setOpenCommentMenuAbove] = useState(false);
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
@@ -68,11 +296,21 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
   const [commentActionStatus, setCommentActionStatus] = useState<{ text: string; isError: boolean } | null>(null);
   const commentMenuButtonRef = useRef<HTMLButtonElement>(null);
   const commentMenuPanelRef = useRef<HTMLDivElement>(null);
-  const commentsPath = `/api/posts/${postId}/comments`;
+  const commentsPath = shareId
+    ? `/api/posts/${postId}/shares/${shareId}/comments`
+    : `/api/posts/${postId}/comments`;
 
   useEffect(() => {
     setVisibleCommentCount(commentCount);
-  }, [commentCount, postId]);
+  }, [commentCount, postId, shareId]);
+
+  useEffect(() => {
+    if (refreshKey === 0) return;
+    setComments([]);
+    setNextCursor(null);
+    setHasLoaded(false);
+    setLoadError(null);
+  }, [refreshKey]);
 
   useLayoutEffect(() => {
     if (!openCommentMenuId) return;
@@ -112,7 +350,7 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
     setIsLoading(true);
     setLoadError(null);
     try {
-      const page = await apiFetch<CommentListResponse>(commentsPath);
+      const page = await apiFetch<CommentListResponse>(preview ? `${commentsPath}?limit=3` : commentsPath);
       setComments(page.items);
       setNextCursor(page.nextCursor);
       setHasLoaded(true);
@@ -121,11 +359,11 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
     } finally {
       setIsLoading(false);
     }
-  }, [commentsPath]);
+  }, [commentsPath, preview]);
 
   useEffect(() => {
-    if (isOpen && !hasLoaded && !isLoading) void loadFirstPage();
-  }, [hasLoaded, isLoading, isOpen, loadFirstPage]);
+    if (!hasLoaded && !isLoading) void loadFirstPage();
+  }, [hasLoaded, isLoading, loadFirstPage]);
 
   async function loadNextPage() {
     if (!nextCursor || isLoadingMore) return;
@@ -149,19 +387,89 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
 
     setIsSubmitting(true);
     setSubmitError(null);
-    setSubmitMessage(null);
     try {
-      const body: CreateCommentRequest = { text: trimmedText };
+      const body: CreateCommentRequest = {
+        text: trimmedText,
+        mentionedUserIds: getActiveMentionIds(trimmedText, selectedMentions),
+      };
       const response = await apiFetch<CreateCommentResponse>(commentsPath, { method: "POST", body });
       setComments((current) => [response.comment, ...current.filter((comment) => comment.id !== response.comment.id)]);
       setVisibleCommentCount((count) => count + 1);
       setText("");
-      setSubmitMessage("Comment added.");
+      setSelectedMentions([]);
       setHasLoaded(true);
     } catch (error: unknown) {
       setSubmitError(error instanceof ApiError ? error.message : "We couldn’t add your comment. Try again.");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function submitReply(event: React.FormEvent<HTMLFormElement>, parent: Comment, replyTarget: Comment) {
+    event.preventDefault();
+    const trimmedText = replyText.trim();
+    if (!trimmedText || isSubmittingReply) return;
+
+    setIsSubmittingReply(true);
+    setCommentActionStatus(null);
+    try {
+      const body: CreateCommentRequest = {
+        text: trimmedText,
+        parentCommentId: parent.id,
+        ...(replyTarget.id !== parent.id ? { replyToCommentId: replyTarget.id } : {}),
+        mentionedUserIds: getActiveMentionIds(trimmedText, selectedReplyMentions),
+      };
+      const response = await apiFetch<CreateCommentResponse>(commentsPath, { method: "POST", body });
+      setComments((current) => updateCommentTree(current, parent.id, (comment) => {
+        const replies = comment.replies.map((reply) => reply.id === replyTarget.id
+          ? { ...reply, replyCount: (reply.replyCount ?? reply.replies.length) + 1 }
+          : reply);
+        return {
+          ...comment,
+          replies: [...replies, response.comment],
+          replyCount: (comment.replyCount ?? comment.replies.length) + 1,
+        };
+      }));
+      setVisibleCommentCount((count) => count + 1);
+      setReplyText("");
+      setSelectedReplyMentions([]);
+      setReplyingToId(null);
+      setReplyingToCommentId(null);
+      setExpandedReplyThreads((current) => new Set(current).add(parent.id));
+    } catch (error: unknown) {
+      setCommentActionStatus({
+        text: error instanceof ApiError ? error.message : "We couldn’t add your reply. Try again.",
+        isError: true,
+      });
+    } finally {
+      setIsSubmittingReply(false);
+    }
+  }
+
+  async function toggleCommentReaction(comment: Comment) {
+    if (pendingCommentReactionIds.has(comment.id)) return;
+    setPendingCommentReactionIds((current) => new Set(current).add(comment.id));
+    setCommentActionStatus(null);
+    try {
+      const response = await apiFetch<{ reactionCount: number; isReactedByViewer: boolean }>(
+        `${commentsPath}/${comment.id}/reaction`,
+        { method: comment.isReactedByViewer ? "DELETE" : "POST" },
+      );
+      setComments((current) => updateCommentTree(current, comment.id, (item) => ({
+        ...item,
+        ...response,
+      })));
+    } catch (error: unknown) {
+      setCommentActionStatus({
+        text: error instanceof ApiError ? error.message : "We couldn’t update your reaction. Try again.",
+        isError: true,
+      });
+    } finally {
+      setPendingCommentReactionIds((current) => {
+        const next = new Set(current);
+        next.delete(comment.id);
+        return next;
+      });
     }
   }
 
@@ -182,7 +490,12 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
     try {
       const body: UpdateCommentRequest = { text: trimmedText };
       const response = await apiFetch<UpdateCommentResponse>(`${commentsPath}/${comment.id}`, { method: "PATCH", body });
-      setComments((current) => current.map((item) => item.id === comment.id ? response.comment : item));
+      setComments((current) => updateCommentTree(current, comment.id, (item) => ({
+        ...item,
+        ...response.comment,
+        replies: item.replies,
+        replyCount: item.replyCount ?? item.replies.length,
+      })));
       setEditingCommentId(null);
       setEditingCommentText("");
       setCommentActionStatus({ text: "Comment updated.", isError: false });
@@ -202,9 +515,27 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
     setCommentActionStatus(null);
     try {
       await apiFetch<void>(`${commentsPath}/${comment.id}`, { method: "DELETE" });
-      setComments((current) => current.filter((item) => item.id !== comment.id));
-      setVisibleCommentCount((count) => Math.max(0, count - 1));
-      setCommentActionStatus({ text: "Comment deleted.", isError: false });
+      setComments((current) => {
+        if (comment.parentCommentId) {
+          return updateCommentTree(current, comment.parentCommentId, (parent) => ({
+            ...parent,
+            replies: parent.replies
+              .filter((reply) => reply.id !== comment.id)
+              .map((reply) => reply.replyToCommentId === comment.id
+                ? { ...reply, replyToCommentId: undefined }
+                : reply)
+              .map((reply) => reply.id === comment.replyToCommentId
+                ? { ...reply, replyCount: Math.max(0, (reply.replyCount ?? reply.replies.length) - 1) }
+                : reply),
+            replyCount: Math.max(0, (parent.replyCount ?? parent.replies.length) - 1),
+          }));
+        }
+        return current.filter((item) => item.id !== comment.id);
+      });
+      const removedCommentCount = comment.parentCommentId
+        ? 1
+        : 1 + (comment.replyCount ?? comment.replies.length);
+      setVisibleCommentCount((count) => Math.max(0, count - removedCommentCount));
     } catch (error: unknown) {
       setCommentActionStatus({
         text: error instanceof ApiError ? error.message : "We couldn’t delete your comment. Try again.",
@@ -216,8 +547,211 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
     }
   }
 
+  function renderComment(comment: Comment, isReply = false, rootComment: Comment = comment): React.JSX.Element {
+    const initial = comment.author.displayName.trim().charAt(0).toUpperCase() || "S";
+    const createdAt = new Date(comment.createdAt);
+    const isPendingReaction = pendingCommentReactionIds.has(comment.id);
+    const replyCount = comment.replyCount ?? comment.replies.length;
+    const replyTarget = comment.replyToCommentId
+      ? rootComment.replies.find((reply) => reply.id === comment.replyToCommentId)
+      : undefined;
+    const isReplyThreadExpanded = expandedReplyThreads.has(comment.id);
+    const visibleReplies = preview || isReplyThreadExpanded
+      ? comment.replies
+      : comment.replies.slice(0, VISIBLE_REPLIES_PER_THREAD);
+    const hiddenReplyCount = comment.replies.length - visibleReplies.length;
+
+    return (
+      <li className={`comment-item flex gap-2${isReply ? " comment-item-reply" : ""}`} key={comment.id}>
+        <Link
+          className="comment-avatar flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-accent/10 text-[10px] font-bold text-accent"
+          to={`/profile/${comment.author.id}`}
+          aria-label={`${comment.author.displayName}’s profile`}
+        >
+          {comment.author.avatarUrl
+            ? <img className="h-full w-full object-cover" src={comment.author.avatarUrl} alt="" />
+            : initial}
+        </Link>
+        <div className="comment-content min-w-0 flex-1">
+          <div className="comment-header">
+            <div className="comment-header-copy">
+              <Link className="text-xs font-bold text-ink hover:text-accent" to={`/profile/${comment.author.id}`}>
+                {comment.author.displayName} <SupporterBadge user={comment.author} />
+              </Link>
+              <time className="comment-time text-[11px] text-muted" dateTime={comment.createdAt} title={Number.isNaN(createdAt.getTime()) ? undefined : new Intl.DateTimeFormat(undefined, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }).format(createdAt)}>
+                {formatCommentAge(comment.createdAt)}
+              </time>
+            </div>
+            {user?.id === comment.author.id && editingCommentId !== comment.id && (
+              <div className="comment-options">
+                <button
+                  ref={openCommentMenuId === comment.id ? commentMenuButtonRef : null}
+                  className="comment-options-trigger"
+                  type="button"
+                  aria-label="Comment options"
+                  aria-expanded={openCommentMenuId === comment.id}
+                  aria-controls={`${commentMenuIdPrefix}-${comment.id}`}
+                  disabled={pendingCommentActionId === comment.id}
+                  onClick={() => setOpenCommentMenuId((current) => current === comment.id ? null : comment.id)}
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24">
+                    <circle cx="5" cy="12" r="1.6" />
+                    <circle cx="12" cy="12" r="1.6" />
+                    <circle cx="19" cy="12" r="1.6" />
+                  </svg>
+                </button>
+                <div
+                  ref={openCommentMenuId === comment.id ? commentMenuPanelRef : null}
+                  className={`comment-options-menu${openCommentMenuAbove ? " comment-options-menu-above" : ""}`}
+                  id={`${commentMenuIdPrefix}-${comment.id}`}
+                  role="menu"
+                  aria-label="Comment options"
+                  hidden={openCommentMenuId !== comment.id}
+                >
+                  <button type="button" role="menuitem" onClick={() => beginEditComment(comment)}>Edit comment</button>
+                  <button
+                    className="comment-options-delete"
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenCommentMenuId(null);
+                      if (window.confirm("Delete your comment permanently? This cannot be undone.")) {
+                        void deleteComment(comment);
+                      }
+                    }}
+                  >
+                    Delete permanently
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          {editingCommentId === comment.id ? (
+            <form className="comment-edit-form" onSubmit={(event) => void saveComment(event, comment)}>
+              <label className="sr-only" htmlFor={`${commentMenuIdPrefix}-edit-${comment.id}`}>Edit comment</label>
+              <textarea
+                className="comment-edit-input"
+                id={`${commentMenuIdPrefix}-edit-${comment.id}`}
+                value={editingCommentText}
+                maxLength={MAX_COMMENT_LENGTH}
+                rows={Math.min(5, Math.max(2, editingCommentText.split("\n").length))}
+                onChange={(event) => setEditingCommentText(event.target.value)}
+                disabled={pendingCommentActionId === comment.id}
+              />
+              <div className="comment-edit-actions">
+                <button className="button-secondary" type="button" disabled={pendingCommentActionId === comment.id} onClick={() => setEditingCommentId(null)}>Cancel</button>
+                <button className="button-accent" type="submit" disabled={!editingCommentText.trim() || pendingCommentActionId === comment.id}>
+                  {pendingCommentActionId === comment.id ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <>
+              {replyTarget && (
+                <p className="comment-reply-context">
+                  Replying to <Link to={`/profile/${replyTarget.author.id}`}>{replyTarget.author.displayName}</Link>
+                </p>
+              )}
+              <p className="comment-text whitespace-pre-wrap break-words text-ink/85">{comment.text}</p>
+            </>
+          )}
+          <div className="comment-actions" aria-label="Comment actions">
+            <button
+              className={`comment-action-button${comment.isReactedByViewer ? " comment-action-button-active" : ""}`}
+              type="button"
+              aria-pressed={comment.isReactedByViewer}
+              disabled={isPendingReaction}
+              onClick={() => void toggleCommentReaction(comment)}
+            >
+              <PostActionIcon name="like" />
+              <span>{comment.isReactedByViewer ? "Liked" : "Like"}</span>
+              {comment.reactionCount > 0 && <span className="comment-action-count">{comment.reactionCount.toLocaleString()}</span>}
+            </button>
+            <button
+              className="comment-action-button"
+              type="button"
+              onClick={() => {
+                const isCurrentTarget = replyingToId === rootComment.id && replyingToCommentId === comment.id;
+                setReplyingToId(isCurrentTarget ? null : rootComment.id);
+                setReplyingToCommentId(isCurrentTarget ? null : comment.id);
+                setReplyText("");
+                setSelectedReplyMentions([]);
+                setCommentActionStatus(null);
+              }}
+            >
+              Reply{!isReply && replyCount > 0 ? ` · ${replyCount}` : ""}
+            </button>
+          </div>
+          {replyingToId === rootComment.id && replyingToCommentId === comment.id && (
+            <form className="comment-reply-form" onSubmit={(event) => void submitReply(event, rootComment, comment)}>
+              <label className="sr-only" htmlFor={`${commentMenuIdPrefix}-reply-${comment.id}`}>Reply to {comment.author.displayName}</label>
+              <MentionTextarea
+                className="comment-reply-input"
+                id={`${commentMenuIdPrefix}-reply-${comment.id}`}
+                placeholder={`Reply to ${comment.author.displayName}…`}
+                value={replyText}
+                maxLength={MAX_COMMENT_LENGTH}
+                rows={1}
+                ariaLabel={`Reply to ${comment.author.displayName}`}
+                onChange={setReplyText}
+                onMentionSelect={(mentionedUser) => setSelectedReplyMentions((current) =>
+                  current.some((item) => item.id === mentionedUser.id) ? current : [...current, mentionedUser],
+                )}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                  event.preventDefault();
+                  if (!isSubmittingReply && replyText.trim()) event.currentTarget.form?.requestSubmit();
+                }}
+                disabled={isSubmittingReply}
+              />
+              <div className="comment-edit-actions">
+                <button className="button-secondary" type="button" disabled={isSubmittingReply} onClick={() => {
+                  setReplyingToId(null);
+                  setReplyingToCommentId(null);
+                }}>Cancel</button>
+                <button className="button-accent" type="submit" disabled={!replyText.trim() || isSubmittingReply}>
+                  {isSubmittingReply ? "Replying…" : "Reply"}
+                </button>
+              </div>
+            </form>
+          )}
+          {!isReply && comment.replies.length > 0 && (
+            <ul className="comment-replies" id={`${commentMenuIdPrefix}-replies-${comment.id}`}>
+              {visibleReplies.map((reply) => renderComment(reply, true, comment))}
+            </ul>
+          )}
+          {!preview && comment.replies.length > VISIBLE_REPLIES_PER_THREAD && (
+            <button
+              className="comment-view-more"
+              type="button"
+              aria-expanded={isReplyThreadExpanded}
+              aria-controls={`${commentMenuIdPrefix}-replies-${comment.id}`}
+              onClick={() => setExpandedReplyThreads((current) => {
+                const next = new Set(current);
+                if (next.has(comment.id)) next.delete(comment.id);
+                else next.add(comment.id);
+                return next;
+              })}
+            >
+              {isReplyThreadExpanded
+                ? "Show fewer replies"
+                : `View ${hiddenReplyCount} more ${hiddenReplyCount === 1 ? "reply" : "replies"}`}
+            </button>
+          )}
+        </div>
+      </li>
+    );
+  }
+
   function toggleComments() {
-    setIsOpen((open) => !open);
+    if (preview) {
+      onViewMore?.();
+      return;
+    }
+    document.getElementById(commentInputId)?.focus();
   }
 
   return (
@@ -225,7 +759,7 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
       <button
         className="post-action post-action-comment"
         type="button"
-        aria-expanded={isOpen}
+        aria-expanded="true"
         aria-label={`Comment on post, ${visibleCommentCount} comments`}
         onClick={toggleComments}
       >
@@ -233,9 +767,8 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
         <span className="post-action-label">Comment</span>
         <span className="post-action-count" aria-live="polite">{visibleCommentCount.toLocaleString()}</span>
       </button>
-      {isOpen && (
-        <section className="post-comments-panel space-y-4" aria-label="Post comments">
-          {isLoading ? (
+      <section className={`post-comments-panel space-y-4${preview ? " post-comments-preview" : ""}`} aria-label="Post comments">
+          {isLoading || (!hasLoaded && !loadError) ? (
             <CommentsSkeleton />
           ) : loadError && !hasLoaded ? (
             <div className="space-y-2">
@@ -244,112 +777,21 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
             </div>
           ) : (
             <>
+              {preview && (visibleCommentCount > 2 || comments.length > 2 || nextCursor !== null) && (
+                <button className="comment-view-more" type="button" onClick={onViewMore}>
+                  View more comments
+                </button>
+              )}
               {comments.length === 0 ? (
                 <p className="text-sm text-muted">No comments yet. Start the conversation.</p>
               ) : (
                 <ul className="space-y-3">
-                  {comments.map((comment) => {
-                    const initial = comment.author.displayName.trim().charAt(0).toUpperCase() || "S";
-                    const createdAt = new Date(comment.createdAt);
-                    return (
-                      <li className="comment-item flex gap-3 rounded-2xl bg-canvas p-3" key={comment.id}>
-                        <Link
-                          className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-accent/10 text-xs font-bold text-accent"
-                          to={`/profile/${comment.author.id}`}
-                          aria-label={`${comment.author.displayName}’s profile`}
-                        >
-                          {comment.author.avatarUrl
-                            ? <img className="h-full w-full object-cover" src={comment.author.avatarUrl} alt="" />
-                            : initial}
-                        </Link>
-                        <div className="comment-content min-w-0 flex-1">
-                          <div className="comment-header">
-                            <div className="comment-header-copy">
-                              <Link className="text-xs font-bold text-ink hover:text-accent" to={`/profile/${comment.author.id}`}>
-                                {comment.author.displayName} <SupporterBadge user={comment.author} />
-                              </Link>
-                              <time className="text-[11px] text-muted" dateTime={comment.createdAt}>
-                                {Number.isNaN(createdAt.getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
-                                  dateStyle: "medium",
-                                  timeStyle: "short",
-                                }).format(createdAt)}
-                              </time>
-                            </div>
-                            {user?.id === comment.author.id && editingCommentId !== comment.id && (
-                              <div className="comment-options">
-                                <button
-                                  ref={openCommentMenuId === comment.id ? commentMenuButtonRef : null}
-                                  className="comment-options-trigger"
-                                  type="button"
-                                  aria-label="Comment options"
-                                  aria-expanded={openCommentMenuId === comment.id}
-                                  aria-controls={`${commentMenuIdPrefix}-${comment.id}`}
-                                  disabled={pendingCommentActionId === comment.id}
-                                  onClick={() => setOpenCommentMenuId((current) => current === comment.id ? null : comment.id)}
-                                >
-                                  <svg aria-hidden="true" viewBox="0 0 24 24">
-                                    <circle cx="5" cy="12" r="1.6" />
-                                    <circle cx="12" cy="12" r="1.6" />
-                                    <circle cx="19" cy="12" r="1.6" />
-                                  </svg>
-                                </button>
-                                <div
-                                  ref={openCommentMenuId === comment.id ? commentMenuPanelRef : null}
-                                  className={`comment-options-menu${openCommentMenuAbove ? " comment-options-menu-above" : ""}`}
-                                  id={`${commentMenuIdPrefix}-${comment.id}`}
-                                  role="menu"
-                                  aria-label="Comment options"
-                                  hidden={openCommentMenuId !== comment.id}
-                                >
-                                  <button type="button" role="menuitem" onClick={() => beginEditComment(comment)}>Edit comment</button>
-                                  <button
-                                    className="comment-options-delete"
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => {
-                                      setOpenCommentMenuId(null);
-                                      if (window.confirm("Delete your comment permanently? This cannot be undone.")) {
-                                        void deleteComment(comment);
-                                      }
-                                    }}
-                                  >
-                                    Delete permanently
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                          {editingCommentId === comment.id ? (
-                            <form className="comment-edit-form" onSubmit={(event) => void saveComment(event, comment)}>
-                              <label className="sr-only" htmlFor={`${commentMenuIdPrefix}-edit-${comment.id}`}>Edit comment</label>
-                              <textarea
-                                className="comment-edit-input"
-                                id={`${commentMenuIdPrefix}-edit-${comment.id}`}
-                                value={editingCommentText}
-                                maxLength={MAX_COMMENT_LENGTH}
-                                rows={Math.min(5, Math.max(2, editingCommentText.split("\n").length))}
-                                onChange={(event) => setEditingCommentText(event.target.value)}
-                                disabled={pendingCommentActionId === comment.id}
-                              />
-                              <div className="comment-edit-actions">
-                                <button className="button-secondary" type="button" disabled={pendingCommentActionId === comment.id} onClick={() => setEditingCommentId(null)}>Cancel</button>
-                                <button className="button-accent" type="submit" disabled={!editingCommentText.trim() || pendingCommentActionId === comment.id}>
-                                  {pendingCommentActionId === comment.id ? "Saving…" : "Save"}
-                                </button>
-                              </div>
-                            </form>
-                          ) : (
-                            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-ink/85">{comment.text}</p>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
+                  {(preview ? getCommentPreview(comments) : comments).map((comment) => renderComment(comment))}
                 </ul>
               )}
               {loadError && <RequestErrorState title="Unable to load more comments" message={loadError} />}
               {isLoadingMore && <CommentsSkeleton />}
-              {nextCursor && (
+              {!preview && nextCursor && (
                 <button
                   className="button-secondary w-full"
                   type="button"
@@ -369,19 +811,21 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
           <form className="comment-composer-form" onSubmit={(event) => void submitComment(event)}>
             <div className="comment-composer-field">
               <label className="sr-only" htmlFor={commentInputId}>Write a comment</label>
-              <textarea
+              <MentionTextarea
                 className="comment-composer-input"
                 id={commentInputId}
-                aria-label="Write a comment"
                 placeholder="Write a comment…"
                 value={text}
                 rows={1}
                 maxLength={MAX_COMMENT_LENGTH}
-                onChange={(event) => {
-                  setText(event.target.value);
+                ariaLabel="Write a comment"
+                onChange={(nextText) => {
+                  setText(nextText);
                   setSubmitError(null);
-                  setSubmitMessage(null);
                 }}
+                onMentionSelect={(mentionedUser) => setSelectedMentions((current) =>
+                  current.some((item) => item.id === mentionedUser.id) ? current : [...current, mentionedUser],
+                )}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
                   event.preventDefault();
@@ -396,10 +840,8 @@ function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId
               )}
             </div>
             {submitError && <p className="form-error" role="alert">{submitError}</p>}
-            {submitMessage && <p className="form-success" role="status">{submitMessage}</p>}
           </form>
         </section>
-      )}
     </>
   );
 }
@@ -597,12 +1039,33 @@ function PostDetailsDialog({
     if (isOpen && dialog && !dialog.open) dialog.showModal();
   }, [isOpen]);
 
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const root = document.documentElement;
+    const body = document.body;
+    const previousRootOverflow = root.style.overflow;
+    const previousBodyOverflow = body.style.overflow;
+    const previousBodyPaddingRight = body.style.paddingRight;
+    const scrollbarWidth = window.innerWidth - root.clientWidth;
+    const bodyPaddingRight = Number.parseFloat(window.getComputedStyle(body).paddingRight) || 0;
+
+    root.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    if (scrollbarWidth > 0) body.style.paddingRight = `${bodyPaddingRight + scrollbarWidth}px`;
+
+    return () => {
+      root.style.overflow = previousRootOverflow;
+      body.style.overflow = previousBodyOverflow;
+      body.style.paddingRight = previousBodyPaddingRight;
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return (
     <dialog
       ref={dialogRef}
-      className={`post-detail-dialog${photoViewer ? " post-photo-viewer-dialog" : ""}`}
+      className={`post-detail-dialog${photoViewer ? " post-photo-viewer-dialog" : ""}${photoViewer && post.share ? " post-shared-photo-viewer-dialog" : ""}`}
       aria-label={post.share ? `Post shared by ${post.share.author.displayName}` : `Post by ${post.author.displayName}`}
       onClose={onClose}
       onClick={(event) => {
@@ -615,7 +1078,7 @@ function PostDetailsDialog({
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
           </button>
           <Link className="post-photo-viewer-home" to="/" aria-label="Senderi home" title="Go to home">
-          <img src="/senderi-symbol.png" alt="" />
+            <img src="/senderi-symbol.png" alt="" />
           </Link>
         </div>
       ) : (
@@ -624,13 +1087,38 @@ function PostDetailsDialog({
         </button>
       )}
       <div className="post-detail-layout">
-        <div className="post-detail-media">
+        <div className={`post-detail-media${post.share && photoViewer ? " post-detail-shared-media" : ""}${photoViewer && !post.photoUrl ? " post-detail-text-media" : ""}`}>
+          {post.share && photoViewer && (
+            <div className="post-detail-share-context post-detail-share-top">
+              <header className="share-post-header">
+                <Link
+                  className="share-post-avatar"
+                  to={`/profile/${post.share.author.id}`}
+                  aria-label={`${post.share.author.displayName}'s profile`}
+                >
+                  {post.share.author.avatarUrl ? <img src={post.share.author.avatarUrl} alt="" /> : shareInitial}
+                </Link>
+                <div className="share-post-identity-copy">
+                  <Link className="share-post-author" to={`/profile/${post.share.author.id}`}>
+                    {post.share.author.displayName} <SupporterBadge user={post.share.author} />
+                  </Link>
+                  <time dateTime={post.share.createdAt}>
+                    {shareCreatedAt && !Number.isNaN(shareCreatedAt.getTime())
+                      ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(shareCreatedAt)
+                      : "Just now"}
+                    <span> · {audienceLabel(post.share.visibility)} audience</span>
+                  </time>
+                </div>
+              </header>
+              {post.share.caption && <p className="share-post-caption">{post.share.caption}</p>}
+            </div>
+          )}
           {post.photoUrl
             ? <img src={post.photoUrl} alt={`Photo shared by ${post.author.displayName}`} referrerPolicy="no-referrer" />
             : <p>{post.text || "Shared a post."}</p>}
         </div>
         <aside className="post-detail-sidebar">
-          {post.share && (
+          {post.share && !photoViewer && (
             <div className="post-detail-share-context">
               <header className="share-post-header">
                 <Link
@@ -677,6 +1165,31 @@ function PostDetailsDialog({
             </div>
           </header>
           {post.photoUrl && post.text && <p className="post-detail-text">{post.text}</p>}
+          {post.share && photoViewer && (
+            <div className="share-embedded-post post-detail-share-card">
+              <header className="share-post-header">
+                <Link
+                  className="share-post-avatar"
+                  to={`/profile/${post.share.author.id}`}
+                  aria-label={`${post.share.author.displayName}'s profile`}
+                >
+                  {post.share.author.avatarUrl ? <img src={post.share.author.avatarUrl} alt="" /> : shareInitial}
+                </Link>
+                <div className="share-post-identity-copy">
+                  <Link className="share-post-author" to={`/profile/${post.share.author.id}`}>
+                    {post.share.author.displayName} <SupporterBadge user={post.share.author} />
+                  </Link>
+                  <time dateTime={post.share.createdAt}>
+                    {shareCreatedAt && !Number.isNaN(shareCreatedAt.getTime())
+                      ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(shareCreatedAt)
+                      : "Just now"}
+                    <span>{" · "}{audienceLabel(post.share.visibility)} audience</span>
+                  </time>
+                </div>
+              </header>
+              {post.share.caption && <p className="share-post-caption">{post.share.caption}</p>}
+            </div>
+          )}
           <div className="post-action-bar post-detail-actions">
             <button
               className={`post-action post-action-like${likeState.isLikedByViewer ? " post-action-active" : ""}`}
@@ -690,7 +1203,11 @@ function PostDetailsDialog({
               <span className="post-action-count" aria-live="polite">{likeState.likeCount.toLocaleString()}</span>
               <span className="post-action-label">{likeState.isLikedByViewer ? "Liked" : "Like"}</span>
             </button>
-            <CommentsPanel postId={post.id} commentCount={post.commentCount} initiallyOpen />
+        <CommentsPanel
+          postId={post.id}
+          shareId={post.share?.id}
+          commentCount={post.share?.commentCount ?? post.commentCount}
+        />
             <ShareControl post={post} onShared={onShared} />
           </div>
           {likeMessage && <p className={likeMessage.isError ? "form-error" : "form-success"} role={likeMessage.isError ? "alert" : "status"}>{likeMessage.text}</p>}
@@ -1042,13 +1559,13 @@ export function PostCard({
   onUpdated,
   onShared,
   onDeleted,
-  commentsInitiallyOpen = false,
+  commentsPreview = true,
 }: {
   post: Post;
   onUpdated: (updated: Post) => void;
   onShared: () => void;
   onDeleted: () => void;
-  commentsInitiallyOpen?: boolean;
+  commentsPreview?: boolean;
 }) {
   const { user } = useAuth();
   const [isUpdating, setIsUpdating] = useState(false);
@@ -1058,6 +1575,8 @@ export function PostCard({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isMenuOpenAbove, setIsMenuOpenAbove] = useState(false);
   const [detailMode, setDetailMode] = useState<"post" | "photo" | null>(null);
+  const [detailIsOriginalPost, setDetailIsOriginalPost] = useState(false);
+  const [commentsRefreshKey, setCommentsRefreshKey] = useState(0);
   const [updateMessage, setUpdateMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const [postLikeState, setPostLikeState] = useState({
     likeCount: post.likeCount,
@@ -1344,9 +1863,19 @@ export function PostCard({
           </div>
         </form>
       ) : post.text ? (
-        <div className="mt-5 whitespace-pre-wrap break-words text-sm leading-7 text-ink/85">
-          {post.text}
-        </div>
+        post.share ? (
+          <div className="mt-5 whitespace-pre-wrap break-words text-sm leading-7 text-ink/85">{post.text}</div>
+        ) : (
+          <button
+            className="post-text-open mt-5"
+            type="button"
+            aria-haspopup="dialog"
+            aria-label={`Open post by ${post.author.displayName}`}
+            onClick={() => setDetailMode("photo")}
+          >
+            {post.text}
+          </button>
+        )
       ) : null}
       {post.photoUrl && (
         post.share ? (
@@ -1378,6 +1907,9 @@ export function PostCard({
     </>
   );
   const cardLikeState = post.share ? shareLikeState : postLikeState;
+  const detailPost = detailIsOriginalPost && post.share ? { ...post, share: undefined } : post;
+  const detailLikeState = detailIsOriginalPost && post.share ? postLikeState : cardLikeState;
+  const detailLikeTarget = detailIsOriginalPost && post.share ? "post" : post.share ? "share" : "post";
   const isCardLikePending = pendingLikeTarget === (post.share ? "share" : "post");
   const likeSubject = post.share ? "shared post" : "post";
 
@@ -1453,7 +1985,10 @@ export function PostCard({
           type="button"
           aria-haspopup="dialog"
           aria-label={`Open original post by ${post.author.displayName}`}
-          onClick={() => setDetailMode("post")}
+          onClick={() => {
+            setDetailIsOriginalPost(true);
+            setDetailMode("photo");
+          }}
         >
           {originalPostContent}
         </button>
@@ -1480,19 +2015,35 @@ export function PostCard({
             {isCardLikePending ? (cardLikeState.isLikedByViewer ? "Removing Like..." : "Liking...") : cardLikeState.isLikedByViewer ? "Liked" : "Like"}
           </span>
         </button>
-        <CommentsPanel postId={post.id} commentCount={post.commentCount} initiallyOpen={commentsInitiallyOpen} />
+        <CommentsPanel
+          postId={post.id}
+          shareId={post.share?.id}
+          commentCount={post.share?.commentCount ?? post.commentCount}
+          preview={commentsPreview}
+          refreshKey={commentsRefreshKey}
+          onViewMore={() => {
+            if (commentsPreview) {
+              setDetailIsOriginalPost(false);
+              setDetailMode("photo");
+            }
+          }}
+        />
         <ShareControl post={post} onShared={onShared} />
       </div>
       {detailMode && (
         <PostDetailsDialog
-          post={post}
+          post={detailPost}
           isOpen
           photoViewer={detailMode === "photo"}
-          onClose={() => setDetailMode(null)}
-          likeState={cardLikeState}
+          onClose={() => {
+            setDetailMode(null);
+            setDetailIsOriginalPost(false);
+            setCommentsRefreshKey((key) => key + 1);
+          }}
+          likeState={detailLikeState}
           isLikePending={pendingLikeTarget !== null}
           likeMessage={likeMessage}
-          onToggleLike={() => void toggleLike()}
+          onToggleLike={() => void toggleLike(detailLikeTarget)}
           onShared={onShared}
         />
       )}
