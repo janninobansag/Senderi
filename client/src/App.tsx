@@ -41,8 +41,21 @@ const navigation = [
   { label: "Friends", to: "/friends", icon: "users" as const },
 ];
 
+const HOME_REFRESH_EVENT = "senderi:home-refresh";
+
+function requestHomeRefresh() {
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  window.dispatchEvent(new Event(HOME_REFRESH_EVENT));
+}
+
 function HomePage() {
   const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const refreshHome = () => setRefreshKey((current) => current + 1);
+    window.addEventListener(HOME_REFRESH_EVENT, refreshHome);
+    return () => window.removeEventListener(HOME_REFRESH_EVENT, refreshHome);
+  }, []);
 
   return (
     <div className="home-feed-column space-y-5">
@@ -68,6 +81,7 @@ function MobileMainNavigation() {
         aria-label="Home"
         title="Home"
         className={({ isActive }) => `icon-button mobile-main-nav-link${isActive ? " header-icon-active" : ""}`}
+        onClick={requestHomeRefresh}
       >
         <Icon name="home" size={18} />
       </NavLink>
@@ -91,7 +105,7 @@ export default function App() {
       <header className="app-site-header relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
         <div className="app-header-inner flex h-[72px] w-full items-center justify-between px-5 sm:px-8">
           <div className="header-brand-group">
-            <NavLink to="/" aria-label="Senderi home" className="header-brand">
+            <NavLink to="/" aria-label="Senderi home" className="header-brand" onClick={requestHomeRefresh}>
               <picture className="header-brand-picture">
                 <source media="(max-width: 640px)" srcSet="/senderi-symbol.png" />
                 <img src="/senderi-logo.png" alt="" className="header-brand-image" />
@@ -373,6 +387,7 @@ function HeaderActions() {
   const [installMessage, setInstallMessage] = useState<string | null>(null);
   const { canInstall, install, isInstalled } = usePwaInstall();
   const { updateAvailable, updating, applyUpdate, dismissUpdate } = usePwaUpdate();
+  const [isMobileViewport, setIsMobileViewport] = useState(() => window.matchMedia("(max-width: 640px)").matches);
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isPushSettingsOpen, setIsPushSettingsOpen] = useState(false);
@@ -405,6 +420,14 @@ function HeaderActions() {
   const pushPromptRef = useRef<HTMLDialogElement>(null);
   const messagesButtonRef = useRef<HTMLAnchorElement>(null);
   const currentUserId = user?.id;
+
+  useEffect(() => {
+    const mobileViewport = window.matchMedia("(max-width: 640px)");
+    const updateViewport = () => setIsMobileViewport(mobileViewport.matches);
+    updateViewport();
+    mobileViewport.addEventListener("change", updateViewport);
+    return () => mobileViewport.removeEventListener("change", updateViewport);
+  }, []);
 
   useEffect(() => {
     if (!isNotificationsOpen) setIsPushSettingsOpen(false);
@@ -484,7 +507,10 @@ function HeaderActions() {
   }, [currentUserId, isNotificationsOpen]);
 
   useEffect(() => {
-    if (!currentUserId || pushState !== "available") return;
+    if (!currentUserId || pushState !== "available" || !isMobileViewport) {
+      setIsPushPromptOpen(false);
+      return;
+    }
     const dismissedKey = `senderi:push-prompt-dismissed:${currentUserId}`;
     try {
       if (window.sessionStorage.getItem(dismissedKey) === "true") return;
@@ -492,7 +518,7 @@ function HeaderActions() {
       // Keep the prompt available when browser storage is disabled.
     }
     setIsPushPromptOpen(true);
-  }, [currentUserId, pushState]);
+  }, [currentUserId, isMobileViewport, pushState]);
 
   useEffect(() => {
     const dialog = pushPromptRef.current;
@@ -1031,7 +1057,7 @@ function HeaderActions() {
           {location.pathname !== "/signup" && <Link className="header-action" to="/signup">Create account</Link>}
         </>
       )}
-      {updateAvailable && <div className="app-update-notice" role="status">
+      {isMobileViewport && updateAvailable && <div className="app-update-notice" role="status">
         <span className="app-update-copy"><strong>Update ready</strong><span>A new version of Senderi is available.</span></span>
         <button className="app-update-apply" type="button" disabled={updating} onClick={() => void applyUpdate()}>{updating ? "Updating…" : "Update now"}</button>
         <button className="app-update-dismiss" type="button" onClick={dismissUpdate}>Later</button>
@@ -1107,6 +1133,7 @@ function MemberLayout({ children }: { children: ReactNode }) {
             to={item.to}
             aria-label={item.to === "/profile" && user ? `${user.displayName} profile` : item.label}
             className={({ isActive }) => `nav-item${item.to === "/profile" && user ? " nav-profile-item" : ""} ${isActive ? "nav-item-active" : ""}`}
+            onClick={item.to === "/" ? requestHomeRefresh : undefined}
           >
             {item.to === "/profile" && user ? (
               <>

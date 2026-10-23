@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "senderi-app";
-const CACHE_VERSION = "v6";
+const CACHE_VERSION = "v7";
 const APP_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}`;
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/senderi-logo.png", "/senderi-symbol.png", "/senderi-maskable.png", "/senderi-mark.svg", "/senderi-maskable.svg"];
 

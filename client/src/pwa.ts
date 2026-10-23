@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const PWA_UPDATE_READY_EVENT = "senderi:pwa-update-ready";
+const UPDATE_NOTIFICATION_SHOWN_KEY = "senderi:pwa-update-notification-shown";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -22,7 +23,40 @@ export function registerSenderiServiceWorker(): void {
   window.addEventListener("load", () => {
     void navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).then((registration) => {
       const announceWaitingWorker = () => {
-        if (registration.waiting) window.dispatchEvent(new Event(PWA_UPDATE_READY_EVENT));
+        if (!registration.waiting) {
+          try {
+            window.localStorage.removeItem(UPDATE_NOTIFICATION_SHOWN_KEY);
+          } catch {
+            // Update notifications still work when browser storage is disabled.
+          }
+          return;
+        }
+        window.dispatchEvent(new Event(PWA_UPDATE_READY_EVENT));
+        if (
+          window.matchMedia("(max-width: 640px)").matches &&
+          "Notification" in window &&
+          Notification.permission === "granted"
+        ) {
+          try {
+            if (window.localStorage.getItem(UPDATE_NOTIFICATION_SHOWN_KEY) === "true") return;
+            window.localStorage.setItem(UPDATE_NOTIFICATION_SHOWN_KEY, "true");
+          } catch {
+            // Continue with the system notification if browser storage is disabled.
+          }
+          void registration.showNotification("Senderi update ready", {
+            body: "A new version is ready. Open Senderi and tap Update now.",
+            icon: "/senderi-symbol.png",
+            badge: "/senderi-symbol.png",
+            tag: "senderi-app-update",
+            data: { url: "/" },
+          }).catch(() => {
+            try {
+              window.localStorage.removeItem(UPDATE_NOTIFICATION_SHOWN_KEY);
+            } catch {
+              // Ignore storage failures after a notification delivery failure.
+            }
+          });
+        }
       };
       const watchInstallingWorker = () => {
         const installing = registration.installing;

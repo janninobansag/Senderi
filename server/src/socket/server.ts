@@ -36,6 +36,7 @@ export interface SocketServerDependencies {
   getDatabase: () => Db;
   now: () => Date;
   getAllowedOrigins: () => readonly string[];
+  sendPush?: typeof sendPushToUser;
 }
 
 type SenderSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
@@ -185,9 +186,13 @@ async function sendMessage(
     if (wasInserted) {
       const event: MessageNewEvent = { message };
       io.to(userRoom(recipientId)).emit("message:new", event);
-      void sendPushToUser(database, recipientId, {
+      const sender = await database.collection<UserDocument>(collectionNames.users)
+        .findOne({ _id: senderId })
+        .catch(() => null);
+      const senderName = sender?.displayName.trim() || "Someone";
+      void (dependencies.sendPush ?? sendPushToUser)(database, recipientId, {
         title: "New Senderi message",
-        body: "You received a new message.",
+        body: `From: ${senderName}`,
         url: `/messages?friend=${senderId.toHexString()}`,
         tag: `message-${senderId.toHexString()}`,
       });

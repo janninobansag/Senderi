@@ -19,6 +19,7 @@ import { notFoundHandler } from "../src/middleware/not-found";
 import { orderedUserPair } from "../src/friends/are-friends";
 import { createAuthRouter } from "../src/routes/auth";
 import { createChatsRouter } from "../src/routes/chats";
+import type { PushNotificationPayload } from "../src/notifications/push";
 import type { MessageAckEvent, MessageErrorEvent, MessageNewEvent, MessageSendRequest } from "../src/socket/contracts";
 import { createSocketServer, disconnectUserSockets } from "../src/socket/server";
 import { isUserOnline } from "../src/socket/presence";
@@ -159,6 +160,7 @@ function createDatabase(data: SocketTestData): Db {
 interface SocketFixture {
   data: SocketTestData;
   database: Db;
+  pushNotifications: Array<{ recipientId: ObjectId; payload: PushNotificationPayload }>;
   app: express.Express;
   url: string;
   setNow: (value: Date) => void;
@@ -176,6 +178,7 @@ async function createFixture(): Promise<SocketFixture> {
     messages: [],
   };
   const database = createDatabase(data);
+  const pushNotifications: SocketFixture["pushNotifications"] = [];
   let now = FIXED_NOW;
   let ticketSequence = 0;
   const app = express();
@@ -198,6 +201,7 @@ async function createFixture(): Promise<SocketFixture> {
     getDatabase: () => database,
     now: () => now,
     getAllowedOrigins: () => [CLIENT_ORIGIN],
+    sendPush: async (_database, recipientId, payload) => { pushNotifications.push({ recipientId, payload }); },
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -209,6 +213,7 @@ async function createFixture(): Promise<SocketFixture> {
   return {
     data,
     database,
+    pushNotifications,
     app,
     url: `http://127.0.0.1:${(address as AddressInfo).port}`,
     setNow: (value) => { now = value; },
@@ -481,6 +486,9 @@ test("message sends persist once before ack and new events, including duplicate 
     assert.equal(first.clientId, send.clientId);
     assert.deepEqual(Object.keys(first.message).sort(), ["createdAt", "id", "recipientId", "senderId", "text"]);
     assert.equal(newEventCount, 1);
+    assert.equal(fixture.pushNotifications.length, 1);
+    assert.equal(fixture.pushNotifications[0]?.recipientId.toHexString(), fixture.data.users[1]?._id.toHexString());
+    assert.equal(fixture.pushNotifications[0]?.payload.body, "From: alice");
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(newEventCount, 1, "a duplicate client ID must not emit a second new-message event");
     assert.equal(unexpectedError, undefined);
