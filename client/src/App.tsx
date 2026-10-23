@@ -969,7 +969,7 @@ function HeaderActions() {
                         : notification.actor.displayName.trim().charAt(0).toUpperCase()}
                     </span>
                     <span className="header-notification-copy">
-                      <span><strong>{notification.actor.displayName} <SupporterBadge user={notification.actor} /></strong> {notificationMessage(notification.type)}</span>
+                      <span><strong>{notification.actor.displayName} <SupporterBadge user={notification.actor} /></strong> {notificationMessage(notification)}</span>
                       <time dateTime={notification.createdAt}>{formatNotificationTime(notification.createdAt)}</time>
                     </span>
                     {!notification.isRead && <span className="header-notification-unread-dot" aria-hidden="true" />}
@@ -1075,14 +1075,16 @@ function HeaderActions() {
   );
 }
 
-function notificationMessage(type: NotificationItem["type"]): string {
-  switch (type) {
+function notificationMessage(notification: Pick<NotificationItem, "type" | "shareId">): string {
+  switch (notification.type) {
     case "post_like": return "liked your post.";
-    case "share_like": return "liked your shared post.";
-    case "post_comment": return "commented on your post.";
-    case "post_mention": return "mentioned you in a comment.";
+    case "share_like": return "liked a post you shared.";
+    case "post_comment": return notification.shareId ? "commented on a shared post." : "commented on your post.";
+    case "post_mention": return notification.shareId
+      ? "mentioned you in a comment on a shared post."
+      : "mentioned you in a comment.";
     case "post_body_mention": return "mentioned you in a post.";
-    case "post_share": return "shared your post.";
+    case "post_share": return notification.shareId ? "reshared a post you shared." : "shared your post.";
     case "friend_request": return "sent you a friend request.";
     case "friend_accepted": return "accepted your friend request.";
     default: return "sent you a notification.";

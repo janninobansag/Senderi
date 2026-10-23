@@ -1384,8 +1384,9 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       }
 
       const sourceShareId = parsed.data.sourceShareId ? new ObjectId(parsed.data.sourceShareId) : undefined;
+      let sourceShare: ShareDocument | null = null;
       if (sourceShareId) {
-        const sourceShare = await database.collection<ShareDocument>(collectionNames.shares).findOne({
+        sourceShare = await database.collection<ShareDocument>(collectionNames.shares).findOne({
           _id: sourceShareId,
           sourcePostId: sourcePost._id,
           visibility: "public",
@@ -1405,12 +1406,23 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         createdAt: new Date(),
       };
       await database.collection<ShareDocument>(collectionNames.shares).insertOne(share);
-      await createNotification(database, {
-        recipientId: sourcePost.authorId,
-        actorId: session.user._id,
-        type: "post_share",
-        postId,
-      });
+      const notificationRecipients = new Map<string, { recipientId: ObjectId; shareId?: ObjectId }>();
+      notificationRecipients.set(sourcePost.authorId.toHexString(), { recipientId: sourcePost.authorId });
+      if (sourceShare) {
+        notificationRecipients.set(sourceShare.authorId.toHexString(), {
+          recipientId: sourceShare.authorId,
+          shareId: sourceShare._id,
+        });
+      }
+      for (const recipient of notificationRecipients.values()) {
+        await createNotification(database, {
+          recipientId: recipient.recipientId,
+          actorId: session.user._id,
+          type: "post_share",
+          postId,
+          ...(recipient.shareId ? { shareId: recipient.shareId } : {}),
+        });
+      }
 
       response.setHeader("Cache-Control", "private, no-store");
       response.status(201).json({

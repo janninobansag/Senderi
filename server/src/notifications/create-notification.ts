@@ -26,7 +26,7 @@ export async function createNotification(database: Db, input: CreateNotification
   };
   await database.collection<NotificationDocument>(collectionNames.notifications).insertOne(notification);
 
-  const body = notificationPushMessage(notification.type);
+  const body = notificationPushMessage(notification);
   void sendPushToUser(database, notification.recipientId, {
     title: "Senderi",
     body,
@@ -35,14 +35,16 @@ export async function createNotification(database: Db, input: CreateNotification
   });
 }
 
-function notificationPushMessage(type: NotificationDocument["type"]): string {
-  switch (type) {
+function notificationPushMessage(notification: Pick<NotificationDocument, "type" | "shareId">): string {
+  switch (notification.type) {
     case "post_like": return "Someone liked your post.";
-    case "share_like": return "Someone liked your shared post.";
-    case "post_comment": return "Someone commented on your post.";
-    case "post_mention": return "Someone mentioned you in a comment.";
+    case "share_like": return "Someone liked a post you shared.";
+    case "post_comment": return notification.shareId ? "Someone commented on a shared post." : "Someone commented on your post.";
+    case "post_mention": return notification.shareId
+      ? "Someone mentioned you in a comment on a shared post."
+      : "Someone mentioned you in a comment.";
     case "post_body_mention": return "Someone mentioned you in a post.";
-    case "post_share": return "Someone shared your post.";
+    case "post_share": return notification.shareId ? "Someone reshared a post you shared." : "Someone shared your post.";
     case "friend_request": return "You have a new friend request.";
     case "friend_accepted": return "Your friend request was accepted.";
   }
