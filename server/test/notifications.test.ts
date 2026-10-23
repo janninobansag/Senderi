@@ -62,6 +62,8 @@ function createApp() {
     makeNotification(ownerId, actorId, new Date("2026-10-21T00:00:00.000Z"), true),
     makeNotification(otherId, actorId, new Date("2026-10-23T00:00:00.000Z")),
   ];
+  notifications[0]!.type = "post_comment";
+  notifications[0]!.shareId = new ObjectId("000000000000000000000012");
   const pushSubscriptions: PushSubscriptionDocument[] = [{
     _id: new ObjectId(),
     userId: otherId,
@@ -216,6 +218,8 @@ test("notifications list only the viewer's newest activity and mark read safely"
   assert.equal(response.body.unreadCount, 1);
   assert.equal(response.body.items.length, 2);
   assert.equal(response.body.items[0].actor.displayName, "Actor");
+  assert.equal(response.body.items[0].type, "post_comment");
+  assert.equal(response.body.items[0].shareId, "000000000000000000000012");
   assert.equal(response.body.items[0].isRead, false);
   assert.equal("email" in response.body.items[0].actor, false);
   assert.equal("passwordHash" in response.body.items[0].actor, false);

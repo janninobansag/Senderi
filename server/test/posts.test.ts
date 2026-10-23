@@ -856,6 +856,7 @@ test("share creation accepts only a Public source and returns its public author 
   assert.equal(data.notifications[0]!.actorId.toHexString(), ids.friend);
   assert.equal(data.notifications[0]!.type, "post_share");
   assert.equal(data.notifications[0]!.postId?.toHexString(), ids.public);
+  assert.equal(data.notifications[0]!.shareId, undefined, "sharing the original post keeps its notification on the original post");
 
   const friendFeed = await request(app)
     .get("/api/posts")
@@ -896,6 +897,36 @@ test("share creation accepts only a Public source and returns its public author 
     .send({ visibility: "public" })
     .expect(401);
   assert.equal(data.shares.length, 1, "rejected requests must not create share records");
+});
+
+test("resharing a shared post notifies its share owner with the original shared-card context", async () => {
+  const { data, tokens } = matrixFixture();
+  const sourcePost = data.posts.find((post) => post._id.toHexString() === ids.public)!;
+  const sourceShare = makeShare(
+    "0000000000000000000000a3",
+    new ObjectId(ids.friend),
+    sourcePost._id,
+    "public",
+    new Date(),
+  );
+  data.shares.push(sourceShare);
+  const app = createApp(data);
+
+  await request(app)
+    .post(`/api/posts/${ids.public}/shares`)
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ visibility: "public", sourceShareId: sourceShare._id.toHexString() })
+    .expect(201);
+
+  const shareOwnerNotification = data.notifications.find((notification) => notification.recipientId.equals(sourceShare.authorId));
+  assert.equal(shareOwnerNotification?.type, "post_share");
+  assert.equal(shareOwnerNotification?.postId?.toHexString(), ids.public);
+  assert.equal(shareOwnerNotification?.shareId?.toHexString(), sourceShare._id.toHexString());
+
+  const originalAuthorNotification = data.notifications.find((notification) => notification.recipientId.toHexString() === ids.author);
+  assert.equal(originalAuthorNotification?.type, "post_share");
+  assert.equal(originalAuthorNotification?.shareId, undefined, "the original author keeps a link to their source post");
 });
 
 test("share counts stay with the original post or the specific shared card", async () => {
@@ -1412,6 +1443,7 @@ test("share reactions are independent from the source post and other shares", as
   assert.equal(data.notifications.length, 1, "a newly liked shared card notifies its owner once, but self-likes do not notify");
   assert.equal(data.notifications[0]!.recipientId.toHexString(), ids.author);
   assert.equal(data.notifications[0]!.type, "share_like");
+  assert.equal(data.notifications[0]!.shareId?.toHexString(), shareOne._id.toHexString());
 
   const removeLike = await request(app)
     .delete(shareOneLikeUrl)
