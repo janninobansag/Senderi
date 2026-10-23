@@ -41,6 +41,14 @@ const commentItemRoutes = [
 const createPostSchema = z.object({
   text: z.string().trim().max(5_000).optional().default(""),
   visibility: z.enum(["public", "friends", "onlyMe"]),
+  mentionedUserIds: z.preprocess((value) => {
+    if (typeof value !== "string") return value;
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  }, z.array(z.string().regex(/^[a-f\d]{24}$/i)).max(10).optional().default([])),
 }).strict();
 
 const updatePostSchema = z.object({
@@ -65,7 +73,7 @@ const updateCommentSchema = z.object({
   text: z.string().trim().min(1).max(2_000),
 }).strict();
 
-function commentContainsMention(text: string, displayName: string): boolean {
+function textContainsMention(text: string, displayName: string): boolean {
   const escapedName = displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`@${escapedName}(?=$|[\\s.,!?;:])`, "u").test(text);
 }
@@ -664,7 +672,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
   }).single("file");
   const uploadPost = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 2 },
+    limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 3 },
   }).single("file");
 
   const requirePostOwner = async (request: Parameters<typeof authenticated>[0], response: Response, next: Parameters<typeof authenticated>[2]) => {
@@ -1124,7 +1132,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         throw new HttpError(400, "validation_error", "One or more mentioned accounts could not be found.");
       }
       for (const mentionedUser of mentionedUsers) {
-        if (!commentContainsMention(parsed.data.text, mentionedUser.displayName)) {
+        if (!textContainsMention(parsed.data.text, mentionedUser.displayName)) {
           throw new HttpError(400, "validation_error", "Mentioned accounts must appear in the comment.");
         }
         if (!(await canViewPost(database, mentionedUser._id, post))) {
@@ -1150,6 +1158,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         actorId: session.user._id,
         type: "post_comment",
         postId,
+        ...(share ? { shareId: share._id } : {}),
       });
       for (const mentionedUser of mentionedUsers) {
         if (mentionedUser._id.equals(commentRecipientId)) continue;
@@ -1158,6 +1167,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
           actorId: session.user._id,
           type: "post_mention",
           postId,
+          ...(share ? { shareId: share._id } : {}),
         });
       }
 
@@ -1503,19 +1513,37 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         throw new HttpError(400, "validation_error", "A post must include text or a photo.");
       }
 
-      const optimizedPhoto = request.file ? await optimizePostPhoto(request.file) : undefined;
-
       const session = getAuthenticatedSession(response);
       const database = dependencies.getDatabase();
       const now = new Date();
+      const mentionedIds = [...new Set(parsed.data.mentionedUserIds)].map((id) => new ObjectId(id));
+      const mentionedUsers = mentionedIds.length > 0
+        ? await database.collection<UserDocument>(collectionNames.users).find({ _id: { $in: mentionedIds } }).toArray()
+        : [];
+      if (mentionedUsers.length !== mentionedIds.length) {
+        throw new HttpError(400, "validation_error", "One or more mentioned accounts could not be found.");
+      }
+
       const post: PostDocument = {
         _id: new ObjectId(),
         authorId: session.user._id,
         text: parsed.data.text,
+        ...(mentionedIds.length ? { mentionedUserIds: mentionedIds } : {}),
         visibility: parsed.data.visibility,
         createdAt: now,
         updatedAt: now,
       };
+
+      for (const mentionedUser of mentionedUsers) {
+        if (!textContainsMention(parsed.data.text, mentionedUser.displayName)) {
+          throw new HttpError(400, "validation_error", "Mentioned accounts must appear in the post text.");
+        }
+        if (!(await canViewPost(database, mentionedUser._id, post))) {
+          throw new HttpError(400, "validation_error", "Mentioned accounts must be able to view this post.");
+        }
+      }
+
+      const optimizedPhoto = request.file ? await optimizePostPhoto(request.file) : undefined;
       let uploadedAssetId: string | undefined;
 
       if (optimizedPhoto) {
@@ -1534,6 +1562,15 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
           });
         }
         throw error;
+      }
+
+      for (const mentionedUser of mentionedUsers) {
+        await createNotification(database, {
+          recipientId: mentionedUser._id,
+          actorId: session.user._id,
+          type: "post_body_mention",
+          postId: post._id,
+        });
       }
 
       response.setHeader("Cache-Control", "private, no-store");
@@ -1661,6 +1698,30 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
 
     response.setHeader("Cache-Control", "private, no-store");
     response.json(toPostListResponse(items, page.nextCursor));
+  });
+
+  router.get("/:postId/shares/:shareId", authenticated, async (request, response) => {
+    const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+    const shareId = toObjectIdOrNotFound(String(request.params.shareId), "share");
+    const database = dependencies.getDatabase();
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const [post, share] = await Promise.all([
+      database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId }),
+      database.collection<ShareDocument>(collectionNames.shares).findOne({ _id: shareId, sourcePostId: postId }),
+    ]);
+
+    if (
+      !post || post.visibility !== "public" || post.hiddenAt || !share ||
+      !(await canViewShare(database, viewerId, share))
+    ) {
+      throw new HttpError(404, "not_found", "Shared post was not found.");
+    }
+
+    const [item] = await toFeedResponses(database, [{ kind: "share", share, sourcePost: post }], viewerId, dependencies.getCloudinaryCloudName());
+    if (!item) throw new HttpError(404, "not_found", "Shared post was not found.");
+
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ post: item } satisfies PostResponse);
   });
 
   router.get("/:postId", authenticated, async (request, response) => {

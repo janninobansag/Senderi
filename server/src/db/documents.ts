@@ -69,6 +69,7 @@ export interface PostDocument {
   _id: ObjectId;
   authorId: ObjectId;
   text?: string;
+  mentionedUserIds?: ObjectId[];
   /** Cloudinary authenticated asset public ID; never return it to clients. */
   photoAssetId?: string;
   visibility: PostVisibility;
@@ -145,6 +146,7 @@ export type NotificationType =
   | "share_like"
   | "post_comment"
   | "post_mention"
+  | "post_body_mention"
   | "post_share"
   | "friend_request"
   | "friend_accepted";

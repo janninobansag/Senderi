@@ -89,6 +89,7 @@ export type NotificationType =
   | "share_like"
   | "post_comment"
   | "post_mention"
+  | "post_body_mention"
   | "post_share"
   | "friend_request"
   | "friend_accepted";
@@ -163,6 +164,7 @@ export type LikeResponse = PostLikeState;
 export interface CreatePostRequest {
   text: string;
   visibility: Visibility;
+  mentionedUserIds?: string[];
 }
 
 export interface CreatePostResponse {

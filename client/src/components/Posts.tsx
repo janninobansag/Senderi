@@ -34,7 +34,6 @@ function getCommentPreview(comments: Comment[], maxComments = 2): Comment[] {
     if (commentWithReply) {
       return [{
         ...commentWithReply,
-        replies: commentWithReply.replies.slice(0, maxComments - 1),
       }];
     }
   }
@@ -70,8 +69,10 @@ interface MentionTextareaProps {
   maxLength: number;
   disabled: boolean;
   ariaLabel: string;
+  required?: boolean;
   onChange: (value: string) => void;
   onMentionSelect: (user: User) => void;
+  onFocus?: React.FocusEventHandler<HTMLTextAreaElement>;
   onKeyDown?: React.KeyboardEventHandler<HTMLTextAreaElement>;
 }
 
@@ -84,8 +85,10 @@ function MentionTextarea({
   maxLength,
   disabled,
   ariaLabel,
+  required,
   onChange,
   onMentionSelect,
+  onFocus,
   onKeyDown,
 }: MentionTextareaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -172,6 +175,7 @@ function MentionTextarea({
         value={value}
         rows={rows}
         maxLength={maxLength}
+        required={required}
         onChange={(event) => {
           const nextValue = event.target.value;
           const caret = event.currentTarget.selectionStart;
@@ -192,6 +196,7 @@ function MentionTextarea({
           setMentionSearch({ query: query.trim(), start: atIndex, end: caret });
         }}
         onKeyDown={handleKeyDown}
+        onFocus={onFocus}
         disabled={disabled}
       />
       {matches.length > 0 && mentionSearch && (
@@ -556,9 +561,9 @@ function CommentsPanel({
       ? rootComment.replies.find((reply) => reply.id === comment.replyToCommentId)
       : undefined;
     const isReplyThreadExpanded = expandedReplyThreads.has(comment.id);
-    const visibleReplies = preview || isReplyThreadExpanded
+    const visibleReplies = isReplyThreadExpanded
       ? comment.replies
-      : comment.replies.slice(0, VISIBLE_REPLIES_PER_THREAD);
+      : comment.replies.slice(0, preview ? 1 : VISIBLE_REPLIES_PER_THREAD);
     const hiddenReplyCount = comment.replies.length - visibleReplies.length;
 
     return (
@@ -723,7 +728,7 @@ function CommentsPanel({
               {visibleReplies.map((reply) => renderComment(reply, true, comment))}
             </ul>
           )}
-          {!preview && comment.replies.length > VISIBLE_REPLIES_PER_THREAD && (
+          {(preview ? comment.replies.length > 1 : comment.replies.length > VISIBLE_REPLIES_PER_THREAD) && (
             <button
               className="comment-view-more"
               type="button"
@@ -737,7 +742,7 @@ function CommentsPanel({
               })}
             >
               {isReplyThreadExpanded
-                ? "Show fewer replies"
+                ? "Hide"
                 : `View ${hiddenReplyCount} more ${hiddenReplyCount === 1 ? "reply" : "replies"}`}
             </button>
           )}
@@ -1277,6 +1282,7 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
     typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches,
   );
   const [text, setText] = useState("");
+  const [selectedMentions, setSelectedMentions] = useState<User[]>([]);
   const [visibility, setVisibility] = useState<Visibility>("friends");
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -1359,12 +1365,17 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
     setIsSubmitting(true);
     setMessage(null);
     try {
-      const body: CreatePostRequest = { text: trimmedText, visibility };
+      const body: CreatePostRequest = {
+        text: trimmedText,
+        visibility,
+        mentionedUserIds: getActiveMentionIds(trimmedText, selectedMentions),
+      };
       let response: CreatePostResponse;
       if (photo) {
         const form = new FormData();
         form.append("text", body.text);
         form.append("visibility", body.visibility);
+        form.append("mentionedUserIds", JSON.stringify(body.mentionedUserIds ?? []));
         form.append("file", photo);
         setUploadProgress(0);
         response = await apiSubmitPost<CreatePostResponse>("/api/posts", form, setUploadProgress);
@@ -1372,6 +1383,7 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
         response = await apiFetch<CreatePostResponse>("/api/posts", { method: "POST", body });
       }
       setText("");
+      setSelectedMentions([]);
       setPhoto(null);
       setIsExpanded(false);
       setUploadProgress(null);
@@ -1454,26 +1466,30 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
       onSubmit={(event) => void submitPost(event)}
     >
       <div className="post-composer-inline">
-        <div className="post-composer-avatar" aria-hidden="true">
+        <Link className="post-composer-avatar" to="/profile" aria-label="View your profile" title="View your profile">
           {user?.avatarUrl
             ? <img src={user.avatarUrl} alt="" />
             : (user?.displayName ?? "Senderi").trim().charAt(0).toUpperCase() || "S"}
-        </div>
+        </Link>
         <div className="post-composer-input-wrap">
-          <textarea
+          <MentionTextarea
             id="post-text"
             className="post-composer-input"
-            aria-label="Post text"
+            ariaLabel="Post text"
             placeholder={isMobileViewport ? "Share your thoughts." : `What's on your mind, ${user?.displayName?.trim() || "friend"}?`}
             rows={1}
             value={text}
-            onChange={(event) => {
-              setText(event.target.value);
+            onChange={(nextText) => {
+              setText(nextText);
               setMessage(null);
             }}
+            onMentionSelect={(mentionedUser) => setSelectedMentions((current) =>
+              current.some((item) => item.id === mentionedUser.id) ? current : [...current, mentionedUser],
+            )}
             onFocus={() => setIsExpanded(true)}
             maxLength={MAX_POST_LENGTH}
             required={!photo}
+            disabled={isSubmitting}
           />
           {isExpanded && (
             <div className="post-composer-footer">
