@@ -89,7 +89,7 @@ export function ProfileImageViewer({ image, profile, onClose }: { image: { label
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
         </button>
         <Link className="post-photo-viewer-home" to="/" aria-label="Senderi home" title="Go to home">
-          <img src="/senderi-mark.svg" alt="" />
+          <img src="/senderi-symbol.png" alt="" />
         </Link>
       </div>
       <div className="post-detail-layout">

@@ -107,7 +107,7 @@ function AuthPageShell({
           <h1 className="mt-4 max-w-lg font-display text-4xl font-bold leading-tight tracking-[-0.055em] text-ink sm:text-5xl">{title}</h1>
           <p className="mt-5 max-w-md text-base leading-7 text-muted">{description}</p>
           <div className="auth-note mt-8">
-            <span className="auth-note-mark" aria-hidden="true"><img src="/senderi-mark.svg" alt="" /></span>
+            <span className="auth-note-mark" aria-hidden="true"><img src="/senderi-symbol.png" alt="" /></span>
             <p>Make space for the people and moments that matter.</p>
           </div>
         </div>

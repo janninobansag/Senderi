@@ -37,7 +37,7 @@ function PostActionIcon({ name }: { name: "like" | "comment" | "share" }) {
   }
 
   if (name === "comment") {
-    return <svg {...commonProps}><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H7l-4 2v-5.5A7.5 7.5 0 1 1 20 11.5Z" /></svg>;
+    return <svg {...commonProps}><path d="M20 11.5c0 4.14-3.58 7.5-8 7.5a8.75 8.75 0 0 1-3.58-.75L4 20l.98-3.32A7.08 7.08 0 0 1 4 11.5C4 7.36 7.58 4 12 4s8 3.36 8 7.5Z" /></svg>;
   }
 
   return <svg {...commonProps}><path d="M14 5 21 12l-7 7" /><path d="M21 12H9a6 6 0 0 0-6 6" /></svg>;
@@ -127,7 +127,7 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
         onClick={toggleComments}
       >
         <PostActionIcon name="comment" />
-        <span>{isOpen ? "Hide comments" : "Comment"}</span>
+        <span>Comment</span>
       </button>
       {isOpen && (
         <section className="post-comments-panel space-y-4" aria-label="Post comments">
@@ -433,7 +433,7 @@ function PostDetailsDialog({
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
           </button>
           <Link className="post-photo-viewer-home" to="/" aria-label="Senderi home" title="Go to home">
-            <img src="/senderi-mark.svg" alt="" />
+          <img src="/senderi-symbol.png" alt="" />
           </Link>
         </div>
       ) : (
