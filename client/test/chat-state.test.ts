@@ -7,6 +7,7 @@ import {
   mergeChatMessage,
   mergeChatMessages,
   retryChatMessage,
+  sortFriendsByLatestMessage,
   type ChatMessage,
 } from "../src/chat/message-state";
 
@@ -59,4 +60,14 @@ test("duplicate realtime deliveries and overlapping history pages are deduplicat
   const merged = mergeChatMessages([event], [event, event]);
 
   assert.equal(merged.length, 1);
+});
+
+test("conversation list sorts by newest incoming or outgoing message activity", () => {
+  const friends = [{ id: "older", name: "Older chat" }, { id: "newer", name: "Newer chat" }, { id: "none", name: "No messages" }];
+  const conversations = {
+    older: [createPendingMessage("me", "older", "Earlier", "older-message", "2026-10-20T12:00:00.000Z")],
+    newer: [createPendingMessage("newer", "me", "Recent", "newer-message", "2026-10-23T12:00:00.000Z")],
+  };
+
+  assert.deepEqual(sortFriendsByLatestMessage(friends, conversations).map((friend) => friend.id), ["newer", "older", "none"]);
 });

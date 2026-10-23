@@ -22,6 +22,7 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       ["friendRequests", { userIdLow: 1, userIdHigh: 1 }],
       ["likes", { userId: 1, postId: 1 }],
       ["shareLikes", { userId: 1, shareId: 1 }],
+      ["commentReactions", { commentId: 1, userId: 1 }],
       ["pushSubscriptions", { endpoint: 1 }],
       ["messages", { senderId: 1, clientId: 1 }],
       ["passwordResets", { userId: 1 }],
@@ -37,6 +38,24 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       [{ userId: 1, shareId: 1 }, "share_likes_user_share_unique", true],
       [{ shareId: 1 }, "share_likes_by_share", false],
     ],
+  );
+  assert.deepEqual(
+    databaseIndexes
+      .filter((index) => index.collection === "commentReactions")
+      .map(({ keys, options }) => [keys, options.name, options.unique ?? false]),
+    [
+      [{ commentId: 1, userId: 1 }, "comment_reactions_comment_user_unique", true],
+      [{ commentId: 1 }, "comment_reactions_by_comment", false],
+      [{ postId: 1 }, "comment_reactions_by_post", false],
+    ],
+  );
+  assert.deepEqual(
+    databaseIndexes.find((index) => index.options.name === "comments_post_reply_target"),
+    {
+      collection: "comments",
+      keys: { postId: 1, replyToCommentId: 1 },
+      options: { name: "comments_post_reply_target" },
+    },
   );
 
   const pendingFriendRequestIndex = databaseIndexes.find(

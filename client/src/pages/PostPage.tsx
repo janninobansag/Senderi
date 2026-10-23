@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import type { Post, PostResponse } from "../../../shared";
 import { ApiError, apiFetch } from "../api/client";
 import { RequestErrorState } from "../components/AsyncState";
@@ -8,12 +8,10 @@ import { PostListSkeleton } from "../components/Skeletons";
 
 export function PostPage() {
   const { postId } = useParams();
-  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [post, setPost] = useState<Post | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const commentsInitiallyOpen = searchParams.get("comments") === "1";
 
   const loadPost = useCallback(async (showLoading = true) => {
     if (!postId) {
@@ -52,7 +50,7 @@ export function PostPage() {
       ) : (
         <PostCard
           post={post}
-          commentsInitiallyOpen={commentsInitiallyOpen}
+          commentsPreview={false}
           onUpdated={setPost}
           onShared={() => { void loadPost(false); }}
           onDeleted={() => navigate("/", { replace: true })}

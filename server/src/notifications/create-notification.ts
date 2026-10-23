@@ -19,7 +19,7 @@ export async function createNotification(database: Db, input: CreateNotification
   const url = notification.type === "friend_request" || notification.type === "friend_accepted"
     ? "/friends"
     : notification.postId
-      ? `/posts/${notification.postId.toHexString()}${notification.type === "post_comment" ? "?comments=1" : ""}`
+      ? `/posts/${notification.postId.toHexString()}${notification.type === "post_comment" || notification.type === "post_mention" ? "?comments=1" : ""}`
       : "/";
   void sendPushToUser(database, notification.recipientId, {
     title: "Senderi",
@@ -34,6 +34,7 @@ function notificationPushMessage(type: NotificationDocument["type"]): string {
     case "post_like": return "Someone liked your post.";
     case "share_like": return "Someone liked your shared post.";
     case "post_comment": return "Someone commented on your post.";
+    case "post_mention": return "Someone mentioned you in a comment.";
     case "post_share": return "Someone shared your post.";
     case "friend_request": return "You have a new friend request.";
     case "friend_accepted": return "Your friend request was accepted.";

@@ -8,6 +8,7 @@ export const collectionNames = {
   friendships: "friendships",
   posts: "posts",
   comments: "comments",
+  commentReactions: "commentReactions",
   likes: "likes",
   shareLikes: "shareLikes",
   shares: "shares",
@@ -97,12 +98,24 @@ export interface ShareLikeDocument {
 export interface CommentDocument {
   _id: ObjectId;
   postId: ObjectId;
+  shareId?: ObjectId;
+  parentCommentId?: ObjectId;
+  replyToCommentId?: ObjectId;
+  mentionedUserIds?: ObjectId[];
   authorId: ObjectId;
   text: string;
   createdAt: Date;
   hiddenAt?: Date;
   hiddenBy?: ObjectId;
   hiddenReason?: string;
+}
+
+export interface CommentReactionDocument {
+  _id: ObjectId;
+  postId: ObjectId;
+  commentId: ObjectId;
+  userId: ObjectId;
+  createdAt: Date;
 }
 
 export interface AdminAuditDocument {
@@ -131,6 +144,7 @@ export type NotificationType =
   | "post_like"
   | "share_like"
   | "post_comment"
+  | "post_mention"
   | "post_share"
   | "friend_request"
   | "friend_accepted";

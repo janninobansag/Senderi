@@ -88,6 +88,7 @@ export type NotificationType =
   | "post_like"
   | "share_like"
   | "post_comment"
+  | "post_mention"
   | "post_share"
   | "friend_request"
   | "friend_accepted";
@@ -179,6 +180,8 @@ export interface Share extends PostLikeState {
   id: string;
   author: User;
   sourcePostId: string;
+  /** Number of visible comments on this specific share. */
+  commentCount: number;
   /** Number of visible shares made from this specific share card. */
   shareCount: number;
   sourceShareId?: string;
@@ -218,15 +221,29 @@ export interface UpdateShareResponse {
 export interface Comment {
   id: string;
   postId: string;
+  parentCommentId?: string;
+  replyToCommentId?: string;
   author: User;
   text: string;
   createdAt: string;
+  reactionCount: number;
+  isReactedByViewer: boolean;
+  replyCount: number;
+  replies: Comment[];
 }
 
 export type CommentListResponse = Page<Comment>;
 
 export interface CreateCommentRequest {
   text: string;
+  parentCommentId?: string;
+  replyToCommentId?: string;
+  mentionedUserIds?: string[];
+}
+
+export interface CommentReactionSummary {
+  reactionCount: number;
+  isReactedByViewer: boolean;
 }
 
 export interface CreateCommentResponse {

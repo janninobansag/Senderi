@@ -7,7 +7,7 @@ import { z } from "zod";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type CommentDocument, type FriendshipDocument, type LikeDocument, type PostDocument, type PostVisibility, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../db/documents";
+import { collectionNames, type CommentDocument, type CommentReactionDocument, type FriendshipDocument, type LikeDocument, type PostDocument, type PostVisibility, type ShareDocument, type ShareLikeDocument, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { cloudinaryPostPhotoStorage, optimizePostPhoto, type PostPhotoStorage } from "../media/post-photo";
 import { requireClientOrigin } from "../middleware/require-client-origin";
@@ -32,6 +32,12 @@ const commentPageQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
 }).strict();
 
+const commentCollectionRoutes = ["/:postId/comments", "/:postId/shares/:shareId/comments"];
+const commentItemRoutes = [
+  "/:postId/comments/:commentId",
+  "/:postId/shares/:shareId/comments/:commentId",
+];
+
 const createPostSchema = z.object({
   text: z.string().trim().max(5_000).optional().default(""),
   visibility: z.enum(["public", "friends", "onlyMe"]),
@@ -48,7 +54,21 @@ const updateShareSchema = z.object({
 
 const createCommentSchema = z.object({
   text: z.string().trim().min(1).max(2_000),
+  parentCommentId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  replyToCommentId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+  mentionedUserIds: z.array(z.string().regex(/^[a-f\d]{24}$/i)).max(10).optional().default([]),
+}).strict().refine((value) => !value.replyToCommentId || Boolean(value.parentCommentId), {
+  message: "Reply targets require a parent comment.",
+});
+
+const updateCommentSchema = z.object({
+  text: z.string().trim().min(1).max(2_000),
 }).strict();
+
+function commentContainsMention(text: string, displayName: string): boolean {
+  const escapedName = displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`@${escapedName}(?=$|[\\s.,!?;:])`, "u").test(text);
+}
 
 const createShareSchema = z.object({
   visibility: z.enum(["public", "friends", "onlyMe"]),
@@ -80,6 +100,7 @@ interface ShareResponseItem {
   createdAt: string;
   likeCount: number;
   isLikedByViewer: boolean;
+  commentCount: number;
   shareCount: number;
 }
 
@@ -124,9 +145,15 @@ interface UpdateShareResponse {
 interface CommentResponseItem {
   id: string;
   postId: string;
+  parentCommentId?: string;
+  replyToCommentId?: string;
   author: ReturnType<typeof toPublicUserResponse>;
   text: string;
   createdAt: string;
+  reactionCount: number;
+  isReactedByViewer: boolean;
+  replyCount: number;
+  replies: CommentResponseItem[];
 }
 
 interface CommentCursor {
@@ -150,6 +177,42 @@ const defaultDependencies: PostsRouterDependencies = {
 
 function getAuthenticatedSession(response: Response): AuthenticatedSessionContext {
   return response.locals.authenticatedSession as AuthenticatedSessionContext;
+}
+
+function getCommentScopeFilter(postId: ObjectId, shareId?: ObjectId): Filter<CommentDocument> {
+  return {
+    postId,
+    ...(shareId ? { shareId } : { shareId: { $exists: false } }),
+  };
+}
+
+async function getCommentThreadContext(
+  database: Db,
+  viewerId: ObjectId,
+  postId: ObjectId,
+  shareId?: ObjectId,
+): Promise<{ post: PostDocument; share?: ShareDocument }> {
+  const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+  if (!post) throw new HttpError(404, "not_found", "Post was not found.");
+
+  if (!shareId) {
+    if (!(await canViewPost(database, viewerId, post))) {
+      throw new HttpError(404, "not_found", "Post was not found.");
+    }
+    return { post };
+  }
+
+  const share = await database.collection<ShareDocument>(collectionNames.shares).findOne({
+    _id: shareId,
+    sourcePostId: postId,
+  });
+  if (
+    !share || post.visibility !== "public" || post.hiddenAt ||
+    !(await canViewShare(database, viewerId, share))
+  ) {
+    throw new HttpError(404, "not_found", "Shared post was not found.");
+  }
+  return { post, share };
 }
 
 function parsePageQuery(query: Record<string, unknown>) {
@@ -234,8 +297,19 @@ async function getVisibleCommentCounts(database: Db, posts: PostDocument[]): Pro
   if (posts.length === 0) return new Map();
   const summaries = await database.collection<CommentDocument>(collectionNames.comments)
     .aggregate<AggregatedCommentCount>([
-      { $match: { postId: { $in: posts.map((post) => post._id) }, hiddenAt: { $exists: false } } },
+      { $match: { postId: { $in: posts.map((post) => post._id) }, shareId: { $exists: false }, hiddenAt: { $exists: false } } },
       { $group: { _id: "$postId", commentCount: { $sum: 1 } } },
+    ])
+    .toArray();
+  return new Map(summaries.map((summary) => [summary._id.toHexString(), summary.commentCount]));
+}
+
+async function getVisibleShareCommentCounts(database: Db, shares: ShareDocument[]): Promise<Map<string, number>> {
+  if (shares.length === 0) return new Map();
+  const summaries = await database.collection<CommentDocument>(collectionNames.comments)
+    .aggregate<AggregatedCommentCount>([
+      { $match: { shareId: { $in: shares.map((share) => share._id) }, hiddenAt: { $exists: false } } },
+      { $group: { _id: "$shareId", commentCount: { $sum: 1 } } },
     ])
     .toArray();
   return new Map(summaries.map((summary) => [summary._id.toHexString(), summary.commentCount]));
@@ -309,19 +383,42 @@ async function getVisibleShareShareCounts(
   return new Map(summaries.map((summary) => [summary._id.toHexString(), summary.shareCount]));
 }
 
-function toCommentResponse(comment: CommentDocument, author: UserDocument, cloudName?: string): CommentResponseItem {
+function toCommentResponse(
+  comment: CommentDocument,
+  author: UserDocument,
+  cloudName?: string,
+  reactionCount = 0,
+  isReactedByViewer = false,
+  replyCount = 0,
+): CommentResponseItem {
   return {
     id: comment._id.toHexString(),
     postId: comment.postId.toHexString(),
+    ...(comment.parentCommentId ? { parentCommentId: comment.parentCommentId.toHexString() } : {}),
+    ...(comment.replyToCommentId ? { replyToCommentId: comment.replyToCommentId.toHexString() } : {}),
     author: toPublicUserResponse(author, cloudName),
     text: comment.text,
     createdAt: comment.createdAt.toISOString(),
+    reactionCount,
+    isReactedByViewer,
+    replyCount,
+    replies: [],
   };
+}
+
+async function getCommentReactionSummary(database: Db, commentId: ObjectId, viewerId: ObjectId) {
+  const reactions = database.collection<CommentReactionDocument>(collectionNames.commentReactions);
+  const [reactionCount, viewerReaction] = await Promise.all([
+    reactions.countDocuments({ commentId }),
+    reactions.findOne({ commentId, userId: viewerId }),
+  ]);
+  return { reactionCount, isReactedByViewer: Boolean(viewerReaction) };
 }
 
 async function toCommentResponses(
   database: Db,
   comments: CommentDocument[],
+  viewerId: ObjectId,
   cloudName?: string,
 ): Promise<CommentResponseItem[]> {
   if (comments.length === 0) return [];
@@ -345,10 +442,28 @@ async function toCommentResponses(
       },
     })
     .toArray();
+  const reactions = await database.collection<CommentReactionDocument>(collectionNames.commentReactions)
+    .find({ commentId: { $in: comments.map((comment) => comment._id) } })
+    .toArray();
   const authorsById = new Map(authors.map((author) => [author._id.toHexString(), author]));
+  const reactionsByCommentId = new Map<string, CommentReactionDocument[]>();
+  for (const reaction of reactions) {
+    const key = reaction.commentId.toHexString();
+    const current = reactionsByCommentId.get(key) ?? [];
+    current.push(reaction);
+    reactionsByCommentId.set(key, current);
+  }
   return comments.flatMap((comment) => {
     const author = authorsById.get(comment.authorId.toHexString());
-    return author ? [toCommentResponse(comment, author, cloudName)] : [];
+    if (!author) return [];
+    const commentReactions = reactionsByCommentId.get(comment._id.toHexString()) ?? [];
+    return [toCommentResponse(
+      comment,
+      author,
+      cloudName,
+      commentReactions.length,
+      commentReactions.some((reaction) => reaction.userId.equals(viewerId)),
+    )];
   });
 }
 
@@ -420,6 +535,7 @@ function toShareResponse(
   cloudName?: string,
   likeSummary: LikeSummary = { likeCount: 0, isLikedByViewer: false },
   shareCount = 0,
+  commentCount = 0,
 ): ShareResponseItem {
   return {
     id: share._id.toHexString(),
@@ -430,6 +546,7 @@ function toShareResponse(
     visibility: share.visibility,
     createdAt: share.createdAt.toISOString(),
     ...likeSummary,
+    commentCount,
     shareCount,
   };
 }
@@ -444,7 +561,7 @@ async function toFeedResponses(
   const posts = records.map((record) => record.kind === "post" ? record.post : record.sourcePost);
   const shares = records.flatMap((record) => record.kind === "share" ? [record.share] : []);
   const shareIds = shares.map((share) => share._id);
-  const [postResponses, shareAuthors, shareLikeSummaries, shareShareCounts] = await Promise.all([
+  const [postResponses, shareAuthors, shareLikeSummaries, shareShareCounts, shareCommentCounts] = await Promise.all([
     toPostResponses(database, posts, viewerId, cloudName),
     shares.length > 0
       ? database
@@ -480,6 +597,7 @@ async function toFeedResponses(
       ]).toArray()
       : Promise.resolve([] as AggregatedLikeSummary[]),
     getVisibleShareShareCounts(database, shares, viewerId),
+    getVisibleShareCommentCounts(database, shares),
   ]);
   const postResponsesById = new Map(postResponses.map((post) => [post.id, post]));
   const shareAuthorsById = new Map(shareAuthors.map((author) => [author._id.toHexString(), author]));
@@ -503,6 +621,7 @@ async function toFeedResponses(
           cloudName,
           shareLikesById.get(record.share._id.toHexString()) ?? { likeCount: 0, isLikedByViewer: false },
           shareShareCounts.get(record.share._id.toHexString()) ?? 0,
+          shareCommentCounts.get(record.share._id.toHexString()) ?? 0,
         ),
       }]
       : [];
@@ -728,6 +847,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       await Promise.all([
         database.collection<LikeDocument>(collectionNames.likes).deleteMany({ postId: post._id }),
         database.collection<CommentDocument>(collectionNames.comments).deleteMany({ postId: post._id }),
+        database.collection<CommentReactionDocument>(collectionNames.commentReactions).deleteMany({ postId: post._id }),
         database.collection<ShareLikeDocument>(collectionNames.shareLikes).deleteMany({
           shareId: { $in: sourceShares.map((share) => share._id) },
         }),
@@ -882,14 +1002,15 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     },
   );
 
-  router.get("/:postId/comments", authenticated, async (request, response) => {
+  router.get(commentCollectionRoutes, authenticated, async (request, response) => {
     const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
     const database = dependencies.getDatabase();
     const viewerId = getAuthenticatedSession(response).user._id;
-    const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
-    if (!post || !(await canViewPost(database, viewerId, post))) {
-      throw new HttpError(404, "not_found", "Post was not found.");
-    }
+    const shareId = request.params.shareId
+      ? toObjectIdOrNotFound(String(request.params.shareId), "share")
+      : undefined;
+    await getCommentThreadContext(database, viewerId, postId, shareId);
+    const scopeFilter = getCommentScopeFilter(postId, shareId);
 
     const page = parseCommentPageQuery(request.query as Record<string, unknown>);
     const cursorFilter: Filter<CommentDocument> | undefined = page.cursor
@@ -900,9 +1021,14 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         ],
       }
       : undefined;
+    const rootFilter: Filter<CommentDocument> = {
+      ...scopeFilter,
+      parentCommentId: { $exists: false },
+      hiddenAt: { $exists: false },
+    };
     const filter: Filter<CommentDocument> = cursorFilter
-      ? { $and: [{ postId, hiddenAt: { $exists: false } }, cursorFilter] }
-      : { postId, hiddenAt: { $exists: false } };
+      ? { $and: [rootFilter, cursorFilter] }
+      : rootFilter;
     const comments = await database
       .collection<CommentDocument>(collectionNames.comments)
       .find(filter)
@@ -911,7 +1037,37 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       .toArray();
     const hasMore = comments.length > page.limit;
     const pageComments = hasMore ? comments.slice(0, page.limit) : comments;
-    const items = await toCommentResponses(database, pageComments, dependencies.getCloudinaryCloudName());
+    const replies = pageComments.length > 0
+      ? await database.collection<CommentDocument>(collectionNames.comments)
+        .find({
+          ...scopeFilter,
+          parentCommentId: { $in: pageComments.map((comment) => comment._id) },
+          hiddenAt: { $exists: false },
+        })
+        .toArray()
+      : [];
+    replies.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left._id.toHexString().localeCompare(right._id.toHexString()));
+    const flatItems = await toCommentResponses(database, [...pageComments, ...replies], viewerId, dependencies.getCloudinaryCloudName());
+    const itemsById = new Map(flatItems.map((comment) => [comment.id, comment]));
+    const repliesByParentId = new Map<string, CommentResponseItem[]>();
+    const replyCountByTargetId = new Map<string, number>();
+    for (const reply of flatItems) {
+      if (!reply.parentCommentId) continue;
+      const parentReplies = repliesByParentId.get(reply.parentCommentId) ?? [];
+      parentReplies.push(reply);
+      repliesByParentId.set(reply.parentCommentId, parentReplies);
+      if (reply.replyToCommentId) {
+        replyCountByTargetId.set(reply.replyToCommentId, (replyCountByTargetId.get(reply.replyToCommentId) ?? 0) + 1);
+      }
+    }
+    const items = pageComments.flatMap((comment) => {
+      const item = itemsById.get(comment._id.toHexString());
+      const commentReplies = (repliesByParentId.get(comment._id.toHexString()) ?? []).map((reply) => ({
+        ...reply,
+        replyCount: replyCountByTargetId.get(reply.id) ?? 0,
+      }));
+      return item ? [{ ...item, replyCount: commentReplies.length, replies: commentReplies }] : [];
+    });
     const nextCursor = hasMore && pageComments.length > 0
       ? encodeCommentCursor(pageComments[pageComments.length - 1]!)
       : null;
@@ -921,37 +1077,89 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
   });
 
   router.post(
-    "/:postId/comments",
+    commentCollectionRoutes,
     requireClientOrigin(dependencies.getAllowedOrigins),
     authenticated,
     async (request, response) => {
       const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
       const database = dependencies.getDatabase();
       const session = getAuthenticatedSession(response);
-      const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
-      if (!post || !(await canViewPost(database, session.user._id, post))) {
-        throw new HttpError(404, "not_found", "Post was not found.");
-      }
+      const shareId = request.params.shareId
+        ? toObjectIdOrNotFound(String(request.params.shareId), "share")
+        : undefined;
+      const { post, share } = await getCommentThreadContext(database, session.user._id, postId, shareId);
+      const scopeFilter = getCommentScopeFilter(postId, shareId);
 
       const parsed = createCommentSchema.safeParse(request.body);
       if (!parsed.success) {
-        throw new HttpError(400, "validation_error", "Comment text must contain 1 to 2000 characters.");
+        throw new HttpError(400, "validation_error", "Comment text or reply target is invalid.");
+      }
+
+      const parentCommentId = parsed.data.parentCommentId ? new ObjectId(parsed.data.parentCommentId) : undefined;
+      const parentComment = parentCommentId
+        ? await database.collection<CommentDocument>(collectionNames.comments).findOne({
+          ...scopeFilter,
+          _id: parentCommentId,
+          parentCommentId: { $exists: false },
+          hiddenAt: { $exists: false },
+        })
+        : null;
+      if (parentCommentId && !parentComment) throw new HttpError(404, "not_found", "Comment was not found.");
+      const replyToCommentId = parsed.data.replyToCommentId ? new ObjectId(parsed.data.replyToCommentId) : undefined;
+      const replyTarget = replyToCommentId && parentCommentId
+        ? await database.collection<CommentDocument>(collectionNames.comments).findOne({
+          ...scopeFilter,
+          _id: replyToCommentId,
+          parentCommentId,
+          hiddenAt: { $exists: false },
+        })
+        : null;
+      if (replyToCommentId && !replyTarget) throw new HttpError(404, "not_found", "Reply target was not found.");
+
+      const mentionedIds = [...new Set(parsed.data.mentionedUserIds)].map((id) => new ObjectId(id));
+      const mentionedUsers = mentionedIds.length > 0
+        ? await database.collection<UserDocument>(collectionNames.users).find({ _id: { $in: mentionedIds } }).toArray()
+        : [];
+      if (mentionedUsers.length !== mentionedIds.length) {
+        throw new HttpError(400, "validation_error", "One or more mentioned accounts could not be found.");
+      }
+      for (const mentionedUser of mentionedUsers) {
+        if (!commentContainsMention(parsed.data.text, mentionedUser.displayName)) {
+          throw new HttpError(400, "validation_error", "Mentioned accounts must appear in the comment.");
+        }
+        if (!(await canViewPost(database, mentionedUser._id, post))) {
+          throw new HttpError(400, "validation_error", "Mentioned accounts must be able to view this post.");
+        }
       }
 
       const comment: CommentDocument = {
         _id: new ObjectId(),
         postId,
+        ...(shareId ? { shareId } : {}),
+        ...(parentCommentId ? { parentCommentId } : {}),
+        ...(replyToCommentId ? { replyToCommentId } : {}),
+        ...(mentionedIds.length ? { mentionedUserIds: mentionedIds } : {}),
         authorId: session.user._id,
         text: parsed.data.text,
         createdAt: new Date(),
       };
       await database.collection<CommentDocument>(collectionNames.comments).insertOne(comment);
+      const commentRecipientId = replyTarget?.authorId ?? parentComment?.authorId ?? share?.authorId ?? post.authorId;
       await createNotification(database, {
-        recipientId: post.authorId,
+        recipientId: commentRecipientId,
         actorId: session.user._id,
         type: "post_comment",
         postId,
       });
+      for (const mentionedUser of mentionedUsers) {
+        if (mentionedUser._id.equals(commentRecipientId)) continue;
+        await createNotification(database, {
+          recipientId: mentionedUser._id,
+          actorId: session.user._id,
+          type: "post_mention",
+          postId,
+        });
+      }
 
       response.setHeader("Cache-Control", "private, no-store");
       response.status(201).json({
@@ -960,8 +1168,86 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     },
   );
 
+  router.post(
+    commentItemRoutes.map((path) => `${path}/reaction`),
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const commentId = toObjectIdOrNotFound(String(request.params.commentId), "comment");
+      const viewerId = getAuthenticatedSession(response).user._id;
+      const database = dependencies.getDatabase();
+      const shareId = request.params.shareId
+        ? toObjectIdOrNotFound(String(request.params.shareId), "share")
+        : undefined;
+      await getCommentThreadContext(database, viewerId, postId, shareId);
+      const scopeFilter = getCommentScopeFilter(postId, shareId);
+
+      const comment = await database.collection<CommentDocument>(collectionNames.comments).findOne({
+        ...scopeFilter,
+        _id: commentId,
+        hiddenAt: { $exists: false },
+      });
+      if (!comment) throw new HttpError(404, "not_found", "Comment was not found.");
+      if (comment.parentCommentId) {
+        const parent = await database.collection<CommentDocument>(collectionNames.comments).findOne({
+          ...scopeFilter,
+          _id: comment.parentCommentId,
+          parentCommentId: { $exists: false },
+          hiddenAt: { $exists: false },
+        });
+        if (!parent) throw new HttpError(404, "not_found", "Comment was not found.");
+      }
+
+      await database.collection<CommentReactionDocument>(collectionNames.commentReactions).updateOne(
+        { commentId, userId: viewerId },
+        { $setOnInsert: { _id: new ObjectId(), postId, commentId, userId: viewerId, createdAt: new Date() } },
+        { upsert: true },
+      );
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json(await getCommentReactionSummary(database, commentId, viewerId));
+    },
+  );
+
+  router.delete(
+    commentItemRoutes.map((path) => `${path}/reaction`),
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const commentId = toObjectIdOrNotFound(String(request.params.commentId), "comment");
+      const viewerId = getAuthenticatedSession(response).user._id;
+      const database = dependencies.getDatabase();
+      const shareId = request.params.shareId
+        ? toObjectIdOrNotFound(String(request.params.shareId), "share")
+        : undefined;
+      await getCommentThreadContext(database, viewerId, postId, shareId);
+      const scopeFilter = getCommentScopeFilter(postId, shareId);
+
+      const comment = await database.collection<CommentDocument>(collectionNames.comments).findOne({
+        ...scopeFilter,
+        _id: commentId,
+        hiddenAt: { $exists: false },
+      });
+      if (!comment) throw new HttpError(404, "not_found", "Comment was not found.");
+      if (comment.parentCommentId) {
+        const parent = await database.collection<CommentDocument>(collectionNames.comments).findOne({
+          ...scopeFilter,
+          _id: comment.parentCommentId,
+          parentCommentId: { $exists: false },
+          hiddenAt: { $exists: false },
+        });
+        if (!parent) throw new HttpError(404, "not_found", "Comment was not found.");
+      }
+
+      await database.collection<CommentReactionDocument>(collectionNames.commentReactions).deleteOne({ commentId, userId: viewerId });
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json(await getCommentReactionSummary(database, commentId, viewerId));
+    },
+  );
+
   router.patch(
-    "/:postId/comments/:commentId",
+    commentItemRoutes,
     requireClientOrigin(dependencies.getAllowedOrigins),
     authenticated,
     async (request, response) => {
@@ -969,19 +1255,20 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const commentId = toObjectIdOrNotFound(String(request.params.commentId), "comment");
       const session = getAuthenticatedSession(response);
       const database = dependencies.getDatabase();
-      const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
-      if (!post || !(await canViewPost(database, session.user._id, post))) {
-        throw new HttpError(404, "not_found", "Post was not found.");
-      }
+      const shareId = request.params.shareId
+        ? toObjectIdOrNotFound(String(request.params.shareId), "share")
+        : undefined;
+      await getCommentThreadContext(database, session.user._id, postId, shareId);
+      const scopeFilter = getCommentScopeFilter(postId, shareId);
 
-      const parsed = createCommentSchema.safeParse(request.body);
+      const parsed = updateCommentSchema.safeParse(request.body);
       if (!parsed.success) {
         throw new HttpError(400, "validation_error", "Comment text must contain 1 to 2000 characters.");
       }
 
       const filter: Filter<CommentDocument> = {
+        ...scopeFilter,
         _id: commentId,
-        postId,
         authorId: session.user._id,
         hiddenAt: { $exists: false },
       };
@@ -991,15 +1278,28 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const updated = await comments.updateOne(filter, { $set: { text: parsed.data.text } });
       if (updated.matchedCount !== 1) throw new HttpError(404, "not_found", "Comment was not found.");
 
+      const [reactionSummary, replyCount] = await Promise.all([
+        getCommentReactionSummary(database, commentId, session.user._id),
+        comment.parentCommentId
+          ? comments.countDocuments({ ...scopeFilter, replyToCommentId: commentId, hiddenAt: { $exists: false } })
+          : comments.countDocuments({ ...scopeFilter, parentCommentId: commentId, hiddenAt: { $exists: false } }),
+      ]);
       response.setHeader("Cache-Control", "private, no-store");
       response.json({
-        comment: toCommentResponse({ ...comment, text: parsed.data.text }, session.user, dependencies.getCloudinaryCloudName()),
+        comment: toCommentResponse(
+          { ...comment, text: parsed.data.text },
+          session.user,
+          dependencies.getCloudinaryCloudName(),
+          reactionSummary.reactionCount,
+          reactionSummary.isReactedByViewer,
+          replyCount,
+        ),
       });
     },
   );
 
   router.delete(
-    "/:postId/comments/:commentId",
+    commentItemRoutes,
     requireClientOrigin(dependencies.getAllowedOrigins),
     authenticated,
     async (request, response) => {
@@ -1007,18 +1307,48 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const commentId = toObjectIdOrNotFound(String(request.params.commentId), "comment");
       const session = getAuthenticatedSession(response);
       const database = dependencies.getDatabase();
-      const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
-      if (!post || !(await canViewPost(database, session.user._id, post))) {
-        throw new HttpError(404, "not_found", "Post was not found.");
-      }
+      const shareId = request.params.shareId
+        ? toObjectIdOrNotFound(String(request.params.shareId), "share")
+        : undefined;
+      await getCommentThreadContext(database, session.user._id, postId, shareId);
+      const scopeFilter = getCommentScopeFilter(postId, shareId);
 
-      const deleted = await database.collection<CommentDocument>(collectionNames.comments).deleteOne({
+      const comments = database.collection<CommentDocument>(collectionNames.comments);
+      const existing = await comments.findOne({
+        ...scopeFilter,
         _id: commentId,
-        postId,
         authorId: session.user._id,
         hiddenAt: { $exists: false },
       });
-      if (deleted.deletedCount !== 1) throw new HttpError(404, "not_found", "Comment was not found.");
+      if (!existing) throw new HttpError(404, "not_found", "Comment was not found.");
+      let relatedCommentIds = [commentId];
+      if (!existing.parentCommentId) {
+        const replies = await comments.find({ ...scopeFilter, parentCommentId: commentId }).toArray();
+        relatedCommentIds = [...relatedCommentIds, ...replies.map((reply) => reply._id)];
+        const deleted = await comments.deleteMany({
+          ...scopeFilter,
+          $or: [
+            { _id: commentId, authorId: session.user._id, hiddenAt: { $exists: false } },
+            { parentCommentId: commentId },
+          ],
+        });
+        if (deleted.deletedCount === 0) throw new HttpError(404, "not_found", "Comment was not found.");
+      } else {
+        const deleted = await comments.deleteOne({
+          ...scopeFilter,
+          _id: commentId,
+          authorId: session.user._id,
+          hiddenAt: { $exists: false },
+        });
+        if (deleted.deletedCount !== 1) throw new HttpError(404, "not_found", "Comment was not found.");
+        await comments.updateMany(
+          { ...scopeFilter, replyToCommentId: commentId },
+          { $unset: { replyToCommentId: "" } },
+        );
+      }
+      await database.collection<CommentReactionDocument>(collectionNames.commentReactions).deleteMany({
+        commentId: { $in: relatedCommentIds },
+      });
 
       response.setHeader("Cache-Control", "private, no-store");
       response.status(204).end();
@@ -1106,11 +1436,22 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         { returnDocument: "after" },
       );
       if (!updatedShare) throw new HttpError(404, "not_found", "Shared post was not found.");
-      const likeSummary = await getShareLikeSummary(database, shareId, session.user._id);
+      const [likeSummary, shareCounts, commentCounts] = await Promise.all([
+        getShareLikeSummary(database, shareId, session.user._id),
+        getVisibleShareShareCounts(database, [updatedShare], session.user._id),
+        getVisibleShareCommentCounts(database, [updatedShare]),
+      ]);
 
       response.setHeader("Cache-Control", "private, no-store");
       response.json({
-        share: toShareResponse(updatedShare, session.user, dependencies.getCloudinaryCloudName(), likeSummary),
+        share: toShareResponse(
+          updatedShare,
+          session.user,
+          dependencies.getCloudinaryCloudName(),
+          likeSummary,
+          shareCounts.get(shareId.toHexString()) ?? 0,
+          commentCounts.get(shareId.toHexString()) ?? 0,
+        ),
       } satisfies UpdateShareResponse);
     },
   );
@@ -1130,7 +1471,18 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         authorId: session.user._id,
       });
       if (deleted.deletedCount !== 1) throw new HttpError(404, "not_found", "Shared post was not found.");
-      await database.collection<ShareLikeDocument>(collectionNames.shareLikes).deleteMany({ shareId });
+      const shareComments = await database.collection<CommentDocument>(collectionNames.comments)
+        .find({ postId, shareId })
+        .toArray();
+      const shareCommentIds = shareComments.map((comment) => comment._id);
+      await Promise.all([
+        database.collection<ShareLikeDocument>(collectionNames.shareLikes).deleteMany({ shareId }),
+        database.collection<CommentDocument>(collectionNames.comments).deleteMany({ postId, shareId }),
+        database.collection<CommentReactionDocument>(collectionNames.commentReactions).deleteMany({
+          postId,
+          commentId: { $in: shareCommentIds },
+        }),
+      ]);
 
       response.setHeader("Cache-Control", "private, no-store");
       response.status(204).end();

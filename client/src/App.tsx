@@ -16,7 +16,7 @@ import { PostPage } from "./pages/PostPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SearchPage } from "./pages/SearchPage";
 import { AdminPage } from "./pages/AdminPage";
-import { usePwaInstall } from "./pwa";
+import { usePwaInstall, usePwaUpdate } from "./pwa";
 
 type IconName = "home" | "users" | "message" | "user" | "userPlus" | "bell" | "plus" | "install";
 
@@ -372,8 +372,11 @@ function HeaderActions() {
   const [error, setError] = useState<string | null>(null);
   const [installMessage, setInstallMessage] = useState<string | null>(null);
   const { canInstall, install, isInstalled } = usePwaInstall();
+  const { updateAvailable, updating, applyUpdate, dismissUpdate } = usePwaUpdate();
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isPushSettingsOpen, setIsPushSettingsOpen] = useState(false);
+  const [isPushPromptOpen, setIsPushPromptOpen] = useState(false);
   const [isMessagesOpen, setIsMessagesOpen] = useState(false);
   const [messageSearch, setMessageSearch] = useState("");
   const [messageFilter, setMessageFilter] = useState<"all" | "unread">("all");
@@ -390,12 +393,22 @@ function HeaderActions() {
   const [pushMessage, setPushMessage] = useState<string | null>(null);
   const accountMenuId = useId();
   const notificationsPanelId = useId();
+  const pushSettingsPanelId = useId();
   const messagesPanelId = useId();
+  const pushPromptTitleId = useId();
+  const pushPromptDescriptionId = useId();
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const accountButtonRef = useRef<HTMLButtonElement>(null);
   const notificationsButtonRef = useRef<HTMLButtonElement>(null);
+  const pushSettingsButtonRef = useRef<HTMLButtonElement>(null);
+  const pushSettingsPanelRef = useRef<HTMLDivElement>(null);
+  const pushPromptRef = useRef<HTMLDialogElement>(null);
   const messagesButtonRef = useRef<HTMLAnchorElement>(null);
   const currentUserId = user?.id;
+
+  useEffect(() => {
+    if (!isNotificationsOpen) setIsPushSettingsOpen(false);
+  }, [isNotificationsOpen]);
 
   const refreshNotifications = useCallback(async () => {
     setNotificationsLoading(true);
@@ -429,7 +442,13 @@ function HeaderActions() {
   }, [currentUserId, refreshNotifications]);
 
   useEffect(() => {
-    if (!isNotificationsOpen || !currentUserId) return;
+    if (!currentUserId) {
+      setPushState("checking");
+      setPushMessage(null);
+      setIsPushPromptOpen(false);
+      return;
+    }
+    setPushMessage(null);
     let active = true;
     const checkPushAvailability = async () => {
       if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
@@ -463,6 +482,24 @@ function HeaderActions() {
     void checkPushAvailability();
     return () => { active = false; };
   }, [currentUserId, isNotificationsOpen]);
+
+  useEffect(() => {
+    if (!currentUserId || pushState !== "available") return;
+    const dismissedKey = `senderi:push-prompt-dismissed:${currentUserId}`;
+    try {
+      if (window.sessionStorage.getItem(dismissedKey) === "true") return;
+    } catch {
+      // Keep the prompt available when browser storage is disabled.
+    }
+    setIsPushPromptOpen(true);
+  }, [currentUserId, pushState]);
+
+  useEffect(() => {
+    const dialog = pushPromptRef.current;
+    if (!dialog) return;
+    if (isPushPromptOpen && !dialog.open) dialog.showModal();
+    else if (!isPushPromptOpen && dialog.open) dialog.close();
+  }, [isPushPromptOpen]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -525,6 +562,11 @@ function HeaderActions() {
 
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
+        if (isPushSettingsOpen) {
+          setIsPushSettingsOpen(false);
+          pushSettingsButtonRef.current?.focus();
+          return;
+        }
         setIsAccountMenuOpen(false);
         setIsNotificationsOpen(false);
         setIsMessagesOpen(false);
@@ -540,7 +582,7 @@ function HeaderActions() {
       document.removeEventListener("pointerdown", closeOnOutsidePointer);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [isAccountMenuOpen, isNotificationsOpen, isMessagesOpen]);
+  }, [isAccountMenuOpen, isNotificationsOpen, isMessagesOpen, isPushSettingsOpen]);
 
   useEffect(() => {
     if (!isMessagesOpen || !currentUserId) return;
@@ -690,6 +732,22 @@ function HeaderActions() {
     }
   }
 
+  function dismissPushPrompt() {
+    if (currentUserId) {
+      try {
+        window.sessionStorage.setItem(`senderi:push-prompt-dismissed:${currentUserId}`, "true");
+      } catch {
+        // Dismissing the prompt still works when browser storage is disabled.
+      }
+    }
+    setIsPushPromptOpen(false);
+  }
+
+  async function enablePushFromPrompt() {
+    await handlePushNotifications();
+    if (!("Notification" in window) || Notification.permission !== "default") dismissPushPrompt();
+  }
+
   async function handleOpenNotification(notification: NotificationItem) {
     setIsNotificationsOpen(false);
     if (!notification.isRead) {
@@ -704,7 +762,7 @@ function HeaderActions() {
     if (notification.type === "friend_request" || notification.type === "friend_accepted") {
       navigate("/friends");
     } else if (notification.postId) {
-      const commentsQuery = notification.type === "post_comment" ? "?comments=1" : "";
+      const commentsQuery = notification.type === "post_comment" || notification.type === "post_mention" ? "?comments=1" : "";
       navigate(`/posts/${encodeURIComponent(notification.postId)}${commentsQuery}`);
     }
   }
@@ -763,13 +821,6 @@ function HeaderActions() {
               <button className={messageFilter === "all" ? "header-messages-tab-active" : ""} type="button" role="tab" aria-selected={messageFilter === "all"} onClick={() => setMessageFilter("all")}>All</button>
               <button className={messageFilter === "unread" ? "header-messages-tab-active" : ""} type="button" role="tab" aria-selected={messageFilter === "unread"} onClick={() => setMessageFilter("unread")}>Unread</button>
             </div>
-            {messageFilter === "all" && (
-              <Link className="header-message-requests" to="/friends" onClick={() => setIsMessagesOpen(false)}>
-                <span className="header-message-requests-icon"><Icon name="userPlus" size={20} /></span>
-                <span><strong>Friend requests</strong><small>Review people who want to connect</small></span>
-                <span aria-hidden="true">›</span>
-              </Link>
-            )}
             <div className="header-messages-list" aria-live="polite">
               {messagesLoading ? <CompactRowsSkeleton message="Loading chats" count={4} /> : null}
               {!messagesLoading && filteredMessageFriends.length === 0 && <p className="header-messages-empty">{messageFilter === "unread" ? "No unread messages." : messageFriends.length === 0 ? "Your chats will appear here." : "No chats match your search."}</p>}
@@ -797,6 +848,7 @@ function HeaderActions() {
             aria-expanded={isNotificationsOpen}
             aria-controls={notificationsPanelId}
             onClick={() => {
+              setIsPushSettingsOpen(false);
               setIsMessagesOpen(false);
               setIsAccountMenuOpen(false);
               setIsNotificationsOpen((open) => {
@@ -812,14 +864,47 @@ function HeaderActions() {
               </span>
             )}
           </button>
-          <div id={notificationsPanelId} className="header-notifications-panel" hidden={!isNotificationsOpen}>
+          <div
+            id={notificationsPanelId}
+            className="header-notifications-panel"
+            hidden={!isNotificationsOpen}
+            onClick={(event) => {
+              const target = event.target;
+              if (target instanceof Node && !pushSettingsPanelRef.current?.contains(target) && !pushSettingsButtonRef.current?.contains(target)) {
+                setIsPushSettingsOpen(false);
+              }
+            }}
+          >
             <div className="header-notifications-heading">
-              <h2>Notifications</h2>
+              <div className="header-notifications-title">
+                <h2>Notifications</h2>
+                <button
+                  ref={pushSettingsButtonRef}
+                  className={`header-push-settings-trigger${isPushSettingsOpen ? " header-push-settings-trigger-active" : ""}`}
+                  type="button"
+                  aria-label="Phone notification settings"
+                  aria-expanded={isPushSettingsOpen}
+                  aria-controls={pushSettingsPanelId}
+                  aria-pressed={pushState === "enabled"}
+                  title="Phone notification settings"
+                  onClick={() => setIsPushSettingsOpen((open) => !open)}
+                >
+                  <Icon name="bell" size={16} />
+                  {pushState === "enabled" && <span className="header-push-settings-enabled-dot" aria-hidden="true" />}
+                </button>
+              </div>
               {unreadNotificationCount > 0 && (
-                <button type="button" onClick={() => void handleReadAllNotifications()}>Mark all read</button>
+                <button className="header-notifications-read-all" type="button" onClick={() => void handleReadAllNotifications()}>Mark all read</button>
               )}
             </div>
-            <div className="header-push-settings">
+            <div
+              id={pushSettingsPanelId}
+              ref={pushSettingsPanelRef}
+              className="header-push-settings-popover"
+              role="dialog"
+              aria-label="Phone notification settings"
+              hidden={!isPushSettingsOpen}
+            >
               <div className="header-push-settings-copy">
                 <strong>Phone notifications</strong>
                 <span>{pushState === "enabled" ? "Get alerts for messages and activity." : pushState === "checking" ? "Checking this device…" : pushState === "unsupported" ? "This browser does not support phone alerts." : pushState === "denied" ? "Allow notifications in your browser or phone settings." : pushState === "not-configured" ? "Phone alerts are not configured for Senderi yet." : pushState === "unavailable" ? "Open Senderi from an installed, updated app." : "Get alerts for messages and activity."}</span>
@@ -829,8 +914,8 @@ function HeaderActions() {
                   {pushWorking ? "Please wait…" : pushState === "enabled" ? "Turn off" : "Turn on"}
                 </button>
               )}
+              {pushMessage && <p className="header-push-message" role="status">{pushMessage}</p>}
             </div>
-            {pushMessage && <p className="header-push-message" role="status">{pushMessage}</p>}
             {notificationError && <p className="header-notifications-error" role="alert">{notificationError}</p>}
             {notificationsLoading && notifications.length === 0 ? (
               <CompactRowsSkeleton message="Loading notifications" count={3} />
@@ -919,6 +1004,26 @@ function HeaderActions() {
             </button>
             {error && <p className="header-profile-menu-error" role="alert">{error}</p>}
           </div>
+          <dialog
+            ref={pushPromptRef}
+            className="push-permission-dialog"
+            aria-labelledby={pushPromptTitleId}
+            aria-describedby={pushPromptDescriptionId}
+            onCancel={(event) => { event.preventDefault(); dismissPushPrompt(); }}
+          >
+            <div className="push-permission-content">
+              <span className="push-permission-icon"><Icon name="bell" size={22} /></span>
+              <h2 id={pushPromptTitleId}>Turn on notifications?</h2>
+              <p id={pushPromptDescriptionId}>Get alerts when someone sends you a message or interacts with your posts.</p>
+              {pushMessage && <p className="push-permission-status" role="status">{pushMessage}</p>}
+              <div className="push-permission-actions">
+                <button className="push-permission-dismiss" type="button" onClick={dismissPushPrompt}>Not now</button>
+                <button className="push-permission-enable" type="button" autoFocus disabled={pushWorking} onClick={() => void enablePushFromPrompt()}>
+                  {pushWorking ? "Please wait…" : "Turn on notifications"}
+                </button>
+              </div>
+            </div>
+          </dialog>
         </>
       ) : (
         <>
@@ -926,6 +1031,11 @@ function HeaderActions() {
           {location.pathname !== "/signup" && <Link className="header-action" to="/signup">Create account</Link>}
         </>
       )}
+      {updateAvailable && <div className="app-update-notice" role="status">
+        <span className="app-update-copy"><strong>Update ready</strong><span>A new version of Senderi is available.</span></span>
+        <button className="app-update-apply" type="button" disabled={updating} onClick={() => void applyUpdate()}>{updating ? "Updating…" : "Update now"}</button>
+        <button className="app-update-dismiss" type="button" onClick={dismissUpdate}>Later</button>
+      </div>}
     </div>
   );
 }
@@ -935,6 +1045,7 @@ function notificationMessage(type: NotificationItem["type"]): string {
     case "post_like": return "liked your post.";
     case "share_like": return "liked your shared post.";
     case "post_comment": return "commented on your post.";
+    case "post_mention": return "mentioned you in a comment.";
     case "post_share": return "shared your post.";
     case "friend_request": return "sent you a friend request.";
     case "friend_accepted": return "accepted your friend request.";
