@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 import type { ChatUnreadResponse, FriendListResponse, Message, MessageHistoryResponse, NotificationItem, NotificationsResponse, Post, PostListResponse, SocketTicketResponse, User, UserSearchResponse } from "../../shared";
@@ -1057,11 +1058,16 @@ function HeaderActions() {
           {location.pathname !== "/signup" && <Link className="header-action" to="/signup">Create account</Link>}
         </>
       )}
-      {isMobileViewport && updateAvailable && <div className="app-update-notice" role="status">
-        <span className="app-update-copy"><strong>Update ready</strong><span>A new version of Senderi is available.</span></span>
-        <button className="app-update-apply" type="button" disabled={updating} onClick={() => void applyUpdate()}>{updating ? "Updating…" : "Update now"}</button>
-        <button className="app-update-dismiss" type="button" onClick={dismissUpdate}>Later</button>
-      </div>}
+      {isMobileViewport && updateAvailable && createPortal(
+        <div className="app-update-notice" role="status">
+          <span className="app-update-copy"><strong>Update ready</strong><span>A new version of Senderi is available.</span></span>
+          <div className="app-update-actions">
+            <button className="app-update-apply" type="button" disabled={updating} onClick={() => void applyUpdate()}>{updating ? "Updating…" : "Update now"}</button>
+            <button className="app-update-dismiss" type="button" onClick={dismissUpdate}>Later</button>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
