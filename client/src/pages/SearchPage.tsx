@@ -100,7 +100,7 @@ export function SearchPage() {
             {nextCursor && !isLoading && <button className="button-secondary search-load-more" type="button" onClick={() => void loadMorePeople()} disabled={isLoadingMore}>{isLoadingMore ? "Loading…" : "Load more people"}</button>}
           </section>
 
-          <section className="search-results-section" aria-labelledby="search-posts-title">
+          <section className="search-results-section search-posts-section" aria-labelledby="search-posts-title">
             <div className="search-results-section-heading"><h2 id="search-posts-title">Posts</h2></div>
             <PostList path={postSearchPath} />
           </section>

@@ -1134,10 +1134,11 @@ function MemberLayout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const isFriendsPage = location.pathname === "/friends";
   const isHomePage = location.pathname === "/";
+  const isSearchPage = location.pathname === "/search";
   const isProfilePage = location.pathname.startsWith("/profile");
 
   return (
-    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""} ${isHomePage ? "home-member-layout" : ""} ${isProfilePage ? "profile-member-layout" : ""}`}>
+    <div className={`flex w-full flex-col gap-6 px-5 py-6 sm:px-8 sm:py-10 lg:flex-row ${isFriendsPage ? "friends-member-layout" : ""} ${isHomePage ? "home-member-layout" : ""} ${isSearchPage ? "search-member-layout" : ""} ${isProfilePage ? "profile-member-layout" : ""}`}>
       {!isFriendsPage && <aside className="member-layout-sidebar lg:-mt-3 lg:w-80 lg:shrink-0">
         <nav aria-label="Main navigation" className="member-primary-nav flex gap-2 overflow-x-auto pb-1 lg:sticky lg:top-8 lg:flex-col lg:overflow-visible">
           {navigation.map((item) => <NavLink
