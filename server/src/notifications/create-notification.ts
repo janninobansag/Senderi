@@ -5,6 +5,17 @@ import { sendPushToUser } from "./push";
 export type CreateNotificationInput = Pick<NotificationDocument, "recipientId" | "actorId" | "type"> &
   Partial<Pick<NotificationDocument, "postId" | "shareId" | "friendRequestId">>;
 
+function notificationUrl(notification: Pick<NotificationDocument, "type" | "postId" | "shareId">): string {
+  if (notification.type === "friend_request" || notification.type === "friend_accepted") return "/friends";
+  if (!notification.postId) return "/";
+
+  const query = new URLSearchParams();
+  if (notification.shareId) query.set("shareId", notification.shareId.toHexString());
+  if (notification.type === "post_comment" || notification.type === "post_mention") query.set("comments", "1");
+  const queryString = query.toString();
+  return `/posts/${notification.postId.toHexString()}${queryString ? `?${queryString}` : ""}`;
+}
+
 export async function createNotification(database: Db, input: CreateNotificationInput): Promise<void> {
   if (input.recipientId.equals(input.actorId)) return;
 
@@ -16,15 +27,10 @@ export async function createNotification(database: Db, input: CreateNotification
   await database.collection<NotificationDocument>(collectionNames.notifications).insertOne(notification);
 
   const body = notificationPushMessage(notification.type);
-  const url = notification.type === "friend_request" || notification.type === "friend_accepted"
-    ? "/friends"
-    : notification.postId
-      ? `/posts/${notification.postId.toHexString()}${notification.type === "post_comment" || notification.type === "post_mention" ? "?comments=1" : ""}`
-      : "/";
   void sendPushToUser(database, notification.recipientId, {
     title: "Senderi",
     body,
-    url,
+    url: notificationUrl(notification),
     tag: `activity-${notification._id.toHexString()}`,
   });
 }
@@ -35,6 +41,7 @@ function notificationPushMessage(type: NotificationDocument["type"]): string {
     case "share_like": return "Someone liked your shared post.";
     case "post_comment": return "Someone commented on your post.";
     case "post_mention": return "Someone mentioned you in a comment.";
+    case "post_body_mention": return "Someone mentioned you in a post.";
     case "post_share": return "Someone shared your post.";
     case "friend_request": return "You have a new friend request.";
     case "friend_accepted": return "Your friend request was accepted.";

@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import { RequestErrorState } from "../components/AsyncState";
 import { ProfileSkeleton } from "../components/Skeletons";
 import { PostList } from "../components/Posts";
+import { ProfileImageCropDialog } from "../components/ProfileImageCropDialog";
 import { ProfileFriends, ProfileImageViewer, ProfilePhotos } from "../components/ProfileCollections";
 import { SupporterBadge } from "../components/SupporterBadge";
 import type { ProfileResponse, User } from "../../../shared";
@@ -33,6 +34,21 @@ const PROFILE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 function profileImageLabel(kind: ProfileImageKind): string {
   return kind === "avatar" ? "profile photo" : "cover photo";
+}
+
+function profileImageSourceForRecrop(imageUrl: string): string {
+  try {
+    const url = new URL(imageUrl);
+    if (url.hostname !== "res.cloudinary.com") return imageUrl;
+    const pathSegments = url.pathname.split("/");
+    const uploadIndex = pathSegments.indexOf("upload");
+    if (uploadIndex < 0 || pathSegments.length < uploadIndex + 5) return imageUrl;
+    pathSegments.splice(uploadIndex + 1, 3);
+    url.pathname = pathSegments.join("/");
+    return url.toString();
+  } catch {
+    return imageUrl;
+  }
 }
 
 function ProfileImagePicker({
@@ -156,6 +172,7 @@ export function ProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [imageUpload, setImageUpload] = useState<ImageUploadState | null>(null);
+  const [cropSelection, setCropSelection] = useState<{ kind: ProfileImageKind; file?: File; imageUrl?: string } | null>(null);
   const editorDialogRef = useRef<HTMLDialogElement>(null);
   const avatarFrameRef = useRef<HTMLDivElement>(null);
   const avatarTriggerRef = useRef<HTMLButtonElement>(null);
@@ -249,6 +266,24 @@ export function ProfilePage() {
     setForm(formFromProfile(profile.user));
     setSaveMessage(null);
     setIsEditorOpen(true);
+  }
+
+  function beginProfileImageCrop(kind: ProfileImageKind, file: File) {
+    setSaveMessage(null);
+    if (file.size > PROFILE_IMAGE_MAX_BYTES) {
+      setImageUpload({ kind, status: "error", progress: 0, message: "Choose an image that is 5 MB or smaller." });
+      return;
+    }
+    if (file.type && !PROFILE_IMAGE_TYPES.has(file.type)) {
+      setImageUpload({ kind, status: "error", progress: 0, message: "Choose a JPEG, PNG, or WebP image." });
+      return;
+    }
+    setCropSelection({ kind, file });
+  }
+
+  function recropProfileImage(kind: ProfileImageKind, imageUrl: string) {
+    setSaveMessage(null);
+    setCropSelection({ kind, imageUrl });
   }
 
   async function uploadProfileImage(kind: ProfileImageKind, file: File) {
@@ -376,6 +411,20 @@ export function ProfilePage() {
                 <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="3" /><circle cx="12" cy="9" r="2.5" /><path d="M7.5 18c.8-2.2 2.3-3.3 4.5-3.3s3.7 1.1 4.5 3.3" /></svg>
                 <span>See profile picture</span>
               </button>
+              {isOwner && avatarImageUrl && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={imageUpload?.status === "uploading"}
+                  onClick={() => {
+                    setIsAvatarMenuOpen(false);
+                    recropProfileImage("avatar", profileImageSourceForRecrop(avatarImageUrl));
+                  }}
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 3H4v3M17 3h3v3M20 17v4h-4M7 21H4v-4M4 7h11a5 5 0 0 1 5 5v5M20 17H9a5 5 0 0 1-5-5V7" /></svg>
+                  <span>Edit profile picture crop</span>
+                </button>
+              )}
               {isOwner && (
                 <button
                   type="button"
@@ -392,7 +441,7 @@ export function ProfilePage() {
               )}
             </div>
           )}
-          {isOwner && <ProfileImagePicker kind="avatar" disabled={imageUpload?.status === "uploading"} onSelect={uploadProfileImage} inputRef={avatarFileInputRef} showTrigger={false} />}
+          {isOwner && <ProfileImagePicker kind="avatar" disabled={imageUpload?.status === "uploading"} onSelect={beginProfileImageCrop} inputRef={avatarFileInputRef} showTrigger={false} />}
           {isAvatarViewerOpen && avatarImageUrl && (
             <ProfileImageViewer
               image={{ label: "Profile photo", url: avatarImageUrl }}
@@ -401,7 +450,24 @@ export function ProfilePage() {
             />
           )}
         </div>
-        {isOwner && <ProfileImagePicker kind="cover" disabled={imageUpload?.status === "uploading"} onSelect={uploadProfileImage} />}
+        {isOwner && (
+          <div className="profile-cover-actions">
+            <ProfileImagePicker kind="cover" disabled={imageUpload?.status === "uploading"} onSelect={beginProfileImageCrop} />
+            {profile.user.coverUrl && (
+              <button
+                className="profile-image-picker profile-image-recrop"
+                type="button"
+                aria-label="Edit cover photo crop"
+                title="Edit crop"
+                disabled={imageUpload?.status === "uploading"}
+                onClick={() => profile.user.coverUrl && recropProfileImage("cover", profileImageSourceForRecrop(profile.user.coverUrl))}
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3H4v3M17 3h3v3M20 17v4h-4M7 21H4v-4M4 7h11a5 5 0 0 1 5 5v5M20 17H9a5 5 0 0 1-5-5V7" /></svg>
+                <span>Edit crop</span>
+              </button>
+            )}
+          </div>
+        )}
       </section>
 
       {isOwner && imageUpload && (
@@ -415,6 +481,20 @@ export function ProfilePage() {
             <span>{imageUpload.message}</span>
           )}
         </div>
+      )}
+
+      {isOwner && cropSelection && (
+        <ProfileImageCropDialog
+          file={cropSelection.file}
+          imageUrl={cropSelection.imageUrl}
+          kind={cropSelection.kind}
+          onCancel={() => setCropSelection(null)}
+          onCrop={(croppedFile) => {
+            const kind = cropSelection.kind;
+            setCropSelection(null);
+            void uploadProfileImage(kind, croppedFile);
+          }}
+        />
       )}
 
       <section className="surface-card -mt-4 p-6 pt-16 sm:p-8 sm:pt-16">

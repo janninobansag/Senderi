@@ -980,6 +980,9 @@ test("comments on a shared post stay with the share instead of increasing the or
     .expect(201);
   assert.equal(shareComment.body.comment.postId, ids.public);
   assert.equal(data.comments.find((comment) => comment._id.toHexString() === shareComment.body.comment.id)?.shareId?.toHexString(), share._id.toHexString());
+  const shareCommentNotification = data.notifications.find((notification) =>
+    notification.type === "post_comment" && notification.recipientId.equals(share.authorId));
+  assert.equal(shareCommentNotification?.shareId?.toHexString(), share._id.toHexString());
 
   await request(app)
     .post(shareCommentsPath)
@@ -1000,6 +1003,13 @@ test("comments on a shared post stay with the share instead of increasing the or
   const sharedPost = feed.body.items.find((item: { share?: { id: string } }) => item.share?.id === share._id.toHexString());
   assert.equal(originalPost.commentCount, 1);
   assert.equal(sharedPost.share.commentCount, 2);
+
+  const sharedPostDetail = await request(app)
+    .get(`/api/posts/${ids.public}/shares/${share._id.toHexString()}`)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(sharedPostDetail.body.post.share.id, share._id.toHexString());
+  assert.equal(sharedPostDetail.body.post.share.commentCount, 2);
 
   await request(app)
     .delete(`/api/posts/${ids.public}/shares/${share._id.toHexString()}`)
@@ -1117,6 +1127,16 @@ test("feed and profile timelines require both visible share audience and a curre
   assert.deepEqual(await shareIds("/api/posts", "outsider"), [
     "000000000000000000000021",
   ]);
+
+  const publicShareDetail = await request(app)
+    .get(`/api/posts/${ids.public}/shares/000000000000000000000021`)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(publicShareDetail.body.post.share.id, "000000000000000000000021");
+  await request(app)
+    .get(`/api/posts/${ids.public}/shares/000000000000000000000022`)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
 
   assert.deepEqual(await shareIds(`/api/users/${ids.friend}/posts`, "friend"), [
     "000000000000000000000021",
@@ -1739,6 +1759,45 @@ test("post creation attributes the authenticated author and returns only public 
   assert.equal(data.posts.at(-1)?.text, "A fresh update");
 });
 
+test("post creation stores and notifies selected mentions who can view the post", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data);
+  const friend = data.users.find((user) => user._id.toHexString() === ids.friend)!;
+  friend.displayName = "Jan Bansag";
+
+  const created = await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .send({ text: "Hello @Jan Bansag", visibility: "public", mentionedUserIds: [ids.friend] })
+    .expect(201);
+
+  assert.deepEqual(data.posts.at(-1)?.mentionedUserIds?.map((id) => id.toHexString()), [ids.friend]);
+  assert.equal(created.body.post.text, "Hello @Jan Bansag");
+  assert.equal(data.notifications.length, 1);
+  assert.equal(data.notifications[0]!.type, "post_body_mention");
+  assert.equal(data.notifications[0]!.recipientId.toHexString(), ids.friend);
+  assert.equal(data.notifications[0]!.postId?.toHexString(), created.body.post.id);
+
+  const postCount = data.posts.length;
+  await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .send({ text: "This does not name the selected account", visibility: "public", mentionedUserIds: [ids.friend] })
+    .expect(400);
+
+  await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .send({ text: "Hello @Outsider", visibility: "friends", mentionedUserIds: [ids.outsider] })
+    .expect(400);
+
+  assert.equal(data.posts.length, postCount, "invalid or inaccessible mentions must not create posts");
+  assert.equal(data.notifications.length, 1, "invalid or inaccessible mentions must not notify anyone");
+});
+
 test("post creation rejects missing, blank, oversized, malformed, or non-text-only fields", async () => {
   const { data, tokens } = matrixFixture();
   const app = createApp(data);
@@ -1824,15 +1883,19 @@ test("post creation publishes text and an inspected photo together and removes a
     .post("/api/posts")
     .set("Origin", "http://localhost:5173")
     .set("Cookie", cookie(tokens.author))
-    .field("text", "A caption with a photo")
+    .field("text", "A caption with a photo for @Friend")
     .field("visibility", "friends")
+    .field("mentionedUserIds", JSON.stringify([ids.friend]))
     .attach("file", originalPhoto, "moment.jpg")
     .expect(201);
 
   const post = data.posts.at(-1)!;
-  assert.equal(post.text, "A caption with a photo");
+  assert.equal(post.text, "A caption with a photo for @Friend");
   assert.equal(post.visibility, "friends");
   assert.equal(post.authorId.toHexString(), ids.author);
+  assert.deepEqual(post.mentionedUserIds?.map((id) => id.toHexString()), [ids.friend]);
+  assert.equal(data.notifications.at(-1)?.type, "post_body_mention");
+  assert.equal(data.notifications.at(-1)?.recipientId.toHexString(), ids.friend);
   assert.equal(post.photoAssetId, uploaded[0] && `senderi/posts/${uploaded[0].publicId}`);
   const optimizedPhoto = uploaded[0]?.buffer;
   assert.ok(optimizedPhoto);

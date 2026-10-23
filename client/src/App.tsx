@@ -789,8 +789,11 @@ function HeaderActions() {
     if (notification.type === "friend_request" || notification.type === "friend_accepted") {
       navigate("/friends");
     } else if (notification.postId) {
-      const commentsQuery = notification.type === "post_comment" || notification.type === "post_mention" ? "?comments=1" : "";
-      navigate(`/posts/${encodeURIComponent(notification.postId)}${commentsQuery}`);
+      const query = new URLSearchParams();
+      if (notification.shareId) query.set("shareId", notification.shareId);
+      if (notification.type === "post_comment" || notification.type === "post_mention") query.set("comments", "1");
+      const queryString = query.toString();
+      navigate(`/posts/${encodeURIComponent(notification.postId)}${queryString ? `?${queryString}` : ""}`);
     }
   }
 
@@ -1078,6 +1081,7 @@ function notificationMessage(type: NotificationItem["type"]): string {
     case "share_like": return "liked your shared post.";
     case "post_comment": return "commented on your post.";
     case "post_mention": return "mentioned you in a comment.";
+    case "post_body_mention": return "mentioned you in a post.";
     case "post_share": return "shared your post.";
     case "friend_request": return "sent you a friend request.";
     case "friend_accepted": return "accepted your friend request.";
