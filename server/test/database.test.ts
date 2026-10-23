@@ -22,6 +22,7 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       ["friendRequests", { userIdLow: 1, userIdHigh: 1 }],
       ["likes", { userId: 1, postId: 1 }],
       ["shareLikes", { userId: 1, shareId: 1 }],
+      ["pushSubscriptions", { endpoint: 1 }],
       ["messages", { senderId: 1, clientId: 1 }],
       ["passwordResets", { userId: 1 }],
       ["socketTickets", { ticketHash: 1 }],
@@ -48,6 +49,14 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       collection: "notifications",
       keys: { recipientId: 1, createdAt: -1, _id: -1 },
       options: { name: "notifications_recipient_newest_first" },
+    },
+  );
+  assert.deepEqual(
+    databaseIndexes.find((index) => index.options.name === "push_subscriptions_user"),
+    {
+      collection: "pushSubscriptions",
+      keys: { userId: 1 },
+      options: { name: "push_subscriptions_user" },
     },
   );
   assert.deepEqual(

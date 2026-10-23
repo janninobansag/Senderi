@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "senderi-app";
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v5";
 const APP_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}`;
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/senderi-logo.png", "/senderi-symbol.png", "/senderi-maskable.png", "/senderi-mark.svg", "/senderi-maskable.svg"];
 
@@ -17,6 +17,49 @@ self.addEventListener("activate", (event) => {
     )),
   );
   self.clients.claim();
+});
+
+self.addEventListener("push", (event) => {
+  event.waitUntil((async () => {
+    const openWindows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    if (openWindows.some((client) => client.visibilityState === "visible" && client.focused)) return;
+
+    let payload = {};
+    try {
+      payload = event.data?.json() ?? {};
+    } catch {
+      payload = { body: event.data?.text() ?? "You have a new notification." };
+    }
+
+    const title = typeof payload.title === "string" ? payload.title : "Senderi";
+    const body = typeof payload.body === "string" ? payload.body : "You have a new notification.";
+    const url = typeof payload.url === "string" ? payload.url : "/";
+    const safeUrl = new URL(url, self.location.origin);
+    await self.registration.showNotification(title, {
+      body,
+      icon: "/senderi-symbol.png",
+      badge: "/senderi-symbol.png",
+      tag: typeof payload.tag === "string" ? payload.tag : "senderi-notification",
+      data: { url: safeUrl.origin === self.location.origin ? `${safeUrl.pathname}${safeUrl.search}${safeUrl.hash}` : "/" },
+    });
+  })());
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const requestedUrl = typeof event.notification.data?.url === "string" ? event.notification.data.url : "/";
+    const target = new URL(requestedUrl, self.location.origin);
+    const safeTarget = target.origin === self.location.origin ? target.href : `${self.location.origin}/`;
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of windows) {
+      if (client.url.startsWith(self.location.origin)) {
+        await client.navigate(safeTarget);
+        return client.focus();
+      }
+    }
+    return self.clients.openWindow(safeTarget);
+  })());
 });
 
 self.addEventListener("fetch", (event) => {

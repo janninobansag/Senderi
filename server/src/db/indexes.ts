@@ -126,6 +126,16 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "notifications_recipient_newest_first" },
   },
   {
+    collection: collectionNames.pushSubscriptions,
+    keys: { endpoint: 1 },
+    options: { name: "push_subscriptions_endpoint_unique", unique: true },
+  },
+  {
+    collection: collectionNames.pushSubscriptions,
+    keys: { userId: 1 },
+    options: { name: "push_subscriptions_user" },
+  },
+  {
     collection: collectionNames.messages,
     keys: { senderId: 1, clientId: 1 },
     options: { name: "messages_sender_client_unique", unique: true },

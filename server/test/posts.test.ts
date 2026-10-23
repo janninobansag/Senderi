@@ -301,9 +301,37 @@ function createDatabase(data: PostTestData): Db {
 
       if (name === collectionNames.comments) {
         return {
+          aggregate: (pipeline: Document[]) => ({
+            toArray: async () => {
+              const match = pipeline[0]?.["$match"] as MongoFilter;
+              const summaries = new Map<string, { _id: ObjectId; commentCount: number }>();
+              for (const comment of data.comments) {
+                if (!matchesComment(comment, match)) continue;
+                const key = comment.postId.toHexString();
+                const summary = summaries.get(key) ?? { _id: comment.postId, commentCount: 0 };
+                summary.commentCount += 1;
+                summaries.set(key, summary);
+              }
+              return [...summaries.values()];
+            },
+          }),
+          findOne: async (filter: MongoFilter) =>
+            data.comments.find((comment) => matchesComment(comment, filter)) ?? null,
           insertOne: async (comment: CommentDocument) => {
             data.comments.push(comment);
             return { acknowledged: true, insertedId: comment._id };
+          },
+          updateOne: async (filter: MongoFilter, update: { $set: Partial<CommentDocument> }) => {
+            const comment = data.comments.find((candidate) => matchesComment(candidate, filter));
+            if (!comment) return { acknowledged: true, matchedCount: 0, modifiedCount: 0 };
+            Object.assign(comment, update.$set);
+            return { acknowledged: true, matchedCount: 1, modifiedCount: 1 };
+          },
+          deleteOne: async (filter: MongoFilter) => {
+            const index = data.comments.findIndex((comment) => matchesComment(comment, filter));
+            if (index < 0) return { acknowledged: true, deletedCount: 0 };
+            data.comments.splice(index, 1);
+            return { acknowledged: true, deletedCount: 1 };
           },
           deleteMany: async (filter: MongoFilter) => {
             const remaining = data.comments.filter((comment) => !matchesComment(comment, filter));
@@ -1703,6 +1731,32 @@ test("post creation publishes text and an inspected photo together and removes a
   assert.deepEqual(destroyed, [`senderi/posts/${uploaded[1]!.publicId}`]);
 });
 
+test("post creation accepts an image without text but rejects empty text-only posts", async () => {
+  const { data, tokens } = matrixFixture();
+  const app = createApp(data, createPhotoStorage());
+  const originalPhoto = await makeLargeJpeg();
+
+  const imageOnly = await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .field("text", "   ")
+    .field("visibility", "public")
+    .attach("file", originalPhoto, "photo-only.jpg")
+    .expect(201);
+
+  assert.equal(data.posts.at(-1)?.text, "");
+  assert.equal(imageOnly.body.post.text, "");
+  assert.ok(imageOnly.body.post.photoUrl);
+
+  await request(app)
+    .post("/api/posts")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie(tokens.author))
+    .send({ text: "   ", visibility: "public" })
+    .expect(400);
+});
+
 test("post creation rejects invalid and oversized multipart photos before storage or insert", async () => {
   const { data, tokens } = matrixFixture();
   const uploads: string[] = [];
@@ -1737,7 +1791,7 @@ test("post creation rejects invalid and oversized multipart photos before storag
   assert.deepEqual(uploads, []);
 });
 
-test("post audience edits validate input and allow only the author to persist changes", async () => {
+test("post text and audience edits validate input and allow only the author to persist changes", async () => {
   const { data, tokens } = matrixFixture();
   const app = createApp(data);
   const post = data.posts.find((candidate) => candidate._id.toHexString() === ids.public)!;
@@ -1754,7 +1808,23 @@ test("post audience edits validate input and allow only the author to persist ch
   assert.equal(data.posts.find((candidate) => candidate._id.equals(post._id))?.visibility, "onlyMe");
   assert.equal(updated.headers["cache-control"], "private, no-store");
 
-  for (const body of [{ visibility: "private" }, { visibility: "public", authorId: ids.outsider }, {}]) {
+  const updatedText = await request(app)
+    .patch(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ text: "  Updated post text  " })
+    .expect(200);
+  assert.equal(updatedText.body.post.text, "Updated post text");
+  assert.equal(data.posts.find((candidate) => candidate._id.equals(post._id))?.text, "Updated post text");
+  assert.equal(updatedText.body.post.visibility, "onlyMe");
+
+  for (const body of [
+    { visibility: "private" },
+    { visibility: "public", authorId: ids.outsider },
+    { text: "   " },
+    { text: "x".repeat(5_001) },
+    {},
+  ]) {
     const invalid = await request(app)
       .patch(path)
       .set("Origin", origin)
@@ -1769,6 +1839,12 @@ test("post audience edits validate input and allow only the author to persist ch
     .set("Origin", origin)
     .set("Cookie", cookie(tokens.outsider))
     .send({ visibility: "public" })
+    .expect(404);
+  await request(app)
+    .patch(path)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Not my post" })
     .expect(404);
   await request(app)
     .patch(`/api/posts/${ids.outsider}`)
@@ -2202,6 +2278,29 @@ test("comments paginate newest first with stable cursors and return only public 
   assert.ok(collected.every((comment) => !("email" in comment.author) && !("passwordHash" in comment.author)));
 });
 
+test("post responses count visible comments and omit moderated comments from the count", async () => {
+  const { data, tokens } = matrixFixture();
+  const postId = new ObjectId(ids.public);
+  const authorId = new ObjectId(ids.author);
+  data.comments = [
+    { _id: new ObjectId("000000000000000000000401"), postId, authorId, text: "Visible 1", createdAt: new Date() },
+    { _id: new ObjectId("000000000000000000000402"), postId, authorId, text: "Visible 2", createdAt: new Date() },
+    { _id: new ObjectId("000000000000000000000403"), postId, authorId, text: "Visible 3", createdAt: new Date() },
+    { _id: new ObjectId("000000000000000000000404"), postId, authorId, text: "Hidden", createdAt: new Date(), hiddenAt: new Date() },
+  ];
+  const app = createApp(data);
+
+  const feed = await request(app).get("/api/posts").set("Cookie", cookie(tokens.outsider)).expect(200);
+  const feedPost = feed.body.items.find((item: { id: string }) => item.id === ids.public);
+  assert.equal(feedPost.commentCount, 3);
+
+  const detail = await request(app)
+    .get(`/api/posts/${ids.public}`)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(detail.body.post.commentCount, 3);
+});
+
 test("comment creation validates text, requires an allowed origin, and stops after access is revoked", async () => {
   const { data, tokens } = matrixFixture();
   const app = createApp(data);
@@ -2271,6 +2370,90 @@ test("comment creation validates text, requires an allowed origin, and stops aft
     .set("Cookie", cookie(tokens.author))
     .expect(200);
   assert.deepEqual(authorPage.body.items.map((comment: { text: string }) => comment.text), ["Allowed comment"]);
+});
+
+test("comment authors can edit and permanently delete only their own visible comments", async () => {
+  const { data, tokens } = matrixFixture();
+  const comment: CommentDocument = {
+    _id: new ObjectId("000000000000000000000301"),
+    postId: new ObjectId(ids.public),
+    authorId: new ObjectId(ids.outsider),
+    text: "Original comment",
+    createdAt: new Date("2026-10-20T12:00:00.000Z"),
+  };
+  const hiddenComment: CommentDocument = {
+    _id: new ObjectId("000000000000000000000302"),
+    postId: new ObjectId(ids.public),
+    authorId: new ObjectId(ids.outsider),
+    text: "Hidden comment",
+    createdAt: new Date("2026-10-20T12:01:00.000Z"),
+    hiddenAt: new Date(),
+  };
+  data.comments.push(comment, hiddenComment);
+  const app = createApp(data);
+  const commentPath = `/api/posts/${ids.public}/comments/${comment._id.toHexString()}`;
+  const hiddenCommentPath = `/api/posts/${ids.public}/comments/${hiddenComment._id.toHexString()}`;
+  const origin = "http://localhost:5173";
+
+  await request(app)
+    .patch(commentPath)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "No origin" })
+    .expect(403);
+  await request(app)
+    .patch(commentPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "   " })
+    .expect(400);
+  await request(app)
+    .patch(commentPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .send({ text: "Edited by someone else" })
+    .expect(404);
+
+  const updated = await request(app)
+    .patch(commentPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "  Updated comment  " })
+    .expect(200);
+  assert.equal(updated.body.comment.text, "Updated comment");
+  assert.equal(updated.body.comment.id, comment._id.toHexString());
+  assert.equal(updated.body.comment.author.id, ids.outsider);
+  assert.equal(updated.headers["cache-control"], "private, no-store");
+  assert.equal(comment.text, "Updated comment");
+
+  await request(app)
+    .delete(commentPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.author))
+    .expect(404);
+  await request(app)
+    .patch(hiddenCommentPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .send({ text: "Restore hidden comment" })
+    .expect(404);
+  await request(app)
+    .delete(hiddenCommentPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
+
+  await request(app)
+    .delete(commentPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(204);
+  assert.equal(data.comments.includes(comment), false, "deletion permanently removes the comment record");
+  assert.equal(data.comments.includes(hiddenComment), true, "a hidden comment is not altered by owner actions");
+  await request(app)
+    .delete(commentPath)
+    .set("Origin", origin)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(404);
 });
 
 test("comment routes require a session and reject malformed post IDs, cursors, and page limits", async () => {

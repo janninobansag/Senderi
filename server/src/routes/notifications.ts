@@ -3,9 +3,11 @@ import { Router, type Response } from "express";
 import { requireSession, type AuthenticatedSessionContext } from "../auth/session";
 import { toPublicUserResponse } from "../auth/user-response";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type NotificationDocument, type UserDocument } from "../db/documents";
+import { collectionNames, type NotificationDocument, type PushSubscriptionDocument, type UserDocument } from "../db/documents";
 import { HttpError } from "../errors/http-error";
 import { requireClientOrigin } from "../middleware/require-client-origin";
+import { getPushPublicKey } from "../notifications/push";
+import { z } from "zod";
 
 const PAGE_SIZE = 30;
 
@@ -13,12 +15,14 @@ export interface NotificationsRouterDependencies {
   getDatabase: () => Db;
   getAllowedOrigins: () => readonly string[];
   getCloudinaryCloudName: () => string | undefined;
+  getPushPublicKey: () => string | null;
 }
 
 const defaultDependencies: NotificationsRouterDependencies = {
   getDatabase: getConnectedDatabase,
   getAllowedOrigins: () => (process.env.CLIENT_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),
   getCloudinaryCloudName: () => process.env.CLOUDINARY_CLOUD_NAME,
+  getPushPublicKey,
 };
 
 function getAuthenticatedSession(response: Response): AuthenticatedSessionContext {
@@ -32,10 +36,86 @@ function parseNotificationId(value: string): ObjectId {
   return new ObjectId(value);
 }
 
+const pushSubscriptionSchema = z.object({
+  endpoint: z.string().url().max(4096).refine((value) => new URL(value).protocol === "https:"),
+  expirationTime: z.number().finite().positive().nullable().optional(),
+  keys: z.object({
+    p256dh: z.string().min(1).max(512),
+    auth: z.string().min(1).max(512),
+  }).strict(),
+}).strict();
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    (error as { code?: unknown }).code === 11000;
+}
+
 export function createNotificationsRouter(overrides: Partial<NotificationsRouterDependencies> = {}): Router {
   const dependencies = { ...defaultDependencies, ...overrides };
   const router = Router();
   const authenticated = requireSession({ getDatabase: dependencies.getDatabase });
+
+  router.get("/push/public-key", (_request, response) => {
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ publicKey: dependencies.getPushPublicKey() });
+  });
+
+  router.put(
+    "/push-subscription",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const parsed = pushSubscriptionSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new HttpError(400, "invalid_push_subscription", "Push subscription is invalid.");
+      }
+
+      const now = new Date();
+      const userId = getAuthenticatedSession(response).user._id;
+      const subscription = parsed.data;
+      try {
+        await dependencies.getDatabase().collection<PushSubscriptionDocument>(collectionNames.pushSubscriptions).updateOne(
+          { endpoint: subscription.endpoint, userId },
+          {
+            $set: {
+              endpoint: subscription.endpoint,
+              expirationTime: subscription.expirationTime ?? null,
+              keys: subscription.keys,
+              updatedAt: now,
+            },
+            $setOnInsert: { _id: new ObjectId(), userId, createdAt: now },
+          },
+          { upsert: true },
+        );
+      } catch (error) {
+        if (isDuplicateKeyError(error)) {
+          throw new HttpError(409, "push_subscription_conflict", "This device is already registered to another account.");
+        }
+        throw error;
+      }
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(204).end();
+    },
+  );
+
+  router.delete(
+    "/push-subscription",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const parsed = z.object({ endpoint: z.string().url().max(4096) }).strict().safeParse(request.body);
+      if (!parsed.success) {
+        throw new HttpError(400, "invalid_push_subscription", "Push subscription endpoint is invalid.");
+      }
+      const userId = getAuthenticatedSession(response).user._id;
+      await dependencies.getDatabase().collection<PushSubscriptionDocument>(collectionNames.pushSubscriptions).deleteOne({
+        endpoint: parsed.data.endpoint,
+        userId,
+      });
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(204).end();
+    },
+  );
 
   router.get("/", authenticated, async (_request, response) => {
     const database = dependencies.getDatabase();

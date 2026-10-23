@@ -11,6 +11,7 @@ import { consumeSocketTicket } from "../auth/socket-ticket";
 import { getDatabase as getConnectedDatabase } from "../db/client";
 import { collectionNames, type MessageDocument, type SessionDocument, type UserDocument } from "../db/documents";
 import { areFriends } from "../friends/are-friends";
+import { sendPushToUser } from "../notifications/push";
 import { addPresenceConnection, removePresenceConnection } from "./presence";
 import { z } from "zod";
 
@@ -184,6 +185,12 @@ async function sendMessage(
     if (wasInserted) {
       const event: MessageNewEvent = { message };
       io.to(userRoom(recipientId)).emit("message:new", event);
+      void sendPushToUser(database, recipientId, {
+        title: "New Senderi message",
+        body: "You received a new message.",
+        url: `/messages?friend=${senderId.toHexString()}`,
+        tag: `message-${senderId.toHexString()}`,
+      });
     }
   } catch {
     emitError(socket, "message_failed", "Message could not be sent. Please retry.", validatedClientId);

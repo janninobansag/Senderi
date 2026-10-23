@@ -12,6 +12,7 @@ export const collectionNames = {
   shareLikes: "shareLikes",
   shares: "shares",
   notifications: "notifications",
+  pushSubscriptions: "pushSubscriptions",
   messages: "messages",
   passwordResets: "passwordResets",
   socketTickets: "socketTickets",
@@ -144,6 +145,19 @@ export interface NotificationDocument {
   friendRequestId?: ObjectId;
   createdAt: Date;
   readAt?: Date;
+}
+
+export interface PushSubscriptionDocument {
+  _id: ObjectId;
+  userId: ObjectId;
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface MessageDocument {

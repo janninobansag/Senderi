@@ -33,11 +33,16 @@ const commentPageQuerySchema = z.object({
 }).strict();
 
 const createPostSchema = z.object({
-  text: z.string().trim().min(1).max(5_000),
+  text: z.string().trim().max(5_000).optional().default(""),
   visibility: z.enum(["public", "friends", "onlyMe"]),
 }).strict();
 
 const updatePostSchema = z.object({
+  text: z.string().trim().min(1).max(5_000).optional(),
+  visibility: z.enum(["public", "friends", "onlyMe"]).optional(),
+}).strict().refine((value) => value.text !== undefined || value.visibility !== undefined);
+
+const updateShareSchema = z.object({
   visibility: z.enum(["public", "friends", "onlyMe"]),
 }).strict();
 
@@ -60,6 +65,7 @@ interface PostResponseItem {
   createdAt: string;
   likeCount: number;
   isLikedByViewer: boolean;
+  commentCount: number;
   shareCount: number;
   share?: ShareResponseItem;
 }
@@ -91,6 +97,11 @@ interface AggregatedLikeSummary {
 interface AggregatedShareCount {
   _id: ObjectId;
   shareCount: number;
+}
+
+interface AggregatedCommentCount {
+  _id: ObjectId;
+  commentCount: number;
 }
 
 interface PostListResponse {
@@ -190,9 +201,9 @@ function parseCommentPageQuery(query: Record<string, unknown>) {
   };
 }
 
-function toObjectIdOrNotFound(value: string, resource: "post" | "profile" | "share"): ObjectId {
+function toObjectIdOrNotFound(value: string, resource: "post" | "profile" | "share" | "comment"): ObjectId {
   if (!/^[a-f\d]{24}$/i.test(value)) {
-    const message = resource === "profile" ? "Profile was not found." : resource === "share" ? "Shared post was not found." : "Post was not found.";
+    const message = resource === "profile" ? "Profile was not found." : resource === "share" ? "Shared post was not found." : resource === "comment" ? "Comment was not found." : "Post was not found.";
     throw new HttpError(404, "not_found", message);
   }
   return new ObjectId(value);
@@ -204,6 +215,7 @@ function toPostResponse(
   likeSummary: LikeSummary,
   cloudName?: string,
   shareCount = 0,
+  commentCount = 0,
 ): PostResponseItem {
   return {
     id: post._id.toHexString(),
@@ -213,8 +225,20 @@ function toPostResponse(
     visibility: post.visibility,
     createdAt: post.createdAt.toISOString(),
     ...likeSummary,
+    commentCount,
     shareCount,
   };
+}
+
+async function getVisibleCommentCounts(database: Db, posts: PostDocument[]): Promise<Map<string, number>> {
+  if (posts.length === 0) return new Map();
+  const summaries = await database.collection<CommentDocument>(collectionNames.comments)
+    .aggregate<AggregatedCommentCount>([
+      { $match: { postId: { $in: posts.map((post) => post._id) }, hiddenAt: { $exists: false } } },
+      { $group: { _id: "$postId", commentCount: { $sum: 1 } } },
+    ])
+    .toArray();
+  return new Map(summaries.map((summary) => [summary._id.toHexString(), summary.commentCount]));
 }
 
 async function getVisiblePostShareCounts(
@@ -341,7 +365,7 @@ async function toPostResponses(
     post.authorId,
   ])).values()];
   const postIds = posts.map((post) => post._id);
-  const [authors, likeSummaries, shareCounts] = await Promise.all([
+  const [authors, likeSummaries, shareCounts, commentCounts] = await Promise.all([
     database
       .collection<UserDocument>(collectionNames.users)
       .find({ _id: { $in: authorIds } }, {
@@ -369,6 +393,7 @@ async function toPostResponses(
       },
     ]).toArray(),
     getVisiblePostShareCounts(database, posts, viewerId),
+    getVisibleCommentCounts(database, posts),
   ]);
   const authorsById = new Map(authors.map((author) => [author._id.toHexString(), author]));
   const likesByPostId = new Map(likeSummaries.map((summary) => [summary._id.toHexString(), {
@@ -384,6 +409,7 @@ async function toPostResponses(
       likesByPostId.get(post._id.toHexString()) ?? { likeCount: 0, isLikedByViewer: false },
       cloudName,
       shareCounts.get(post._id.toHexString()) ?? 0,
+      commentCounts.get(post._id.toHexString()) ?? 0,
     )] : [];
   });
 }
@@ -583,11 +609,21 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       }
 
       const session = getAuthenticatedSession(response);
-      const likeSummary = await getPostLikeSummary(database, updated._id, session.user._id);
-      const shareCounts = await getVisiblePostShareCounts(database, [updated], session.user._id);
+      const [likeSummary, shareCounts, commentCounts] = await Promise.all([
+        getPostLikeSummary(database, updated._id, session.user._id),
+        getVisiblePostShareCounts(database, [updated], session.user._id),
+        getVisibleCommentCounts(database, [updated]),
+      ]);
       response.setHeader("Cache-Control", "private, no-store");
       response.json({
-        post: toPostResponse(updated, session.user, likeSummary, dependencies.getCloudinaryCloudName(), shareCounts.get(updated._id.toHexString()) ?? 0),
+        post: toPostResponse(
+          updated,
+          session.user,
+          likeSummary,
+          dependencies.getCloudinaryCloudName(),
+          shareCounts.get(updated._id.toHexString()) ?? 0,
+          commentCounts.get(updated._id.toHexString()) ?? 0,
+        ),
       } satisfies PostResponse);
     },
   );
@@ -626,7 +662,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     async (request, response) => {
       const parsed = updatePostSchema.safeParse(request.body);
       if (!parsed.success) {
-        throw new HttpError(400, "validation_error", "Post audience is invalid.");
+        throw new HttpError(400, "validation_error", "Post changes are invalid.");
       }
 
       const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
@@ -636,17 +672,27 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
         .collection<PostDocument>(collectionNames.posts)
         .findOneAndUpdate(
           { _id: postId, authorId: session.user._id, hiddenAt: { $exists: false } },
-          { $set: { visibility: parsed.data.visibility, updatedAt: new Date() } },
+          { $set: { ...parsed.data, updatedAt: new Date() } },
           { returnDocument: "after" },
         );
 
       if (!updated) throw new HttpError(404, "not_found", "Post was not found.");
 
-      const likeSummary = await getPostLikeSummary(database, updated._id, session.user._id);
-      const shareCounts = await getVisiblePostShareCounts(database, [updated], session.user._id);
+      const [likeSummary, shareCounts, commentCounts] = await Promise.all([
+        getPostLikeSummary(database, updated._id, session.user._id),
+        getVisiblePostShareCounts(database, [updated], session.user._id),
+        getVisibleCommentCounts(database, [updated]),
+      ]);
       response.setHeader("Cache-Control", "private, no-store");
       response.json({
-        post: toPostResponse(updated, session.user, likeSummary, dependencies.getCloudinaryCloudName(), shareCounts.get(updated._id.toHexString()) ?? 0),
+        post: toPostResponse(
+          updated,
+          session.user,
+          likeSummary,
+          dependencies.getCloudinaryCloudName(),
+          shareCounts.get(updated._id.toHexString()) ?? 0,
+          commentCounts.get(updated._id.toHexString()) ?? 0,
+        ),
       } satisfies PostResponse);
     },
   );
@@ -914,6 +960,71 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
     },
   );
 
+  router.patch(
+    "/:postId/comments/:commentId",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const commentId = toObjectIdOrNotFound(String(request.params.commentId), "comment");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+      if (!post || !(await canViewPost(database, session.user._id, post))) {
+        throw new HttpError(404, "not_found", "Post was not found.");
+      }
+
+      const parsed = createCommentSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new HttpError(400, "validation_error", "Comment text must contain 1 to 2000 characters.");
+      }
+
+      const filter: Filter<CommentDocument> = {
+        _id: commentId,
+        postId,
+        authorId: session.user._id,
+        hiddenAt: { $exists: false },
+      };
+      const comments = database.collection<CommentDocument>(collectionNames.comments);
+      const comment = await comments.findOne(filter);
+      if (!comment) throw new HttpError(404, "not_found", "Comment was not found.");
+      const updated = await comments.updateOne(filter, { $set: { text: parsed.data.text } });
+      if (updated.matchedCount !== 1) throw new HttpError(404, "not_found", "Comment was not found.");
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.json({
+        comment: toCommentResponse({ ...comment, text: parsed.data.text }, session.user, dependencies.getCloudinaryCloudName()),
+      });
+    },
+  );
+
+  router.delete(
+    "/:postId/comments/:commentId",
+    requireClientOrigin(dependencies.getAllowedOrigins),
+    authenticated,
+    async (request, response) => {
+      const postId = toObjectIdOrNotFound(String(request.params.postId), "post");
+      const commentId = toObjectIdOrNotFound(String(request.params.commentId), "comment");
+      const session = getAuthenticatedSession(response);
+      const database = dependencies.getDatabase();
+      const post = await database.collection<PostDocument>(collectionNames.posts).findOne({ _id: postId });
+      if (!post || !(await canViewPost(database, session.user._id, post))) {
+        throw new HttpError(404, "not_found", "Post was not found.");
+      }
+
+      const deleted = await database.collection<CommentDocument>(collectionNames.comments).deleteOne({
+        _id: commentId,
+        postId,
+        authorId: session.user._id,
+        hiddenAt: { $exists: false },
+      });
+      if (deleted.deletedCount !== 1) throw new HttpError(404, "not_found", "Comment was not found.");
+
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(204).end();
+    },
+  );
+
   router.post(
     "/:postId/shares",
     requireClientOrigin(dependencies.getAllowedOrigins),
@@ -977,7 +1088,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const shareId = toObjectIdOrNotFound(String(request.params.shareId), "share");
       const session = getAuthenticatedSession(response);
       const database = dependencies.getDatabase();
-      const parsed = updatePostSchema.safeParse(request.body);
+      const parsed = updateShareSchema.safeParse(request.body);
       if (!parsed.success) {
         throw new HttpError(400, "validation_error", "Share audience is invalid.");
       }
@@ -1035,6 +1146,9 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const parsed = createPostSchema.safeParse(request.body);
       if (!parsed.success) {
         throw new HttpError(400, "validation_error", "Post text or audience is invalid.");
+      }
+      if (!request.file && !parsed.data.text) {
+        throw new HttpError(400, "validation_error", "A post must include text or a photo.");
       }
 
       const optimizedPhoto = request.file ? await optimizePostPhoto(request.file) : undefined;
@@ -1212,10 +1326,20 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       .findOne({ _id: post.authorId });
     if (!author) throw new HttpError(404, "not_found", "Post was not found.");
 
-    const likeSummary = await getPostLikeSummary(database, postId, viewerId);
-    const shareCounts = await getVisiblePostShareCounts(database, [post], viewerId);
+    const [likeSummary, shareCounts, commentCounts] = await Promise.all([
+      getPostLikeSummary(database, postId, viewerId),
+      getVisiblePostShareCounts(database, [post], viewerId),
+      getVisibleCommentCounts(database, [post]),
+    ]);
     const body: PostResponse = {
-      post: toPostResponse(post, author, likeSummary, dependencies.getCloudinaryCloudName(), shareCounts.get(postId.toHexString()) ?? 0),
+      post: toPostResponse(
+        post,
+        author,
+        likeSummary,
+        dependencies.getCloudinaryCloudName(),
+        shareCounts.get(postId.toHexString()) ?? 0,
+        commentCounts.get(postId.toHexString()) ?? 0,
+      ),
     };
     response.setHeader("Cache-Control", "private, no-store");
     response.json(body);

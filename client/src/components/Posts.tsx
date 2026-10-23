@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdatePostRequest, UpdateShareResponse, Visibility } from "../../../shared";
+import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdateCommentRequest, UpdateCommentResponse, UpdatePostRequest, UpdateShareResponse, Visibility } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
 import { EmptyState, RequestErrorState } from "./AsyncState";
@@ -44,10 +44,13 @@ function PostActionIcon({ name }: { name: "like" | "comment" | "share" }) {
   return <svg {...commonProps}><path d="M14 5 21 12l-7 7" /><path d="M21 12H9a6 6 0 0 0-6 6" /></svg>;
 }
 
-function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; initiallyOpen?: boolean }) {
+function CommentsPanel({ postId, commentCount, initiallyOpen = false }: { postId: string; commentCount: number; initiallyOpen?: boolean }) {
+  const { user } = useAuth();
   const commentInputId = useId();
+  const commentMenuIdPrefix = useId();
   const [isOpen, setIsOpen] = useState(initiallyOpen);
   const [comments, setComments] = useState<Comment[]>([]);
+  const [visibleCommentCount, setVisibleCommentCount] = useState(commentCount);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -57,7 +60,53 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
   const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [openCommentMenuId, setOpenCommentMenuId] = useState<string | null>(null);
+  const [openCommentMenuAbove, setOpenCommentMenuAbove] = useState(false);
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingCommentText, setEditingCommentText] = useState("");
+  const [pendingCommentActionId, setPendingCommentActionId] = useState<string | null>(null);
+  const [commentActionStatus, setCommentActionStatus] = useState<{ text: string; isError: boolean } | null>(null);
+  const commentMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const commentMenuPanelRef = useRef<HTMLDivElement>(null);
   const commentsPath = `/api/posts/${postId}/comments`;
+
+  useEffect(() => {
+    setVisibleCommentCount(commentCount);
+  }, [commentCount, postId]);
+
+  useLayoutEffect(() => {
+    if (!openCommentMenuId) return;
+    const button = commentMenuButtonRef.current;
+    const menu = commentMenuPanelRef.current;
+    if (!button || !menu) return;
+
+    const buttonRect = button.getBoundingClientRect();
+    const menuHeight = menu.getBoundingClientRect().height;
+    const spaceBelow = window.innerHeight - buttonRect.bottom - 8;
+    const spaceAbove = buttonRect.top - 8;
+    setOpenCommentMenuAbove(spaceBelow < menuHeight && spaceAbove > spaceBelow);
+  }, [openCommentMenuId]);
+
+  useEffect(() => {
+    if (!openCommentMenuId) return;
+
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (event.target instanceof Element && !event.target.closest(".comment-options")) {
+        setOpenCommentMenuId(null);
+      }
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpenCommentMenuId(null);
+    }
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openCommentMenuId]);
 
   const loadFirstPage = useCallback(async () => {
     setIsLoading(true);
@@ -105,6 +154,7 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
       const body: CreateCommentRequest = { text: trimmedText };
       const response = await apiFetch<CreateCommentResponse>(commentsPath, { method: "POST", body });
       setComments((current) => [response.comment, ...current.filter((comment) => comment.id !== response.comment.id)]);
+      setVisibleCommentCount((count) => count + 1);
       setText("");
       setSubmitMessage("Comment added.");
       setHasLoaded(true);
@@ -112,6 +162,57 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
       setSubmitError(error instanceof ApiError ? error.message : "We couldn’t add your comment. Try again.");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  function beginEditComment(comment: Comment) {
+    setEditingCommentId(comment.id);
+    setEditingCommentText(comment.text);
+    setOpenCommentMenuId(null);
+    setCommentActionStatus(null);
+  }
+
+  async function saveComment(event: React.FormEvent<HTMLFormElement>, comment: Comment) {
+    event.preventDefault();
+    const trimmedText = editingCommentText.trim();
+    if (user?.id !== comment.author.id || !trimmedText || pendingCommentActionId) return;
+
+    setPendingCommentActionId(comment.id);
+    setCommentActionStatus(null);
+    try {
+      const body: UpdateCommentRequest = { text: trimmedText };
+      const response = await apiFetch<UpdateCommentResponse>(`${commentsPath}/${comment.id}`, { method: "PATCH", body });
+      setComments((current) => current.map((item) => item.id === comment.id ? response.comment : item));
+      setEditingCommentId(null);
+      setEditingCommentText("");
+      setCommentActionStatus({ text: "Comment updated.", isError: false });
+    } catch (error: unknown) {
+      setCommentActionStatus({
+        text: error instanceof ApiError ? error.message : "We couldn’t update your comment. Try again.",
+        isError: true,
+      });
+    } finally {
+      setPendingCommentActionId(null);
+    }
+  }
+
+  async function deleteComment(comment: Comment) {
+    if (user?.id !== comment.author.id || pendingCommentActionId) return;
+    setPendingCommentActionId(comment.id);
+    setCommentActionStatus(null);
+    try {
+      await apiFetch<void>(`${commentsPath}/${comment.id}`, { method: "DELETE" });
+      setComments((current) => current.filter((item) => item.id !== comment.id));
+      setVisibleCommentCount((count) => Math.max(0, count - 1));
+      setCommentActionStatus({ text: "Comment deleted.", isError: false });
+    } catch (error: unknown) {
+      setCommentActionStatus({
+        text: error instanceof ApiError ? error.message : "We couldn’t delete your comment. Try again.",
+        isError: true,
+      });
+    } finally {
+      setPendingCommentActionId(null);
+      setOpenCommentMenuId(null);
     }
   }
 
@@ -125,10 +226,12 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
         className="post-action post-action-comment"
         type="button"
         aria-expanded={isOpen}
+        aria-label={`Comment on post, ${visibleCommentCount} comments`}
         onClick={toggleComments}
       >
         <PostActionIcon name="comment" />
-        <span>Comment</span>
+        <span className="post-action-label">Comment</span>
+        <span className="post-action-count" aria-live="polite">{visibleCommentCount.toLocaleString()}</span>
       </button>
       {isOpen && (
         <section className="post-comments-panel space-y-4" aria-label="Post comments">
@@ -149,7 +252,7 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
                     const initial = comment.author.displayName.trim().charAt(0).toUpperCase() || "S";
                     const createdAt = new Date(comment.createdAt);
                     return (
-                      <li className="flex gap-3 rounded-2xl bg-canvas p-3" key={comment.id}>
+                      <li className="comment-item flex gap-3 rounded-2xl bg-canvas p-3" key={comment.id}>
                         <Link
                           className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-accent/10 text-xs font-bold text-accent"
                           to={`/profile/${comment.author.id}`}
@@ -159,19 +262,85 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
                             ? <img className="h-full w-full object-cover" src={comment.author.avatarUrl} alt="" />
                             : initial}
                         </Link>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                            <Link className="text-xs font-bold text-ink hover:text-accent" to={`/profile/${comment.author.id}`}>
-                              {comment.author.displayName} <SupporterBadge user={comment.author} />
-                            </Link>
-                            <time className="text-[11px] text-muted" dateTime={comment.createdAt}>
-                              {Number.isNaN(createdAt.getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
-                                dateStyle: "medium",
-                                timeStyle: "short",
-                              }).format(createdAt)}
-                            </time>
+                        <div className="comment-content min-w-0 flex-1">
+                          <div className="comment-header">
+                            <div className="comment-header-copy">
+                              <Link className="text-xs font-bold text-ink hover:text-accent" to={`/profile/${comment.author.id}`}>
+                                {comment.author.displayName} <SupporterBadge user={comment.author} />
+                              </Link>
+                              <time className="text-[11px] text-muted" dateTime={comment.createdAt}>
+                                {Number.isNaN(createdAt.getTime()) ? "Just now" : new Intl.DateTimeFormat(undefined, {
+                                  dateStyle: "medium",
+                                  timeStyle: "short",
+                                }).format(createdAt)}
+                              </time>
+                            </div>
+                            {user?.id === comment.author.id && editingCommentId !== comment.id && (
+                              <div className="comment-options">
+                                <button
+                                  ref={openCommentMenuId === comment.id ? commentMenuButtonRef : null}
+                                  className="comment-options-trigger"
+                                  type="button"
+                                  aria-label="Comment options"
+                                  aria-expanded={openCommentMenuId === comment.id}
+                                  aria-controls={`${commentMenuIdPrefix}-${comment.id}`}
+                                  disabled={pendingCommentActionId === comment.id}
+                                  onClick={() => setOpenCommentMenuId((current) => current === comment.id ? null : comment.id)}
+                                >
+                                  <svg aria-hidden="true" viewBox="0 0 24 24">
+                                    <circle cx="5" cy="12" r="1.6" />
+                                    <circle cx="12" cy="12" r="1.6" />
+                                    <circle cx="19" cy="12" r="1.6" />
+                                  </svg>
+                                </button>
+                                <div
+                                  ref={openCommentMenuId === comment.id ? commentMenuPanelRef : null}
+                                  className={`comment-options-menu${openCommentMenuAbove ? " comment-options-menu-above" : ""}`}
+                                  id={`${commentMenuIdPrefix}-${comment.id}`}
+                                  role="menu"
+                                  aria-label="Comment options"
+                                  hidden={openCommentMenuId !== comment.id}
+                                >
+                                  <button type="button" role="menuitem" onClick={() => beginEditComment(comment)}>Edit comment</button>
+                                  <button
+                                    className="comment-options-delete"
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                      setOpenCommentMenuId(null);
+                                      if (window.confirm("Delete your comment permanently? This cannot be undone.")) {
+                                        void deleteComment(comment);
+                                      }
+                                    }}
+                                  >
+                                    Delete permanently
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
-                          <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-ink/85">{comment.text}</p>
+                          {editingCommentId === comment.id ? (
+                            <form className="comment-edit-form" onSubmit={(event) => void saveComment(event, comment)}>
+                              <label className="sr-only" htmlFor={`${commentMenuIdPrefix}-edit-${comment.id}`}>Edit comment</label>
+                              <textarea
+                                className="comment-edit-input"
+                                id={`${commentMenuIdPrefix}-edit-${comment.id}`}
+                                value={editingCommentText}
+                                maxLength={MAX_COMMENT_LENGTH}
+                                rows={Math.min(5, Math.max(2, editingCommentText.split("\n").length))}
+                                onChange={(event) => setEditingCommentText(event.target.value)}
+                                disabled={pendingCommentActionId === comment.id}
+                              />
+                              <div className="comment-edit-actions">
+                                <button className="button-secondary" type="button" disabled={pendingCommentActionId === comment.id} onClick={() => setEditingCommentId(null)}>Cancel</button>
+                                <button className="button-accent" type="submit" disabled={!editingCommentText.trim() || pendingCommentActionId === comment.id}>
+                                  {pendingCommentActionId === comment.id ? "Saving…" : "Save"}
+                                </button>
+                              </div>
+                            </form>
+                          ) : (
+                            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-ink/85">{comment.text}</p>
+                          )}
                         </div>
                       </li>
                     );
@@ -192,6 +361,11 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
               )}
             </>
           )}
+          {commentActionStatus && (
+            <p className={commentActionStatus.isError ? "form-error" : "form-success"} role={commentActionStatus.isError ? "alert" : "status"}>
+              {commentActionStatus.text}
+            </p>
+          )}
           <form className="comment-composer-form" onSubmit={(event) => void submitComment(event)}>
             <div className="comment-composer-field">
               <label className="sr-only" htmlFor={commentInputId}>Write a comment</label>
@@ -207,6 +381,11 @@ function CommentsPanel({ postId, initiallyOpen = false }: { postId: string; init
                   setText(event.target.value);
                   setSubmitError(null);
                   setSubmitMessage(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                  event.preventDefault();
+                  if (!isSubmitting && text.trim()) event.currentTarget.form?.requestSubmit();
                 }}
                 disabled={isSubmitting}
               />
@@ -281,6 +460,8 @@ function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) 
       <button
         className="post-action"
         type="button"
+        aria-label={isSharing ? "Sharing post" : `Share post, ${(post.share?.shareCount ?? post.shareCount).toLocaleString()} shares`}
+        aria-busy={isSharing}
         onClick={() => {
           setMessage(null);
           setCaption("");
@@ -288,7 +469,7 @@ function ShareControl({ post, onShared }: { post: Post; onShared: () => void }) 
         }}
       >
         <PostActionIcon name="share" />
-        {isSharing ? "Sharing…" : "Share"}
+        <span className="post-action-label">{isSharing ? "Sharing…" : "Share"}</span>
         <span className="post-action-count" aria-live="polite">{(post.share?.shareCount ?? post.shareCount).toLocaleString()}</span>
       </button>
       {message && !isDialogOpen && (
@@ -507,9 +688,9 @@ function PostDetailsDialog({
             >
               <PostActionIcon name="like" />
               <span className="post-action-count" aria-live="polite">{likeState.likeCount.toLocaleString()}</span>
-              {likeState.isLikedByViewer ? "Liked" : "Like"}
+              <span className="post-action-label">{likeState.isLikedByViewer ? "Liked" : "Like"}</span>
             </button>
-            <CommentsPanel postId={post.id} initiallyOpen />
+            <CommentsPanel postId={post.id} commentCount={post.commentCount} initiallyOpen />
             <ShareControl post={post} onShared={onShared} />
           </div>
           {likeMessage && <p className={likeMessage.isError ? "form-error" : "form-success"} role={likeMessage.isError ? "alert" : "status"}>{likeMessage.text}</p>}
@@ -574,18 +755,31 @@ export function PostPhotoViewer({
 }
 
 export function PostComposer({ onCreated }: { onCreated: (post: Post) => void }) {
+  const { user } = useAuth();
+  const [isMobileViewport, setIsMobileViewport] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia("(max-width: 640px)").matches,
+  );
   const [text, setText] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("friends");
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [isAudienceMenuOpen, setIsAudienceMenuOpen] = useState(false);
   const [message, setMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const photoInput = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLFormElement>(null);
   const audienceMenuRef = useRef<HTMLDivElement>(null);
   const audienceMenuButtonRef = useRef<HTMLButtonElement>(null);
   const audienceMenuId = useId();
+
+  useEffect(() => {
+    const mobileViewport = window.matchMedia("(max-width: 640px)");
+    const updateViewport = () => setIsMobileViewport(mobileViewport.matches);
+    mobileViewport.addEventListener("change", updateViewport);
+    return () => mobileViewport.removeEventListener("change", updateViewport);
+  }, []);
 
   useEffect(() => {
     if (!photo) {
@@ -622,11 +816,26 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
     };
   }, [isAudienceMenuOpen]);
 
+  useEffect(() => {
+    if (!isExpanded) return;
+
+    function collapseWhenClickedOutside(event: PointerEvent) {
+      const composer = composerRef.current;
+      if (!composer || !(event.target instanceof Node) || composer.contains(event.target)) return;
+      if (text.trim() || photo) return;
+      setIsExpanded(false);
+      setIsAudienceMenuOpen(false);
+    }
+
+    document.addEventListener("pointerdown", collapseWhenClickedOutside);
+    return () => document.removeEventListener("pointerdown", collapseWhenClickedOutside);
+  }, [isExpanded, text, photo]);
+
   async function submitPost(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedText = text.trim();
-    if (!trimmedText) {
-      setMessage({ text: "Write something before sharing your post.", isError: true });
+    if (!trimmedText && !photo) {
+      setMessage({ text: "Write something or add a photo before sharing your post.", isError: true });
       return;
     }
 
@@ -647,6 +856,7 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
       }
       setText("");
       setPhoto(null);
+      setIsExpanded(false);
       setUploadProgress(null);
       if (photoInput.current) photoInput.current.value = "";
       setMessage({ text: "Your post was shared.", isError: false });
@@ -678,6 +888,7 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
       return;
     }
     setPhoto(file);
+    setIsExpanded(true);
     setMessage({ text: "Photo ready to share.", isError: false });
   }
 
@@ -720,43 +931,73 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
   );
 
   return (
-    <form className="surface-card space-y-4 p-5 sm:p-6" onSubmit={(event) => void submitPost(event)}>
-      <div className="post-composer-heading">
-        <span className="eyebrow">Create a post</span>
-        {audienceOptionsControl}
-      </div>
-      <label className="block">
-        <textarea
-          className="mt-3 min-h-28 w-full resize-y rounded-2xl border border-line bg-canvas px-4 py-3 text-sm leading-6 text-ink outline-none transition placeholder:text-muted focus:border-accent"
-          aria-label="Post text"
-          placeholder="What’s on your mind?"
-          value={text}
-          onChange={(event) => {
-            setText(event.target.value);
-            setMessage(null);
-          }}
-          maxLength={MAX_POST_LENGTH}
-          required
-        />
-      </label>
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="button-secondary cursor-pointer" htmlFor="post-photo-picker">
-            {photo ? "Change photo" : "Add a photo"}
-          </label>
-          <input
-            ref={photoInput}
-            id="post-photo-picker"
-            className="sr-only"
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            aria-label="Choose a post photo"
-            disabled={isSubmitting}
-            onChange={(event) => selectPhoto(event.target.files?.[0])}
+    <form
+      ref={composerRef}
+      className={`surface-card post-composer-card${isExpanded ? " post-composer-expanded" : ""}`}
+      onSubmit={(event) => void submitPost(event)}
+    >
+      <div className="post-composer-inline">
+        <div className="post-composer-avatar" aria-hidden="true">
+          {user?.avatarUrl
+            ? <img src={user.avatarUrl} alt="" />
+            : (user?.displayName ?? "Senderi").trim().charAt(0).toUpperCase() || "S"}
+        </div>
+        <div className="post-composer-input-wrap">
+          <textarea
+            id="post-text"
+            className="post-composer-input"
+            aria-label="Post text"
+            placeholder={isMobileViewport ? "Share your thoughts." : `What's on your mind, ${user?.displayName?.trim() || "friend"}?`}
+            rows={1}
+            value={text}
+            onChange={(event) => {
+              setText(event.target.value);
+              setMessage(null);
+            }}
+            onFocus={() => setIsExpanded(true)}
+            maxLength={MAX_POST_LENGTH}
+            required={!photo}
           />
-          {photo && (
+          {isExpanded && (
+            <div className="post-composer-footer">
+              <span className="text-xs text-muted">{text.length}/{MAX_POST_LENGTH}</span>
+              <button className="button-accent" type="submit" disabled={isSubmitting || (!text.trim() && !photo)}>
+                {isSubmitting ? (photo ? "Uploading..." : "Sharing...") : photo ? "Share post and photo" : "Share post"}
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="post-composer-actions">
+          {audienceOptionsControl}
+          <button
+            className={`post-composer-action post-composer-photo${photo ? " has-photo" : ""}`}
+            type="button"
+            aria-label={photo ? "Change photo" : "Add a photo"}
+            title={photo ? "Change photo" : "Add a photo"}
+            disabled={isSubmitting}
+            onClick={() => photoInput.current?.click()}
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m21 15-5-5L5 20" /></svg>
+          </button>
+        </div>
+      </div>
+      <input
+        ref={photoInput}
+        id="post-photo-picker"
+        className="sr-only"
+        tabIndex={-1}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        aria-label="Choose a post photo"
+        disabled={isSubmitting}
+        onChange={(event) => selectPhoto(event.target.files?.[0])}
+      />
+      {photo && photoPreview && (
+        <div className="post-composer-photo-preview">
+          <img src={photoPreview} alt="Selected post photo preview" />
+          <div>
+            <p>{photo.name} - {(photo.size / (1024 * 1024)).toFixed(2)} MB</p>
             <button
-              className="text-sm font-semibold text-muted hover:text-ink"
               type="button"
               onClick={() => {
                 setPhoto(null);
@@ -766,23 +1007,9 @@ export function PostComposer({ onCreated }: { onCreated: (post: Post) => void })
             >
               Remove photo
             </button>
-          )}
-        </div>
-        {photo && photoPreview && (
-          <div className="flex flex-col gap-3 rounded-2xl border border-line bg-canvas p-3 sm:flex-row sm:items-center">
-            <img className="max-h-64 w-full rounded-xl object-contain sm:w-48" src={photoPreview} alt="Selected post photo preview" />
-            <p className="min-w-0 break-all text-xs text-muted">{photo.name} · {(photo.size / (1024 * 1024)).toFixed(2)} MB</p>
           </div>
-        )}
-      </div>
-      <div className="post-composer-footer flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-        <div className="flex items-center justify-between gap-4 sm:justify-end">
-          <span className="text-xs text-muted">{text.length}/{MAX_POST_LENGTH}</span>
-          <button className="button-accent" type="submit" disabled={isSubmitting || !text.trim()}>
-            {isSubmitting ? (photo ? "Uploading…" : "Sharing…") : photo ? "Share post and photo" : "Share post"}
-          </button>
         </div>
-      </div>
+      )}
       {uploadProgress !== null && (
         <div className="space-y-1" role="status" aria-live="polite">
           <div className="flex justify-between text-xs text-muted">
@@ -826,7 +1053,10 @@ export function PostCard({
   const { user } = useAuth();
   const [isUpdating, setIsUpdating] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isEditingPost, setIsEditingPost] = useState(false);
+  const [editText, setEditText] = useState(post.text ?? "");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isMenuOpenAbove, setIsMenuOpenAbove] = useState(false);
   const [detailMode, setDetailMode] = useState<"post" | "photo" | null>(null);
   const [updateMessage, setUpdateMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const [postLikeState, setPostLikeState] = useState({
@@ -841,10 +1071,12 @@ export function PostCard({
   const [likeMessage, setLikeMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const optionsMenuId = useId();
   const optionsMenuRef = useRef<HTMLDivElement>(null);
+  const optionsMenuPanelRef = useRef<HTMLDivElement>(null);
   const optionsButtonRef = useRef<HTMLButtonElement>(null);
   const isOwner = user?.id === post.author.id;
   const isShareOwner = Boolean(post.share && user?.id === post.share.author.id);
   const canManagePostOptions = post.share ? isShareOwner : isOwner;
+  const canEditPost = isOwner && !post.share;
   const displayedAudience = post.share?.visibility ?? post.visibility;
   const initial = post.author.displayName.trim().charAt(0).toUpperCase() || "S";
   const shareInitial = post.share?.author.displayName.trim().charAt(0).toUpperCase() || "S";
@@ -860,6 +1092,20 @@ export function PostCard({
       isLikedByViewer: post.share?.isLikedByViewer ?? false,
     });
   }, [post.share?.id, post.share?.likeCount, post.share?.isLikedByViewer]);
+
+  useLayoutEffect(() => {
+    if (!isMenuOpen) return;
+
+    const button = optionsButtonRef.current;
+    const menu = optionsMenuPanelRef.current;
+    if (!button || !menu) return;
+
+    const buttonRect = button.getBoundingClientRect();
+    const menuHeight = menu.getBoundingClientRect().height;
+    const spaceBelow = window.innerHeight - buttonRect.bottom - 8;
+    const spaceAbove = buttonRect.top - 8;
+    setIsMenuOpenAbove(spaceBelow < menuHeight && spaceAbove > spaceBelow);
+  }, [isMenuOpen]);
 
   useEffect(() => {
     if (!isMenuOpen) return;
@@ -926,12 +1172,35 @@ export function PostCard({
             })).share,
           }
         : (await apiFetch<PostResponse>(`/api/posts/${post.id}`, { method: "PATCH", body })).post;
-      setUpdateMessage({ text: "Audience updated.", isError: false });
+      setUpdateMessage(null);
       setIsMenuOpen(false);
       onUpdated(updatedPost);
     } catch (error: unknown) {
       setUpdateMessage({
         text: error instanceof ApiError ? error.message : "We couldn’t update this post’s audience. Try again.",
+        isError: true,
+      });
+    } finally {
+      setIsUpdating(false);
+    }
+  }
+
+  async function saveEditedPost(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = editText.trim();
+    if (!canEditPost || isUpdating || !text) return;
+
+    setIsUpdating(true);
+    setUpdateMessage({ text: "Saving post…", isError: false });
+    try {
+      const body: UpdatePostRequest = { text };
+      const updatedPost = (await apiFetch<PostResponse>(`/api/posts/${post.id}`, { method: "PATCH", body })).post;
+      setIsEditingPost(false);
+      setUpdateMessage({ text: "Post updated.", isError: false });
+      onUpdated(updatedPost);
+    } catch (error: unknown) {
+      setUpdateMessage({
+        text: error instanceof ApiError ? error.message : "We couldn’t update this post. Try again.",
         isError: true,
       });
     } finally {
@@ -970,6 +1239,7 @@ export function PostCard({
           aria-label="Post options"
           aria-expanded={isMenuOpen}
           aria-controls={optionsMenuId}
+          disabled={isEditingPost || isUpdating || isDeleting}
           onClick={() => setIsMenuOpen((open) => !open)}
         >
           <svg aria-hidden="true" viewBox="0 0 24 24">
@@ -978,7 +1248,12 @@ export function PostCard({
             <circle cx="19" cy="12" r="1.6" />
           </svg>
         </button>
-        <div id={optionsMenuId} className="post-options-menu" hidden={!isMenuOpen}>
+        <div
+          id={optionsMenuId}
+          ref={optionsMenuPanelRef}
+          className={`post-options-menu${isMenuOpenAbove ? " post-options-menu-above" : ""}`}
+          hidden={!isMenuOpen}
+        >
           <p className="post-options-title">Post options</p>
           <div className="post-options-audience">
             <span>Audience</span>
@@ -986,6 +1261,21 @@ export function PostCard({
           </div>
           {canManagePostOptions && (
             <>
+              {canEditPost && (
+                <button
+                  className="post-options-edit"
+                  type="button"
+                  disabled={isDeleting || isUpdating}
+                  onClick={() => {
+                    setEditText(post.text ?? "");
+                    setIsEditingPost(true);
+                    setIsMenuOpen(false);
+                    setUpdateMessage(null);
+                  }}
+                >
+                  Edit post
+                </button>
+              )}
               <label className="post-options-edit-audience">
                 <span>Edit audience</span>
                 <select
@@ -1022,9 +1312,42 @@ export function PostCard({
 
   const originalPostContent = (
     <>
-      <div className="mt-5 whitespace-pre-wrap break-words text-sm leading-7 text-ink/85">
-        {post.text || <span className="text-muted">Shared a photo.</span>}
-      </div>
+      {isEditingPost ? (
+        <form className="post-edit-form" onSubmit={(event) => void saveEditedPost(event)}>
+          <textarea
+            aria-label="Edit post text"
+            maxLength={MAX_POST_LENGTH}
+            required
+            value={editText}
+            onChange={(event) => setEditText(event.target.value)}
+            disabled={isUpdating}
+          />
+          <div className="post-edit-footer">
+            <span>{editText.length.toLocaleString()}/{MAX_POST_LENGTH}</span>
+            <div className="post-edit-actions">
+              <button
+                className="button-secondary"
+                type="button"
+                onClick={() => {
+                  setEditText(post.text ?? "");
+                  setIsEditingPost(false);
+                  setUpdateMessage(null);
+                }}
+                disabled={isUpdating}
+              >
+                Cancel
+              </button>
+              <button className="button-accent" type="submit" disabled={isUpdating || !editText.trim()}>
+                {isUpdating ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </form>
+      ) : post.text ? (
+        <div className="mt-5 whitespace-pre-wrap break-words text-sm leading-7 text-ink/85">
+          {post.text}
+        </div>
+      ) : null}
       {post.photoUrl && (
         post.share ? (
           <img
@@ -1153,9 +1476,11 @@ export function PostCard({
         >
           <PostActionIcon name="like" />
           <span className="post-action-count" aria-live="polite">{cardLikeState.likeCount.toLocaleString()}</span>
-          {isCardLikePending ? (cardLikeState.isLikedByViewer ? "Removing Like…" : "Liking…") : cardLikeState.isLikedByViewer ? "Liked" : "Like"}
+          <span className="post-action-label">
+            {isCardLikePending ? (cardLikeState.isLikedByViewer ? "Removing Like..." : "Liking...") : cardLikeState.isLikedByViewer ? "Liked" : "Like"}
+          </span>
         </button>
-        <CommentsPanel postId={post.id} initiallyOpen={commentsInitiallyOpen} />
+        <CommentsPanel postId={post.id} commentCount={post.commentCount} initiallyOpen={commentsInitiallyOpen} />
         <ShareControl post={post} onShared={onShared} />
       </div>
       {detailMode && (
