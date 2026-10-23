@@ -254,7 +254,7 @@ button { cursor: pointer; }
 .push-permission-enable { background: var(--color-accent); color: white; }
 .push-permission-actions button:disabled { cursor: wait; opacity: .65; }
 .push-permission-actions button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.app-update-notice { position: fixed; z-index: 1000; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); left: max(12px, env(safe-area-inset-left)); display: grid; width: auto; max-width: 500px; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-inline: auto; border: 1px solid var(--color-line); border-radius: 16px; background: var(--color-surface); padding: 16px; color: var(--color-ink); box-shadow: 0 14px 40px rgb(51 41 22 / 20%); }
+.app-update-notice { position: fixed; z-index: 1000; top: 50%; right: max(12px, env(safe-area-inset-right)); left: max(12px, env(safe-area-inset-left)); transform: translateY(-50%); display: grid; width: auto; max-width: 500px; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-inline: auto; border: 1px solid var(--color-line); border-radius: 16px; background: var(--color-surface); padding: 16px; color: var(--color-ink); box-shadow: 0 14px 40px rgb(51 41 22 / 20%); }
 .app-update-copy { display: grid; min-width: 0; gap: 3px; }
 .app-update-copy strong { font-size: 13px; font-weight: 800; }
 .app-update-copy > span { color: var(--color-muted); font-size: 12px; line-height: 1.4; }
