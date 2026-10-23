@@ -54,8 +54,9 @@ export function decodePostCursor(token: string): FeedCursor {
 export async function canViewPost(
   database: Db,
   viewerId: ObjectId,
-  post: Pick<PostDocument, "authorId" | "visibility">,
+  post: Pick<PostDocument, "authorId" | "visibility" | "hiddenAt">,
 ): Promise<boolean> {
+  if (post.hiddenAt) return false;
   if (viewerId.equals(post.authorId)) return true;
 
   switch (post.visibility) {
@@ -110,6 +111,7 @@ export async function listVisiblePostDocuments(
   if (options.photosOnly) {
     candidateFilter = { $and: [candidateFilter, { photoAssetId: { $exists: true } }] };
   }
+  candidateFilter = { $and: [candidateFilter, { hiddenAt: { $exists: false } }] };
 
   const items: PostDocument[] = [];
   let scanCursor = options.cursor;

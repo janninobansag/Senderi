@@ -365,6 +365,20 @@ test("login verifies a password and the session survives a separate request", as
   assert.equal("passwordHash" in currentUser.body.user, false);
 });
 
+test("suspended accounts cannot sign in or continue an existing session", async () => {
+  const database = createMemoryDatabase();
+  const user = await addUser(database);
+  const app = createTestApp(database);
+  const agent = request.agent(app);
+  const credentials = { email: user.email, password: "correct horse battery staple" };
+  assert.equal((await agent.post("/api/auth/login").set("Origin", "http://localhost:5173").send(credentials)).status, 200);
+  user.suspendedAt = new Date();
+  assert.equal((await agent.get("/api/auth/me")).status, 401);
+  const login = await request(app).post("/api/auth/login").set("Origin", "http://localhost:5173").send(credentials);
+  assert.equal(login.status, 403);
+  assert.equal(login.body.error.code, "account_suspended");
+});
+
 test("wrong and unknown login credentials return the same response without issuing a session", async () => {
   const database = createMemoryDatabase();
   await addUser(database);

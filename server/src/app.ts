@@ -1,4 +1,5 @@
 import express from "express";
+import { createAdminRouter } from "./routes/admin";
 import { errorHandler } from "./middleware/error-handler";
 import { notFoundHandler } from "./middleware/not-found";
 import { authRouter } from "./routes/auth";
@@ -15,6 +16,7 @@ export const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "1mb" }));
 app.use("/api/auth", authRouter);
+app.use("/api/admin", createAdminRouter());
 app.use("/api/chats", chatsRouter);
 app.use("/api/friend-requests", friendRequestsRouter);
 app.use("/api/friends", friendsRouter);

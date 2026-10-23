@@ -16,6 +16,7 @@ export const collectionNames = {
   passwordResets: "passwordResets",
   socketTickets: "socketTickets",
   rateLimits: "rateLimits",
+  adminAudit: "adminAudit",
 } as const;
 
 /** Store a trimmed, lowercase email and an Argon2id password hash. */
@@ -34,6 +35,9 @@ export interface UserDocument {
   createdAt: Date;
   updatedAt: Date;
   lastActiveAt?: Date;
+  supporterBadge?: boolean;
+  verifiedBadge?: boolean;
+  suspendedAt?: Date;
 }
 
 /** Store the lexicographically ordered ObjectIds as userIdLow/userIdHigh. */
@@ -68,6 +72,9 @@ export interface PostDocument {
   visibility: PostVisibility;
   createdAt: Date;
   updatedAt: Date;
+  hiddenAt?: Date;
+  hiddenBy?: ObjectId;
+  hiddenReason?: string;
 }
 
 export interface LikeDocument {
@@ -91,6 +98,18 @@ export interface CommentDocument {
   postId: ObjectId;
   authorId: ObjectId;
   text: string;
+  createdAt: Date;
+  hiddenAt?: Date;
+  hiddenBy?: ObjectId;
+  hiddenReason?: string;
+}
+
+export interface AdminAuditDocument {
+  _id: ObjectId;
+  actorId: ObjectId;
+  targetId: ObjectId;
+  action: string;
+  reason: string;
   createdAt: Date;
 }
 

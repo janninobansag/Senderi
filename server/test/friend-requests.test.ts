@@ -329,7 +329,7 @@ test("signed-in user search paginates newest first and returns only public profi
   ]);
   assert.notEqual(firstPage.body.nextCursor, null);
   assert.deepEqual(Object.keys(firstPage.body.items[0]).sort(), [
-    "bio", "createdAt", "displayName", "id", "info",
+    "bio", "createdAt", "displayName", "id", "info", "supporterBadge", "verifiedBadge",
   ]);
   assert.equal("email" in firstPage.body.items[0], false);
   assert.equal("passwordHash" in firstPage.body.items[0], false);

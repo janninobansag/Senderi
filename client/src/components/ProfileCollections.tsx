@@ -5,6 +5,7 @@ import { ApiError, apiFetch } from "../api/client";
 import { PostPhotoViewer } from "./Posts";
 import { EmptyState, RequestErrorState } from "./AsyncState";
 import { SkeletonBlock, SkeletonRegion } from "./Skeletons";
+import { SupporterBadge } from "./SupporterBadge";
 
 function useProfileCollection<T>(path: string) {
   const [items, setItems] = useState<T[]>([]);
@@ -102,7 +103,7 @@ export function ProfileImageViewer({ image, profile, onClose }: { image: { label
               {profile.avatarUrl ? <img src={profile.avatarUrl} alt="" /> : initial}
             </Link>
             <div className="share-post-identity-copy">
-              <Link className="share-post-author" to={`/profile/${profile.id}`}>{profile.displayName}</Link>
+              <Link className="share-post-author" to={`/profile/${profile.id}`}>{profile.displayName} <SupporterBadge user={profile} /></Link>
               <span className="text-xs text-muted">{image.label}</span>
             </div>
           </header>
@@ -184,7 +185,7 @@ export function ProfileFriends() {
                 <Link className="profile-friend-tile" to={`/profile/${friend.id}`} key={friend.id}>
                   <span className="profile-friend-avatar">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" loading="lazy" /> : friend.displayName.trim().charAt(0).toUpperCase() || "?"}</span>
                   <span className="profile-friend-copy">
-                    <span className="profile-friend-name">{friend.displayName}</span>
+                    <span className="profile-friend-name">{friend.displayName} <SupporterBadge user={friend} /></span>
                     {mutualFriendCount > 0 && (
                       <span className="profile-friend-mutuals">
                         {mutualFriendCount} mutual {mutualFriendCount === 1 ? "friend" : "friends"}

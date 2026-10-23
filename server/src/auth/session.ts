@@ -109,7 +109,7 @@ export function requireSession(
     const user = await database
       .collection<UserDocument>(collectionNames.users)
       .findOne({ _id: session.userId });
-    if (!user) {
+    if (!user || user.suspendedAt) {
       next(new HttpError(401, "unauthorized", "Authentication is required."));
       return;
     }

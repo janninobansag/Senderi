@@ -39,6 +39,11 @@ export interface SocketServerDependencies {
 
 type SenderSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 type RealtimeServer = SocketServer<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
+const activeServers = new Set<RealtimeServer>();
+
+export function disconnectUserSockets(userId: ObjectId): void {
+  for (const server of activeServers) server.in(userRoom(userId)).disconnectSockets(true);
+}
 
 const messageSendSchema = z.object({
   friendId: z.string().regex(/^[a-f\d]{24}$/i),
@@ -198,6 +203,8 @@ export function createSocketServer(
       callback(null, typeof origin === "string" && allowedOrigins.includes(origin));
     },
   });
+  activeServers.add(io);
+  httpServer.once("close", () => activeServers.delete(io));
 
   io.use((socket, next) => {
     const origin = socket.handshake.headers.origin;

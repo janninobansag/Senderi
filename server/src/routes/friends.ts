@@ -165,6 +165,8 @@ export function createFriendsRouter(overrides: Partial<FriendsRouterDependencies
             avatarId: 1,
             coverId: 1,
             createdAt: 1,
+            supporterBadge: 1,
+            verifiedBadge: 1,
           },
         })
           .toArray(),
