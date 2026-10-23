@@ -385,6 +385,9 @@ function HeaderActions() {
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationError, setNotificationError] = useState<string | null>(null);
+  const [pushState, setPushState] = useState<"checking" | "enabled" | "available" | "unavailable" | "unsupported" | "denied" | "not-configured">("checking");
+  const [pushWorking, setPushWorking] = useState(false);
+  const [pushMessage, setPushMessage] = useState<string | null>(null);
   const accountMenuId = useId();
   const notificationsPanelId = useId();
   const messagesPanelId = useId();
@@ -424,6 +427,42 @@ function HeaderActions() {
       window.removeEventListener("focus", refreshOnFocus);
     };
   }, [currentUserId, refreshNotifications]);
+
+  useEffect(() => {
+    if (!isNotificationsOpen || !currentUserId) return;
+    let active = true;
+    const checkPushAvailability = async () => {
+      if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+        setPushState("unsupported");
+        return;
+      }
+      if (Notification.permission === "denied") {
+        setPushState("denied");
+        return;
+      }
+      try {
+        const { publicKey } = await apiFetch<{ publicKey: string | null }>("/api/notifications/push/public-key");
+        if (!active) return;
+        if (!publicKey) {
+          setPushState("not-configured");
+          return;
+        }
+        let registration = await navigator.serviceWorker.getRegistration("/");
+        if (!registration && import.meta.env.PROD) registration = await navigator.serviceWorker.ready;
+        if (!active) return;
+        if (!registration) {
+          setPushState("unavailable");
+          return;
+        }
+        const subscription = await registration.pushManager.getSubscription();
+        if (active) setPushState(subscription && Notification.permission === "granted" ? "enabled" : "available");
+      } catch {
+        if (active) setPushState("unavailable");
+      }
+    };
+    void checkPushAvailability();
+    return () => { active = false; };
+  }, [currentUserId, isNotificationsOpen]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -537,6 +576,20 @@ function HeaderActions() {
     setPending(true);
     setError(null);
     try {
+      try {
+        const registration = await navigator.serviceWorker?.getRegistration("/");
+        const subscription = await registration?.pushManager.getSubscription();
+        if (subscription) {
+          await apiFetch<void>("/api/notifications/push-subscription", {
+            method: "DELETE",
+            body: { endpoint: subscription.endpoint },
+          }).catch(() => undefined);
+          await subscription.unsubscribe().catch(() => false);
+          setPushState("available");
+        }
+      } catch {
+        // Signing out remains available when this device is offline.
+      }
       await signOut();
       setIsAccountMenuOpen(false);
       setIsNotificationsOpen(false);
@@ -573,6 +626,67 @@ function HeaderActions() {
       setNotificationError(null);
     } catch {
       setNotificationError("Notifications couldn’t be updated. Please try again.");
+    }
+  }
+
+  async function handlePushNotifications() {
+    if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setPushState("unsupported");
+      return;
+    }
+    setPushWorking(true);
+    setPushMessage(null);
+    try {
+      if (pushState === "enabled") {
+        const registration = await navigator.serviceWorker.getRegistration("/");
+        const subscription = await registration?.pushManager.getSubscription();
+        if (subscription) {
+          await apiFetch<void>("/api/notifications/push-subscription", {
+            method: "DELETE",
+            body: { endpoint: subscription.endpoint },
+          });
+          setPushState("available");
+          await subscription.unsubscribe().catch(() => false);
+        }
+        setPushState("available");
+        setPushMessage("Phone notifications are off.");
+        return;
+      }
+
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushState(permission === "denied" ? "denied" : "available");
+        setPushMessage(permission === "denied" ? "Allow notifications for Senderi in your browser or phone settings." : "Allow notifications to turn on phone alerts.");
+        return;
+      }
+
+      const { publicKey } = await apiFetch<{ publicKey: string | null }>("/api/notifications/push/public-key");
+      if (!publicKey) {
+        setPushState("not-configured");
+        setPushMessage("Phone notifications are not configured for Senderi yet.");
+        return;
+      }
+      let registration = await navigator.serviceWorker.getRegistration("/");
+      if (!registration && import.meta.env.PROD) registration = await navigator.serviceWorker.ready;
+      if (!registration) {
+        setPushState("unavailable");
+        setPushMessage("Install or update Senderi on this device, then try again.");
+        return;
+      }
+      const subscription = await registration.pushManager.getSubscription() ?? await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: decodeVapidKey(publicKey),
+      });
+      await apiFetch<void>("/api/notifications/push-subscription", {
+        method: "PUT",
+        body: subscription.toJSON(),
+      });
+      setPushState("enabled");
+      setPushMessage("Phone notifications are on.");
+    } catch {
+      setPushMessage("Phone notifications couldn’t be updated. Please try again.");
+    } finally {
+      setPushWorking(false);
     }
   }
 
@@ -705,6 +819,18 @@ function HeaderActions() {
                 <button type="button" onClick={() => void handleReadAllNotifications()}>Mark all read</button>
               )}
             </div>
+            <div className="header-push-settings">
+              <div className="header-push-settings-copy">
+                <strong>Phone notifications</strong>
+                <span>{pushState === "enabled" ? "Get alerts for messages and activity." : pushState === "checking" ? "Checking this device…" : pushState === "unsupported" ? "This browser does not support phone alerts." : pushState === "denied" ? "Allow notifications in your browser or phone settings." : pushState === "not-configured" ? "Phone alerts are not configured for Senderi yet." : pushState === "unavailable" ? "Open Senderi from an installed, updated app." : "Get alerts for messages and activity."}</span>
+              </div>
+              {(pushState === "enabled" || pushState === "available") && (
+                <button type="button" onClick={() => void handlePushNotifications()} disabled={pushWorking}>
+                  {pushWorking ? "Please wait…" : pushState === "enabled" ? "Turn off" : "Turn on"}
+                </button>
+              )}
+            </div>
+            {pushMessage && <p className="header-push-message" role="status">{pushMessage}</p>}
             {notificationError && <p className="header-notifications-error" role="alert">{notificationError}</p>}
             {notificationsLoading && notifications.length === 0 ? (
               <CompactRowsSkeleton message="Loading notifications" count={3} />
@@ -814,6 +940,13 @@ function notificationMessage(type: NotificationItem["type"]): string {
     case "friend_accepted": return "accepted your friend request.";
     default: return "sent you a notification.";
   }
+}
+
+function decodeVapidKey(value: string): Uint8Array<ArrayBuffer> {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = window.atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 function formatNotificationTime(value: string): string {

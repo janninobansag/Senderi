@@ -259,10 +259,14 @@ export function SessionSkeleton({ page = "feed" }: { page?: "feed" | "messages" 
           ) : (
             <>
               <div className="surface-card skeleton-session-composer">
-                <div className="skeleton-post-composer-heading"><SkeletonBlock className="skeleton-line skeleton-composer-eyebrow" /><SkeletonBlock className="skeleton-composer-options" /></div>
-                <SkeletonBlock className="skeleton-composer-textarea" />
-                <SkeletonBlock className="skeleton-composer-photo" />
-                <div className="skeleton-composer-footer"><SkeletonBlock className="skeleton-line skeleton-composer-count" /><SkeletonBlock className="skeleton-composer-submit" /></div>
+                <div className="skeleton-composer-inline">
+                  <SkeletonBlock className="skeleton-avatar" />
+                  <SkeletonBlock className="skeleton-composer-textarea" />
+                  <div className="skeleton-composer-actions">
+                    <SkeletonBlock className="skeleton-composer-options" />
+                    <SkeletonBlock className="skeleton-composer-options" />
+                  </div>
+                </div>
               </div>
               <div className="skeleton-session-feed-stream">
                 <div className="skeleton-feed-heading"><SkeletonBlock className="skeleton-line skeleton-feed-eyebrow" /><SkeletonBlock className="skeleton-line skeleton-heading skeleton-feed-title" /></div>

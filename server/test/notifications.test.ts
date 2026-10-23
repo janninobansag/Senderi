@@ -4,7 +4,7 @@ import express from "express";
 import { ObjectId, type Db } from "mongodb";
 import request from "supertest";
 import { hashSessionToken, SESSION_COOKIE_NAME } from "../src/auth/session";
-import { collectionNames, type NotificationDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
+import { collectionNames, type NotificationDocument, type PushSubscriptionDocument, type SessionDocument, type UserDocument } from "../src/db/documents";
 import { errorHandler } from "../src/middleware/error-handler";
 import { notFoundHandler } from "../src/middleware/not-found";
 import { createNotificationsRouter } from "../src/routes/notifications";
@@ -62,6 +62,15 @@ function createApp() {
     makeNotification(ownerId, actorId, new Date("2026-10-21T00:00:00.000Z"), true),
     makeNotification(otherId, actorId, new Date("2026-10-23T00:00:00.000Z")),
   ];
+  const pushSubscriptions: PushSubscriptionDocument[] = [{
+    _id: new ObjectId(),
+    userId: otherId,
+    endpoint: "https://push.example/other-device",
+    expirationTime: null,
+    keys: { p256dh: "other-p256dh", auth: "other-auth" },
+    createdAt,
+    updatedAt: createdAt,
+  }];
   const users = [owner, actor, other];
   const database = {
     collection: (name: string) => {
@@ -105,6 +114,30 @@ function createApp() {
           },
         };
       }
+      if (name === collectionNames.pushSubscriptions) {
+        return {
+          updateOne: async (
+            filter: { endpoint: string; userId: ObjectId },
+            update: {
+              $set: Pick<PushSubscriptionDocument, "endpoint" | "expirationTime" | "keys" | "updatedAt">;
+              $setOnInsert: Pick<PushSubscriptionDocument, "_id" | "userId" | "createdAt">;
+            },
+          ) => {
+            if (pushSubscriptions.some((item) => item.endpoint === filter.endpoint && !item.userId.equals(filter.userId))) {
+              throw Object.assign(new Error("Duplicate push endpoint"), { code: 11000 });
+            }
+            const existing = pushSubscriptions.find((item) => item.endpoint === filter.endpoint && item.userId.equals(filter.userId));
+            if (existing) Object.assign(existing, update.$set);
+            else pushSubscriptions.push({ ...update.$set, ...update.$setOnInsert });
+            return { acknowledged: true, matchedCount: existing ? 1 : 0, upsertedCount: existing ? 0 : 1 };
+          },
+          deleteOne: async (filter: { endpoint: string; userId: ObjectId }) => {
+            const index = pushSubscriptions.findIndex((item) => item.endpoint === filter.endpoint && item.userId.equals(filter.userId));
+            if (index !== -1) pushSubscriptions.splice(index, 1);
+            return { acknowledged: true, deletedCount: index === -1 ? 0 : 1 };
+          },
+        };
+      }
       return {};
     },
   } as unknown as Db;
@@ -114,11 +147,63 @@ function createApp() {
     getDatabase: () => database,
     getAllowedOrigins: () => ["http://localhost:5173"],
     getCloudinaryCloudName: () => undefined,
+    getPushPublicKey: () => "test-public-key",
   }));
   app.use(notFoundHandler);
   app.use(errorHandler);
-  return { app, notifications };
+  return { app, notifications, pushSubscriptions };
 }
+
+test("push subscriptions are opt-in, authenticated, and scoped to the signed-in user", async () => {
+  const { app, pushSubscriptions } = createApp();
+  const cookie = `${SESSION_COOKIE_NAME}=${ownerToken}`;
+  const endpoint = "https://push.example/owner-device";
+
+  const publicKey = await request(app).get("/api/notifications/push/public-key").expect(200);
+  assert.equal(publicKey.body.publicKey, "test-public-key");
+  assert.equal(publicKey.headers["cache-control"], "private, no-store");
+
+  await request(app)
+    .put("/api/notifications/push-subscription")
+    .set("Origin", "http://localhost:5173")
+    .send({ endpoint, expirationTime: null, keys: { p256dh: "owner-p256dh", auth: "owner-auth" } })
+    .expect(401);
+  await request(app)
+    .put("/api/notifications/push-subscription")
+    .set("Cookie", cookie)
+    .send({ endpoint, expirationTime: null, keys: { p256dh: "owner-p256dh", auth: "owner-auth" } })
+    .expect(403);
+  await request(app)
+    .put("/api/notifications/push-subscription")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie)
+    .send({ endpoint, expirationTime: null, keys: { p256dh: "owner-p256dh", auth: "owner-auth" } })
+    .expect(204);
+  assert.equal(pushSubscriptions.find((item) => item.endpoint === endpoint)?.userId.toHexString(), ownerId.toHexString());
+
+  await request(app)
+    .put("/api/notifications/push-subscription")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie)
+    .send({ endpoint: "http://insecure.example/push", keys: { p256dh: "key", auth: "key" } })
+    .expect(400);
+
+  await request(app)
+    .delete("/api/notifications/push-subscription")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie)
+    .send({ endpoint: "https://push.example/other-device" })
+    .expect(204);
+  assert.ok(pushSubscriptions.some((item) => item.endpoint === "https://push.example/other-device"));
+
+  await request(app)
+    .delete("/api/notifications/push-subscription")
+    .set("Origin", "http://localhost:5173")
+    .set("Cookie", cookie)
+    .send({ endpoint })
+    .expect(204);
+  assert.ok(pushSubscriptions.every((item) => item.endpoint !== endpoint));
+});
 
 test("notifications list only the viewer's newest activity and mark read safely", async () => {
   const { app, notifications } = createApp();

@@ -136,6 +136,8 @@ export interface PostLikeState {
 export interface Post extends PostLikeState {
   id: string;
   author: User;
+  /** Number of visible comments on this post. */
+  commentCount: number;
   /** Number of shares visible to the current viewer. */
   shareCount: number;
   text?: string;
@@ -156,7 +158,7 @@ export interface PostResponse {
 /** Current Like count and signed-in viewer state for a visible post. */
 export type LikeResponse = PostLikeState;
 
-/** Text and audience fields accepted for a post; multipart requests may add one photo. */
+/** Text and audience fields accepted for a post; text may be empty when a multipart photo is attached. */
 export interface CreatePostRequest {
   text: string;
   visibility: Visibility;
@@ -166,9 +168,10 @@ export interface CreatePostResponse {
   post: Post;
 }
 
-/** Audience changes are accepted only from the post author. */
+/** Text and audience changes are accepted only from the post author. */
 export interface UpdatePostRequest {
-  visibility: Visibility;
+  text?: string;
+  visibility?: Visibility;
 }
 
 /** The public share context attached to a source post in a feed. */
@@ -227,6 +230,14 @@ export interface CreateCommentRequest {
 }
 
 export interface CreateCommentResponse {
+  comment: Comment;
+}
+
+export interface UpdateCommentRequest {
+  text: string;
+}
+
+export interface UpdateCommentResponse {
   comment: Comment;
 }
 
