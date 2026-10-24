@@ -17,6 +17,9 @@ import { PostPage } from "./pages/PostPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { SearchPage } from "./pages/SearchPage";
 import { AdminPage } from "./pages/AdminPage";
+import { InformationPage, SiteFooter, informationPageIds } from "./pages/InformationPages";
+import { AccountSettingsPage } from "./pages/AccountSettingsPage";
+import { MyReportsPage } from "./pages/MyReportsPage";
 import { usePwaInstall, usePwaUpdate } from "./pwa";
 
 type IconName = "home" | "users" | "message" | "user" | "userPlus" | "bell" | "plus" | "install";
@@ -100,9 +103,20 @@ function MobileMainNavigation() {
 
 export default function App() {
   const { user, isLoading, initializationError, refreshUser } = useAuth();
+  const location = useLocation();
+  const showSidebarFooter = Boolean(!isLoading && user && (
+    location.pathname === "/" ||
+    location.pathname === "/search" ||
+    location.pathname === "/admin" ||
+    location.pathname === "/reports" ||
+    location.pathname === "/settings" ||
+    location.pathname === "/profile" ||
+    location.pathname.startsWith("/profile/") ||
+    location.pathname.startsWith("/posts/")
+  ));
 
   return (
-    <div className="min-h-screen bg-canvas text-ink">
+    <div className={`app-shell min-h-screen bg-canvas text-ink${user ? " app-shell-authenticated" : ""}${showSidebarFooter ? " app-shell-sidebar-footer" : ""}`}>
       <header className="app-site-header relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
         <div className="app-header-inner flex h-[72px] w-full items-center justify-between px-5 sm:px-8">
           <div className="header-brand-group">
@@ -125,21 +139,27 @@ export default function App() {
         </div>
       )}
 
-      <Routes>
-        <Route path="/" element={isLoading ? <PageLoading /> : user ? <MemberLayout><HomePage /></MemberLayout> : <Navigate to="/login" replace />} />
-        <Route path="/login" element={<PublicAccountRoute><LoginPage /></PublicAccountRoute>} />
-        <Route path="/signup" element={<PublicAccountRoute><SignupPage /></PublicAccountRoute>} />
-        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/reset-password" element={<ResetPasswordPage />} />
-        <Route path="/friends" element={<RequireUser><FriendsPage /></RequireUser>} />
-        <Route path="/messages" element={<RequireUser withLayout={false}><MessagesPage /></RequireUser>} />
-        <Route path="/posts/:postId" element={<RequireUser><PostPage /></RequireUser>} />
-        <Route path="/search" element={<RequireUser><SearchPage /></RequireUser>} />
-        <Route path="/admin" element={isLoading ? <PageLoading /> : user?.isAdmin ? <MemberLayout><AdminPage /></MemberLayout> : <Navigate to="/" replace />} />
-        <Route path="/profile" element={<RequireUser><ProfilePage /></RequireUser>} />
-        <Route path="/profile/:userId" element={<RequireUser><ProfilePage /></RequireUser>} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <div className="app-route-content">
+        <Routes>
+          <Route path="/" element={isLoading ? <PageLoading /> : user ? <MemberLayout><HomePage /></MemberLayout> : <Navigate to="/login" replace />} />
+          <Route path="/login" element={<PublicAccountRoute><LoginPage /></PublicAccountRoute>} />
+          <Route path="/signup" element={<PublicAccountRoute><SignupPage /></PublicAccountRoute>} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          {informationPageIds.map((page) => <Route key={page} path={`/${page}`} element={<InformationPage page={page} />} />)}
+          <Route path="/friends" element={<RequireUser><FriendsPage /></RequireUser>} />
+          <Route path="/messages" element={<RequireUser withLayout={false}><MessagesPage /></RequireUser>} />
+          <Route path="/posts/:postId" element={<RequireUser><PostPage /></RequireUser>} />
+          <Route path="/search" element={<RequireUser><SearchPage /></RequireUser>} />
+          <Route path="/settings" element={<RequireUser><AccountSettingsPage /></RequireUser>} />
+          <Route path="/reports" element={<RequireUser><MyReportsPage /></RequireUser>} />
+          <Route path="/admin" element={isLoading ? <PageLoading /> : user?.isAdmin ? <MemberLayout><AdminPage /></MemberLayout> : <Navigate to="/" replace />} />
+          <Route path="/profile" element={<RequireUser><ProfilePage /></RequireUser>} />
+          <Route path="/profile/:userId" element={<RequireUser><ProfilePage /></RequireUser>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
+      <SiteFooter placement="global" />
     </div>
   );
 }
@@ -540,7 +560,10 @@ function HeaderActions() {
       const request = ++latestRequest;
       void apiFetch<ChatUnreadResponse>("/api/chats/unread").then((result) => {
         if (active && request === latestRequest) {
-          setMessageUnreadCounts(Object.fromEntries(result.items.map((item) => [item.friendId, item.unreadCount])));
+          setMessageUnreadCounts(Object.fromEntries(result.items.map((item) => [
+            "groupId" in item ? `group:${item.groupId}` : item.friendId,
+            item.unreadCount,
+          ])));
         }
       }).catch(() => {
         // Retain the last known badge while the connection is unavailable.
@@ -786,7 +809,9 @@ function HeaderActions() {
         setNotificationError("This notification couldn’t be marked as read.");
       });
     }
-    if (notification.type === "friend_request" || notification.type === "friend_accepted") {
+    if (notification.type === "report_update") {
+      navigate("/reports");
+    } else if (notification.type === "friend_request" || notification.type === "friend_accepted") {
       navigate("/friends");
     } else if (notification.postId) {
       const query = new URLSearchParams();
@@ -1019,6 +1044,12 @@ function HeaderActions() {
               </button>
             )}
             {installMessage && <p className="header-profile-menu-install-message" role="status">{installMessage}</p>}
+            <Link className="header-profile-menu-settings" to="/settings" onClick={() => setIsAccountMenuOpen(false)}>
+              Settings
+            </Link>
+            <Link className="header-profile-menu-settings" to="/reports" onClick={() => setIsAccountMenuOpen(false)}>
+              My reports
+            </Link>
             {user.isAdmin && (
               <Link className="header-profile-menu-admin" to="/admin" onClick={() => setIsAccountMenuOpen(false)}>
                 Admin
@@ -1033,6 +1064,7 @@ function HeaderActions() {
               {pending ? "Signing out…" : "Sign out"}
             </button>
             {error && <p className="header-profile-menu-error" role="alert">{error}</p>}
+            <SiteFooter placement="menu" />
           </div>
           <dialog
             ref={pushPromptRef}
@@ -1075,7 +1107,7 @@ function HeaderActions() {
   );
 }
 
-function notificationMessage(notification: Pick<NotificationItem, "type" | "shareId">): string {
+function notificationMessage(notification: Pick<NotificationItem, "type" | "shareId" | "reportStatus" | "reportActionTaken" | "moderatedContentType">): string {
   switch (notification.type) {
     case "post_like": return "liked your post.";
     case "share_like": return "liked a post you shared.";
@@ -1087,6 +1119,12 @@ function notificationMessage(notification: Pick<NotificationItem, "type" | "shar
     case "post_share": return notification.shareId ? "reshared a post you shared." : "shared your post.";
     case "friend_request": return "sent you a friend request.";
     case "friend_accepted": return "accepted your friend request.";
+    case "report_update": return notification.reportActionTaken
+      ? "reviewed your report and took action."
+      : notification.reportStatus === "dismissed"
+        ? "reviewed and dismissed your report; no action was taken."
+        : "reviewed your report; no action was taken.";
+    case "content_moderated": return `hid your ${notification.moderatedContentType === "share" ? "shared post" : notification.moderatedContentType ?? "content"} after reviewing a report.`;
     default: return "sent you a notification.";
   }
 }
@@ -1159,8 +1197,8 @@ function MemberLayout({ children }: { children: ReactNode }) {
               </>
             ) : <><Icon name={item.icon} size={19} /><span className="nav-item-label">{item.label}</span></>}
           </NavLink>)}
-          {user?.isAdmin && <NavLink to="/admin" className={({ isActive }) => `nav-item ${isActive ? "nav-item-active" : ""}`}>Admin</NavLink>}
         </nav>
+        <SiteFooter placement="sidebar" />
       </aside>}
       <main className="min-w-0 flex-1">{children}</main>
     </div>

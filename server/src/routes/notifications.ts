@@ -151,6 +151,9 @@ export function createNotificationsRouter(overrides: Partial<NotificationsRouter
           ...(item.postId ? { postId: item.postId.toHexString() } : {}),
           ...(item.shareId ? { shareId: item.shareId.toHexString() } : {}),
           ...(item.friendRequestId ? { friendRequestId: item.friendRequestId.toHexString() } : {}),
+          ...(item.reportStatus ? { reportStatus: item.reportStatus } : {}),
+          ...(item.reportActionTaken !== undefined ? { reportActionTaken: item.reportActionTaken } : {}),
+          ...(item.moderatedContentType ? { moderatedContentType: item.moderatedContentType } : {}),
         }];
       }),
     });

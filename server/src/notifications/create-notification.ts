@@ -3,10 +3,11 @@ import { collectionNames, type NotificationDocument } from "../db/documents";
 import { sendPushToUser } from "./push";
 
 export type CreateNotificationInput = Pick<NotificationDocument, "recipientId" | "actorId" | "type"> &
-  Partial<Pick<NotificationDocument, "postId" | "shareId" | "friendRequestId">>;
+  Partial<Pick<NotificationDocument, "postId" | "shareId" | "friendRequestId" | "reportStatus" | "reportActionTaken" | "moderatedContentType">>;
 
 function notificationUrl(notification: Pick<NotificationDocument, "type" | "postId" | "shareId">): string {
   if (notification.type === "friend_request" || notification.type === "friend_accepted") return "/friends";
+  if (notification.type === "report_update") return "/reports";
   if (!notification.postId) return "/";
 
   const query = new URLSearchParams();
@@ -35,7 +36,7 @@ export async function createNotification(database: Db, input: CreateNotification
   });
 }
 
-function notificationPushMessage(notification: Pick<NotificationDocument, "type" | "shareId">): string {
+function notificationPushMessage(notification: Pick<NotificationDocument, "type" | "shareId" | "reportStatus" | "reportActionTaken" | "moderatedContentType">): string {
   switch (notification.type) {
     case "post_like": return "Someone liked your post.";
     case "share_like": return "Someone liked a post you shared.";
@@ -47,5 +48,11 @@ function notificationPushMessage(notification: Pick<NotificationDocument, "type"
     case "post_share": return notification.shareId ? "Someone reshared a post you shared." : "Someone shared your post.";
     case "friend_request": return "You have a new friend request.";
     case "friend_accepted": return "Your friend request was accepted.";
+    case "report_update": return notification.reportActionTaken
+      ? "A moderator reviewed your report and took action on the content."
+      : notification.reportStatus === "dismissed"
+        ? "A moderator reviewed and dismissed your report; no action was taken."
+        : "A moderator reviewed your report; no action was taken.";
+    case "content_moderated": return `Your ${notification.moderatedContentType === "share" ? "shared post" : notification.moderatedContentType ?? "content"} was hidden after a report review.`;
   }
 }

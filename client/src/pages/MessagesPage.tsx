@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { io, type Socket } from "socket.io-client";
 import { Link, useSearchParams } from "react-router-dom";
 import { SupporterBadge } from "../components/SupporterBadge";
+import { ReportDialog } from "../components/ReportDialog";
 import type {
   ChatUnreadResponse,
+  CreateGroupConversationRequest,
   FriendListResponse,
+  GroupConversation,
+  GroupConversationsResponse,
   Message,
   MessageAckEvent,
+  MessageDeletedEvent,
   MessageErrorEvent,
   MessageHistoryResponse,
   MessageNewEvent,
   MessageSendRequest,
+  MessageUpdatedEvent,
   SocketTicketResponse,
   User,
 } from "../../../shared";
@@ -21,6 +27,7 @@ import { lastActiveLabel, useFriendPresence } from "../chat/use-friend-presence"
 import { EmptyState, RequestErrorState } from "../components/AsyncState";
 import { ChatListSkeleton, MessageBubblesSkeleton, SkeletonBlock, SkeletonRegion } from "../components/Skeletons";
 import {
+  createClientMessageId,
   createPendingMessage,
   failChatMessage,
   mergeChatMessage,
@@ -32,11 +39,15 @@ import {
 
 interface ClientToServerEvents {
   "message:send": (payload: MessageSendRequest) => void;
+  "group-message:send": (payload: { groupId: string; clientId: string; text: string }) => void;
 }
 
 interface ServerToClientEvents {
+  "group:created": (payload: { group: GroupConversation }) => void;
   "message:ack": (payload: MessageAckEvent) => void;
   "message:new": (payload: MessageNewEvent) => void;
+  "message:updated": (payload: MessageUpdatedEvent) => void;
+  "message:deleted": (payload: MessageDeletedEvent) => void;
   "message:error": (payload: MessageErrorEvent) => void;
 }
 
@@ -45,15 +56,20 @@ type ConnectionState = "connecting" | "connected" | "reconnecting";
 
 const HISTORY_PAGE_SIZE = 30;
 const SEND_CONFIRMATION_TIMEOUT_MS = 15_000;
+const CHAT_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const CHAT_PHOTO_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError ? error.message : fallback;
 }
 
-async function fetchHistory(friendId: string, cursor?: string | null): Promise<MessageHistoryResponse> {
+async function fetchHistory(conversationKey: string, cursor?: string | null): Promise<MessageHistoryResponse> {
   const params = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE) });
   if (cursor) params.set("cursor", cursor);
-  return apiFetch<MessageHistoryResponse>(`/api/chats/${encodeURIComponent(friendId)}/messages?${params}`);
+  const isGroup = conversationKey.startsWith("group:");
+  const id = isGroup ? conversationKey.slice("group:".length) : conversationKey;
+  const path = isGroup ? `/api/chats/groups/${encodeURIComponent(id)}/messages` : `/api/chats/${encodeURIComponent(id)}/messages`;
+  return apiFetch<MessageHistoryResponse>(`${path}?${params}`);
 }
 
 function asAcknowledged(message: Message, clientId?: string): ChatMessage {
@@ -76,6 +92,17 @@ function ChatFriendAvatar({ user }: { user: User }) {
   );
 }
 
+function GroupChatAvatar({ name }: { name: string }) {
+  return (
+    <span className="chat-avatar group-chat-avatar" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="9" cy="8" r="3" /><path d="M3.5 19v-1a5.5 5.5 0 0 1 11 0v1" /><path d="M16 5.5a3 3 0 0 1 0 5.8M17 14a5 5 0 0 1 3.5 4.8V19" />
+      </svg>
+      <span className="sr-only">{name}</span>
+    </span>
+  );
+}
+
 function messageTime(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
@@ -93,8 +120,14 @@ export function MessagesPage() {
   const [friendsLoadingMore, setFriendsLoadingMore] = useState(false);
   const [friendsError, setFriendsError] = useState<string | null>(null);
   const [friendsMoreError, setFriendsMoreError] = useState<string | null>(null);
-  const [selectedFriendId, setSelectedFriendId] = useState<string | null>(() => searchParams.get("friend"));
-  const [mobileConversationOpen, setMobileConversationOpen] = useState(() => Boolean(searchParams.get("friend")));
+  const [selectedFriendId, setSelectedFriendId] = useState<string | null>(() => searchParams.get("group") ? `group:${searchParams.get("group")}` : searchParams.get("friend"));
+  const [mobileConversationOpen, setMobileConversationOpen] = useState(() => Boolean(searchParams.get("friend") || searchParams.get("group")));
+  const [groups, setGroups] = useState<GroupConversation[]>([]);
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [groupName, setGroupName] = useState("");
+  const [groupMemberIds, setGroupMemberIds] = useState<string[]>([]);
+  const [groupCreateError, setGroupCreateError] = useState<string | null>(null);
+  const [groupCreating, setGroupCreating] = useState(false);
   const [conversationSearch, setConversationSearch] = useState("");
   const [chatFilter, setChatFilter] = useState<"all" | "unread">("all");
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -104,6 +137,18 @@ export function MessagesPage() {
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [composerText, setComposerText] = useState("");
+  const [photoAttachment, setPhotoAttachment] = useState<File | null>(null);
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
+  const [photoAttachmentError, setPhotoAttachmentError] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [openMessageMenuId, setOpenMessageMenuId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [messageActionBusyId, setMessageActionBusyId] = useState<string | null>(null);
+  const [messageActionError, setMessageActionError] = useState<{ messageId: string; text: string } | null>(null);
+  const [reportingMessageId, setReportingMessageId] = useState<string | null>(null);
+  const [reportStatus, setReportStatus] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
@@ -115,6 +160,13 @@ export function MessagesPage() {
   const sendTimersRef = useRef<Map<string, number>>(new Map());
   const messageScrollRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const attachmentMenuRef = useRef<HTMLDivElement>(null);
+  const attachmentToggleRef = useRef<HTMLButtonElement>(null);
+  const messageMenuRef = useRef<HTMLDivElement>(null);
+  const messageMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const messageEditInputRef = useRef<HTMLTextAreaElement>(null);
   const shouldStickToBottomRef = useRef(true);
 
   const updateConversation = useCallback((friendId: string, update: (messages: ChatMessage[]) => ChatMessage[]) => {
@@ -142,11 +194,19 @@ export function MessagesPage() {
     if (!socket?.connected || !message.clientId) return;
 
     clearSendTimer(friendId, message.clientId);
-    socket.emit("message:send", {
-      friendId,
-      clientId: message.clientId,
-      text: message.text,
-    });
+    if (friendId.startsWith("group:")) {
+      socket.emit("group-message:send", {
+        groupId: friendId.slice("group:".length),
+        clientId: message.clientId,
+        text: message.text,
+      });
+    } else {
+      socket.emit("message:send", {
+        friendId,
+        clientId: message.clientId,
+        text: message.text,
+      });
+    }
 
     const timerKey = `${friendId}:${message.clientId}`;
     const timer = window.setTimeout(() => {
@@ -196,13 +256,17 @@ export function MessagesPage() {
 
   const markConversationRead = useCallback(async (friendId: string) => {
     try {
-      await apiFetch<void>(`/api/chats/${encodeURIComponent(friendId)}/read`, { method: "PATCH" });
+      const isGroup = friendId.startsWith("group:");
+      const id = isGroup ? friendId.slice("group:".length) : friendId;
+      const path = isGroup ? `/api/chats/groups/${encodeURIComponent(id)}/read` : `/api/chats/${encodeURIComponent(id)}/read`;
+      await apiFetch<void>(path, { method: "PATCH" });
       setUnreadCounts((current) => {
         if (!(friendId in current)) return current;
         const next = { ...current };
         delete next[friendId];
         return next;
       });
+      if (isGroup) setGroups((current) => current.map((group) => group.id === id ? { ...group, unreadCount: 0 } : group));
       notifyChatUnreadChanged();
     } catch {
       // Keep the unread marker until the server confirms it was cleared.
@@ -219,6 +283,7 @@ export function MessagesPage() {
       setFriendsCursor(response.nextCursor);
       setSelectedFriendId((current) => {
         const requested = initialFriendIdRef.current;
+        if (current?.startsWith("group:")) return current;
         if (requested && response.items.some((friend) => friend.id === requested)) return requested;
         if (current && response.items.some((friend) => friend.id === current)) return current;
         if (window.matchMedia("(max-width: 680px)").matches) return null;
@@ -250,13 +315,42 @@ export function MessagesPage() {
 
   useEffect(() => {
     if (!userId) {
+      setGroups([]);
+      return;
+    }
+    let active = true;
+    void apiFetch<GroupConversationsResponse>("/api/chats/groups").then((response) => {
+      if (!active) return;
+      setGroups(response.items);
+      setConversations((current) => {
+        const next = { ...current };
+        for (const group of response.items) {
+          if (group.latestMessage) {
+            const key = `group:${group.id}`;
+            next[key] = mergeChatMessages(next[key] ?? [], [asAcknowledged(group.latestMessage)]);
+          }
+        }
+        conversationsRef.current = next;
+        return next;
+      });
+    }).catch(() => {
+      if (active) setGroups([]);
+    });
+    return () => { active = false; };
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId) {
       setUnreadCounts({});
       return;
     }
     let active = true;
     void apiFetch<ChatUnreadResponse>("/api/chats/unread").then((response) => {
       if (!active) return;
-      setUnreadCounts(Object.fromEntries(response.items.map((item) => [item.friendId, item.unreadCount])));
+      setUnreadCounts(Object.fromEntries(response.items.map((item) => [
+        "groupId" in item ? `group:${item.groupId}` : item.friendId,
+        item.unreadCount,
+      ])));
     }).catch(() => {
       if (active) setUnreadCounts({});
     });
@@ -264,10 +358,19 @@ export function MessagesPage() {
   }, [userId]);
 
   useEffect(() => {
+    const previousFriendId = selectedFriendIdRef.current;
     selectedFriendIdRef.current = selectedFriendId;
     nextCursorRef.current = null;
     setNextCursor(null);
     setHistoryError(null);
+    if (previousFriendId !== selectedFriendId) {
+      setPhotoAttachment(null);
+      setPhotoAttachmentError(null);
+      setAttachmentMenuOpen(false);
+      setOpenMessageMenuId(null);
+      setEditingMessageId(null);
+      setMessageActionError(null);
+    }
     if (!selectedFriendId) return;
 
     void markConversationRead(selectedFriendId);
@@ -330,15 +433,33 @@ export function MessagesPage() {
       setConnectionError("Live connection interrupted. Senderi will keep trying to reconnect.");
     });
     socket.on("message:ack", (event) => {
-      clearSendTimer(event.message.recipientId, event.clientId);
-      updateConversation(event.message.recipientId, (current) => mergeChatMessage(
+      const conversationKey = event.message.groupId ? `group:${event.message.groupId}` : event.message.recipientId;
+      clearSendTimer(conversationKey, event.clientId);
+      updateConversation(conversationKey, (current) => mergeChatMessage(
         current,
         { ...asAcknowledged(event.message, event.clientId), deliveryState: "acknowledged" },
       ));
     });
+    socket.on("group:created", (event) => {
+      setGroups((current) => [event.group, ...current.filter((group) => group.id !== event.group.id)]);
+    });
     socket.on("message:new", (event) => {
-      const friendId = event.message.senderId === currentUserId ? event.message.recipientId : event.message.senderId;
+      const isGroupMessage = Boolean(event.message.groupId);
+      const friendId = isGroupMessage
+        ? `group:${event.message.groupId}`
+        : event.message.senderId === currentUserId ? event.message.recipientId : event.message.senderId;
       updateConversation(friendId, (current) => mergeChatMessage(current, asAcknowledged(event.message)));
+      if (isGroupMessage) {
+        setGroups((current) => current.map((group) => group.id === event.message.groupId
+          ? { ...group, latestMessage: event.message, unreadCount: event.message.senderId === currentUserId || selectedFriendIdRef.current === friendId ? 0 : group.unreadCount + 1 }
+          : group));
+        if (event.message.senderId !== currentUserId) {
+          notifyChatUnreadChanged();
+          if (selectedFriendIdRef.current === friendId) void markConversationRead(friendId);
+          else setUnreadCounts((current) => ({ ...current, [friendId]: (current[friendId] ?? 0) + 1 }));
+        }
+        return;
+      }
       if (event.message.recipientId === currentUserId) {
         notifyChatUnreadChanged();
         if (selectedFriendIdRef.current === friendId) {
@@ -347,6 +468,18 @@ export function MessagesPage() {
           setUnreadCounts((current) => ({ ...current, [friendId]: (current[friendId] ?? 0) + 1 }));
         }
       }
+    });
+    socket.on("message:updated", (event) => {
+      const friendId = event.message.groupId
+        ? `group:${event.message.groupId}`
+        : event.message.senderId === currentUserId ? event.message.recipientId : event.message.senderId;
+      updateConversation(friendId, (current) => mergeChatMessage(current, asAcknowledged(event.message)));
+    });
+    socket.on("message:deleted", (event) => {
+      const friendId = event.groupId
+        ? `group:${event.groupId}`
+        : event.senderId === currentUserId ? event.recipientId : event.senderId;
+      updateConversation(friendId, (current) => current.filter((message) => message.id !== event.messageId));
     });
     socket.on("message:error", (event) => {
       if (!event.clientId) return;
@@ -429,16 +562,136 @@ export function MessagesPage() {
     }
   }
 
+  async function createGroupConversation(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (groupCreating) return;
+    if (groupMemberIds.length < 2) {
+      setGroupCreateError("Choose at least two friends for a group chat.");
+      return;
+    }
+    setGroupCreating(true);
+    setGroupCreateError(null);
+    try {
+      const payload: CreateGroupConversationRequest = { name: groupName.trim(), memberIds: groupMemberIds };
+      const response = await apiFetch<{ group: GroupConversation }>("/api/chats/groups", { method: "POST", body: payload });
+      setGroups((current) => [response.group, ...current.filter((group) => group.id !== response.group.id)]);
+      setGroupDialogOpen(false);
+      setGroupName("");
+      setGroupMemberIds([]);
+      openGroupConversation(response.group.id);
+    } catch (error) {
+      setGroupCreateError(errorMessage(error, "Could not create this group chat."));
+    } finally {
+      setGroupCreating(false);
+    }
+  }
+
   function sendMessage(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
     const friend = friends.find((item) => item.id === selectedFriendId);
+    const group = selectedGroupId ? groups.find((item) => item.id === selectedGroupId) : null;
+    const conversationKey = selectedFriendId;
     const text = composerText.trim();
-    if (!friend || !user || !text) return;
+    if ((!friend && !group) || !conversationKey || !user || (!text && !photoAttachment) || photoUploading) return;
 
-    const message = createPendingMessage(user.id, friend.id, text);
-    updateConversation(friend.id, (current) => mergeChatMessage(current, message));
+    if (photoAttachment) {
+      const clientId = createClientMessageId();
+      const formData = new FormData();
+      formData.set("file", photoAttachment);
+      formData.set("clientId", clientId);
+      formData.set("text", text);
+      setPhotoUploading(true);
+      setPhotoAttachmentError(null);
+      const photoPath = group
+        ? `/api/chats/groups/${encodeURIComponent(group.id)}/messages`
+        : `/api/chats/${encodeURIComponent(friend!.id)}/messages`;
+      void apiFetch<{ message: Message }>(photoPath, {
+        method: "POST",
+        body: formData,
+      }).then(({ message }) => {
+        updateConversation(conversationKey, (current) => mergeChatMessage(current, asAcknowledged(message, clientId)));
+        if (group) setGroups((current) => current.map((item) => item.id === group.id ? { ...item, latestMessage: message } : item));
+        if (selectedFriendIdRef.current === conversationKey) {
+          setComposerText("");
+          setPhotoAttachment(null);
+        }
+      }).catch((error: unknown) => {
+        if (selectedFriendIdRef.current === conversationKey) {
+          setPhotoAttachmentError(errorMessage(error, "Could not send this image. Please try again."));
+        }
+      }).finally(() => {
+        setPhotoUploading(false);
+      });
+      return;
+    }
+
+    const message: ChatMessage = {
+      ...createPendingMessage(user.id, group ? user.id : friend!.id, text),
+      ...(group ? { groupId: group.id } : {}),
+    };
+    updateConversation(conversationKey, (current) => mergeChatMessage(current, message));
     setComposerText("");
-    transmitMessage(friend.id, message);
+    transmitMessage(conversationKey, message);
+  }
+
+  function selectPhoto(event: ChangeEvent<HTMLInputElement>): void {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (file.size > CHAT_PHOTO_MAX_BYTES) {
+      setPhotoAttachment(null);
+      setPhotoAttachmentError("Choose an image that is 5 MB or smaller.");
+      return;
+    }
+    if (file.type && !CHAT_PHOTO_MIME_TYPES.includes(file.type)) {
+      setPhotoAttachment(null);
+      setPhotoAttachmentError("Choose a JPEG, PNG, or WebP image.");
+      return;
+    }
+    setPhotoAttachmentError(null);
+    setPhotoAttachment(file);
+  }
+
+  function beginMessageEdit(message: ChatMessage): void {
+    setMessageDraft(message.text);
+    setMessageActionError(null);
+    setEditingMessageId(message.id);
+    setOpenMessageMenuId(null);
+  }
+
+  async function saveMessageEdit(friendId: string, message: ChatMessage): Promise<void> {
+    if (messageActionBusyId) return;
+    setMessageActionBusyId(message.id);
+    setMessageActionError(null);
+    try {
+      const response = await apiFetch<{ message: Message }>(`/api/chats/messages/${encodeURIComponent(message.id)}`, {
+        method: "PATCH",
+        body: { text: messageDraft.trim() },
+      });
+      updateConversation(friendId, (current) => mergeChatMessage(current, asAcknowledged(response.message)));
+      setEditingMessageId(null);
+    } catch (error) {
+      setMessageActionError({ messageId: message.id, text: errorMessage(error, "Could not edit this message.") });
+    } finally {
+      setMessageActionBusyId(null);
+    }
+  }
+
+  async function permanentlyDeleteMessage(friendId: string, message: ChatMessage): Promise<void> {
+    const audience = friendId.startsWith("group:") ? "everyone in this group" : "both people";
+    if (messageActionBusyId || !window.confirm(`Permanently delete this message for ${audience}? This cannot be undone.`)) return;
+    setOpenMessageMenuId(null);
+    setMessageActionError(null);
+    setMessageActionBusyId(message.id);
+    try {
+      await apiFetch<void>(`/api/chats/messages/${encodeURIComponent(message.id)}`, { method: "DELETE" });
+      updateConversation(friendId, (current) => current.filter((item) => item.id !== message.id));
+      if (editingMessageId === message.id) setEditingMessageId(null);
+    } catch (error) {
+      setMessageActionError({ messageId: message.id, text: errorMessage(error, "Could not permanently delete this message.") });
+    } finally {
+      setMessageActionBusyId(null);
+    }
   }
 
   function retryMessage(friendId: string, message: ChatMessage): void {
@@ -453,6 +706,13 @@ export function MessagesPage() {
     setSearchParams({ friend: friendId }, { replace: true });
   }
 
+  function openGroupConversation(groupId: string): void {
+    const key = `group:${groupId}`;
+    setSelectedFriendId(key);
+    setMobileConversationOpen(true);
+    setSearchParams({ group: groupId }, { replace: true });
+  }
+
   function closeConversation(): void {
     setSelectedFriendId(null);
     setMobileConversationOpen(false);
@@ -460,16 +720,26 @@ export function MessagesPage() {
   }
 
   const selectedFriend = friends.find((friend) => friend.id === selectedFriendId) ?? null;
+  const selectedGroupId = selectedFriendId?.startsWith("group:") ? selectedFriendId.slice("group:".length) : null;
+  const selectedGroup = selectedGroupId ? groups.find((group) => group.id === selectedGroupId) ?? null : null;
+  const selectedConversationName = selectedFriend?.displayName ?? selectedGroup?.name ?? "Group chat";
   const { presenceById, now: presenceNow } = useFriendPresence(friends.map((friend) => friend.id));
   const selectedPresence = selectedFriend ? presenceById[selectedFriend.id] : undefined;
   const selectedLastActive = lastActiveLabel(selectedPresence, presenceNow);
   const selectedMessages = selectedFriendId ? conversations[selectedFriendId] ?? [] : [];
   const visibleFriends = sortFriendsByLatestMessage(friends.filter((friend) => {
     const latestMessage = conversations[friend.id]?.at(-1);
-    return (chatFilter === "all" || (unreadCounts[friend.id] ?? 0) > 0) && `${friend.displayName} ${latestMessage?.text ?? ""}`
+    return (chatFilter === "all" || (unreadCounts[friend.id] ?? 0) > 0) && `${friend.displayName} ${latestMessage?.text || (latestMessage?.photoUrl ? "Photo" : "")}`
       .toLocaleLowerCase()
       .includes(conversationSearch.trim().toLocaleLowerCase());
   }), conversations);
+  const visibleGroups = groups.filter((group) => {
+    const latestMessage = conversations[`group:${group.id}`]?.at(-1) ?? group.latestMessage;
+    return (chatFilter === "all" || (unreadCounts[`group:${group.id}`] ?? group.unreadCount) > 0) &&
+      `${group.name} ${group.participants.map((participant) => participant.displayName).join(" ")} ${latestMessage?.text || (latestMessage?.photoUrl ? "Photo" : "")}`
+        .toLocaleLowerCase()
+        .includes(conversationSearch.trim().toLocaleLowerCase());
+  });
 
   useEffect(() => {
     shouldStickToBottomRef.current = true;
@@ -498,12 +768,64 @@ export function MessagesPage() {
     input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
   }, [composerText]);
 
+  useEffect(() => {
+    if (!photoAttachment) {
+      setPhotoPreviewUrl(null);
+      return;
+    }
+    const previewUrl = URL.createObjectURL(photoAttachment);
+    setPhotoPreviewUrl(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [photoAttachment]);
+
+  useEffect(() => {
+    if (!attachmentMenuOpen) return;
+    const dismissOnOutsidePointer = (event: PointerEvent) => {
+      if (!attachmentMenuRef.current?.contains(event.target as Node)) setAttachmentMenuOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setAttachmentMenuOpen(false);
+        attachmentToggleRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", dismissOnOutsidePointer);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOnOutsidePointer);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, [attachmentMenuOpen]);
+
+  useEffect(() => {
+    if (!openMessageMenuId) return;
+    const dismissOnOutsidePointer = (event: PointerEvent) => {
+      if (!messageMenuRef.current?.contains(event.target as Node)) setOpenMessageMenuId(null);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenMessageMenuId(null);
+        messageMenuButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", dismissOnOutsidePointer);
+    document.addEventListener("keydown", dismissOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOnOutsidePointer);
+      document.removeEventListener("keydown", dismissOnEscape);
+    };
+  }, [openMessageMenuId]);
+
+  useEffect(() => {
+    if (editingMessageId) messageEditInputRef.current?.focus();
+  }, [editingMessageId]);
+
   return (
     <main className={`messages-shell${mobileConversationOpen ? " messages-shell-conversation-open" : ""}`}>
       <aside className="messages-sidebar" aria-label="Chats">
         <header className="messages-sidebar-heading">
           <h1>Chats</h1>
-          <Link to="/friends" aria-label="Find someone to message" title="New message">+</Link>
+          <button type="button" onClick={() => { setGroupCreateError(null); setGroupDialogOpen(true); }} aria-label="Create group chat" title="New group chat">+</button>
         </header>
         <label className="messages-page-search">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
@@ -517,36 +839,61 @@ export function MessagesPage() {
         <div className="messages-page-list">
           {friendsLoading ? <ChatListSkeleton /> : friendsError ? (
             <RequestErrorState title="Conversations unavailable" message={friendsError} />
-          ) : friends.length === 0 ? (
-            <EmptyState title="No friends yet" message="Add a friend first, then you can start a private conversation." />
-          ) : visibleFriends.length === 0 ? (
+          ) : friends.length === 0 && groups.length === 0 ? (
+            <EmptyState title="No chats yet" message="Add some friends, then create a group chat from the plus button." />
+          ) : visibleFriends.length === 0 && visibleGroups.length === 0 ? (
             <p className="messages-list-empty">{chatFilter === "unread" ? "No unread messages." : "No chats match your search."}</p>
           ) : (
-            <ul className="chat-friend-list" aria-label="Friend conversations">
-              {visibleFriends.map((friend) => {
-                const recentMessage = conversations[friend.id]?.at(-1);
-                const presence = presenceById[friend.id];
-                const lastActive = lastActiveLabel(presence, presenceNow);
-                return (
-                  <li key={friend.id}>
-                    <button
-                      className={`chat-friend-button ${selectedFriendId === friend.id ? "chat-friend-button-active" : ""}`}
-                      type="button"
-                      aria-pressed={selectedFriendId === friend.id}
-                      onClick={() => openConversation(friend.id)}
-                    >
-                      <span className="chat-presence-avatar"><ChatFriendAvatar user={friend} />{presence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
-                      <span className="chat-friend-copy">
-                        <strong>{friend.displayName} <SupporterBadge user={friend} /></strong>
-                        <span>{recentMessage ? `${recentMessage.senderId === userId ? "You: " : ""}${recentMessage.text}` : "Start a conversation"}</span>
-                      </span>
-                      {lastActive && <time className="chat-friend-time chat-presence-time" dateTime={presence?.lastActiveAt} title="Last active">{lastActive}</time>}
-                      {(unreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${unreadCounts[friend.id]} unread messages`} />}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+            <>
+              {visibleGroups.length > 0 && <section className="messages-chat-list-section" aria-label="Group conversations">
+                <h2>Groups</h2>
+                <ul className="chat-friend-list">
+                  {visibleGroups.map((group) => {
+                    const key = `group:${group.id}`;
+                    const recentMessage = conversations[key]?.at(-1) ?? group.latestMessage;
+                    const unreadCount = unreadCounts[key] ?? group.unreadCount;
+                    return <li key={key}>
+                      <button className={`chat-friend-button ${selectedFriendId === key ? "chat-friend-button-active" : ""}`} type="button" aria-pressed={selectedFriendId === key} onClick={() => openGroupConversation(group.id)}>
+                        <GroupChatAvatar name={group.name} />
+                        <span className="chat-friend-copy">
+                          <strong>{group.name}</strong>
+                          <span>{recentMessage ? `${recentMessage.senderId === userId ? "You: " : `${group.participants.find((participant) => participant.id === recentMessage.senderId)?.displayName ?? "Member"}: `}${recentMessage.text || (recentMessage.photoUrl ? "Photo" : "")}` : `${group.participants.length} members`}</span>
+                        </span>
+                        {unreadCount > 0 && <span className="chat-unread-dot" role="img" aria-label={`${unreadCount} unread messages`} />}
+                      </button>
+                    </li>;
+                  })}
+                </ul>
+              </section>}
+              {visibleFriends.length > 0 && <section className="messages-chat-list-section" aria-label="Friend conversations">
+                {visibleGroups.length > 0 && <h2>Friends</h2>}
+                <ul className="chat-friend-list">
+                  {visibleFriends.map((friend) => {
+                    const recentMessage = conversations[friend.id]?.at(-1);
+                    const presence = presenceById[friend.id];
+                    const lastActive = lastActiveLabel(presence, presenceNow);
+                    return (
+                      <li key={friend.id}>
+                        <button
+                          className={`chat-friend-button ${selectedFriendId === friend.id ? "chat-friend-button-active" : ""}`}
+                          type="button"
+                          aria-pressed={selectedFriendId === friend.id}
+                          onClick={() => openConversation(friend.id)}
+                        >
+                          <span className="chat-presence-avatar"><ChatFriendAvatar user={friend} />{presence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
+                          <span className="chat-friend-copy">
+                            <strong>{friend.displayName} <SupporterBadge user={friend} /></strong>
+                            <span>{recentMessage ? `${recentMessage.senderId === userId ? "You: " : ""}${recentMessage.text || (recentMessage.photoUrl ? "Photo" : "")}` : "Start a conversation"}</span>
+                          </span>
+                          {lastActive && <time className="chat-friend-time chat-presence-time" dateTime={presence?.lastActiveAt} title="Last active">{lastActive}</time>}
+                          {(unreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${unreadCounts[friend.id]} unread messages`} />}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>}
+            </>
           )}
           {friendsLoadingMore && <ChatListSkeleton count={2} />}
           {friendsMoreError && <p className="friend-feedback friend-feedback-error" role="alert">{friendsMoreError}</p>}
@@ -554,8 +901,8 @@ export function MessagesPage() {
         </div>
       </aside>
 
-        <section className="chat-conversation-panel messages-conversation" aria-label={selectedFriend ? `Conversation with ${selectedFriend.displayName}` : "Conversation"}>
-          {selectedFriend ? (
+        <section className="chat-conversation-panel messages-conversation" aria-label={selectedFriend || selectedGroup ? `Conversation with ${selectedConversationName}` : "Conversation"}>
+          {selectedFriend || selectedGroup ? (
             <>
               <header className="chat-conversation-header">
                 <div className="messages-conversation-identity">
@@ -563,34 +910,97 @@ export function MessagesPage() {
                     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /><path d="M9 12h12" /></svg>
                   </button>
                   <div className="friend-person">
-                    <span className="chat-presence-avatar"><ChatFriendAvatar user={selectedFriend} />{selectedPresence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
+                    {selectedFriend
+                      ? <span className="chat-presence-avatar"><ChatFriendAvatar user={selectedFriend} />{selectedPresence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
+                      : <GroupChatAvatar name={selectedConversationName} />}
                     <div className="friend-person-copy">
-                      <h2 className="friend-person-name">{selectedFriend.displayName} <SupporterBadge user={selectedFriend} /></h2>
-                      {(connectionError || selectedPresence?.isOnline || selectedLastActive) && <p>{connectionError ? "Connection interrupted" : selectedPresence?.isOnline ? "Online" : `Active ${selectedLastActive}`}</p>}
+                      <h2 className="friend-person-name">{selectedFriend
+                        ? <><Link className="messages-conversation-name-link" to={`/profile/${encodeURIComponent(selectedFriend.id)}`}>{selectedFriend.displayName}</Link> <SupporterBadge user={selectedFriend} /></>
+                        : selectedConversationName}</h2>
+                      {(connectionError || (selectedFriend && (selectedPresence?.isOnline || selectedLastActive)) || selectedGroup) && <p>{connectionError ? "Connection interrupted" : selectedGroup ? `${selectedGroup.participants.length} members` : selectedPresence?.isOnline ? "Online" : `Active ${selectedLastActive}`}</p>}
                     </div>
                   </div>
                 </div>
                 <div className="messages-chat-actions">
                   <span className={`chat-connection chat-connection-${connectionState}`} role="status"><span className="chat-connection-dot" aria-hidden="true" />{connectionState === "connected" ? "Connected" : connectionState === "connecting" ? "Connecting…" : "Reconnecting…"}</span>
-                  <Link className="messages-profile-link" to={`/profile/${encodeURIComponent(selectedFriend.id)}`} aria-label={`View ${selectedFriend.displayName}'s profile`} title="View profile">↗</Link>
                 </div>
               </header>
               {connectionError && <p className="friend-feedback friend-feedback-error" role="status">{connectionError}</p>}
               {historyError && <p className="friend-feedback friend-feedback-error" role="alert">{historyError}</p>}
+              {reportStatus && <p className="friend-feedback" role="status">{reportStatus}</p>}
               {nextCursor && <button className="button-secondary chat-load-more" type="button" onClick={() => void loadOlderMessages()} disabled={historyLoadingMore}>{historyLoadingMore ? "Loading older messages…" : "Load older messages"}</button>}
               <div ref={messageScrollRef} className="chat-message-scroll" onScroll={trackMessageScroll} aria-live="polite" aria-relevant="additions text">
                 {historyLoading && selectedMessages.length === 0 ? <MessageBubblesSkeleton /> : selectedMessages.length === 0 ? (
-                  <EmptyState title="Start the conversation" message={`Send a message to ${selectedFriend.displayName}.`} />
+                  <EmptyState title="Start the conversation" message={`Send a message to ${selectedConversationName}.`} />
                 ) : (
                   <ol className="chat-message-list" aria-label="Messages">
                     {selectedMessages.map((message) => {
                       const isOwnMessage = message.senderId === user?.id;
+                      const messageActions = message.deliveryState === "acknowledged" && !message.id.startsWith("local:") ? (
+                        <div
+                          className={`chat-message-actions${isOwnMessage ? " chat-message-actions-own" : ""}`}
+                          ref={openMessageMenuId === message.id ? messageMenuRef : null}
+                        >
+                          <button
+                            ref={openMessageMenuId === message.id ? messageMenuButtonRef : null}
+                            className="chat-message-menu-trigger"
+                            type="button"
+                            onClick={() => setOpenMessageMenuId((current) => current === message.id ? null : message.id)}
+                            aria-label="Message options"
+                            aria-expanded={openMessageMenuId === message.id}
+                            title="Message options"
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+                          </button>
+                          {openMessageMenuId === message.id && (
+                            <div className="chat-message-menu" role="menu" aria-label="Message actions">
+                              {isOwnMessage ? <>
+                              <button type="button" role="menuitem" onClick={() => beginMessageEdit(message)} disabled={messageActionBusyId === message.id}>
+                                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m15 5 4 4M4 20l4.3-.9L19 8.4 15.6 5 4.9 15.7 4 20Z" /></svg>
+                                <span>Edit message</span>
+                              </button>
+                              <button className="chat-message-delete" type="button" role="menuitem" onClick={() => void permanentlyDeleteMessage(selectedFriendId!, message)} disabled={messageActionBusyId === message.id}>
+                                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>
+                                <span>Delete permanently</span>
+                              </button>
+                              </> : <button type="button" role="menuitem" onClick={() => {
+                                setOpenMessageMenuId(null);
+                                setReportStatus(null);
+                                setReportingMessageId(message.id);
+                              }}>
+                                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 21V4m0 1h12l-2.5 4L17 13H5" /></svg>
+                                <span>Report message</span>
+                              </button>}
+                            </div>
+                          )}
+                        </div>
+                      ) : null;
                       return (
                         <li key={message.id} className={`chat-message-row ${isOwnMessage ? "chat-message-row-own" : ""}`}>
+                          {isOwnMessage && messageActions}
                           <article className={`chat-message-bubble ${isOwnMessage ? "chat-message-bubble-own" : ""}`}>
-                            <p>{message.text}</p>
+                            {message.photoUrl && <img className="chat-message-photo" src={message.photoUrl} alt="Photo attachment" loading="lazy" />}
+                            {editingMessageId === message.id ? (
+                              <div className="chat-message-editor">
+                                <label className="sr-only" htmlFor={`chat-message-edit-${message.id}`}>Edit message</label>
+                                <textarea
+                                  ref={messageEditInputRef}
+                                  id={`chat-message-edit-${message.id}`}
+                                  value={messageDraft}
+                                  onChange={(event) => setMessageDraft(event.target.value)}
+                                  maxLength={2_000}
+                                  placeholder={message.photoUrl ? "Add a caption…" : "Write a message…"}
+                                />
+                                <div>
+                                  <button type="button" onClick={() => { setEditingMessageId(null); setMessageActionError(null); }} disabled={messageActionBusyId === message.id}>Cancel</button>
+                                  <button type="button" onClick={() => void saveMessageEdit(selectedFriendId!, message)} disabled={messageActionBusyId === message.id || (!message.photoUrl && !messageDraft.trim())}>{messageActionBusyId === message.id ? "Saving…" : "Save"}</button>
+                                </div>
+                              </div>
+                            ) : message.text ? <p>{message.text}</p> : null}
+                            {messageActionError?.messageId === message.id && <p className="chat-message-action-error" role="alert">{messageActionError.text}</p>}
                             <div className="chat-message-meta">
                               <time dateTime={message.createdAt}>{messageTime(message.createdAt)}</time>
+                              {message.editedAt && <span>Edited</span>}
                               {isOwnMessage && message.deliveryState === "pending" && <span>{connectionState === "connected" ? "Sending…" : "Queued"}</span>}
                               {isOwnMessage && message.deliveryState === "acknowledged" && <span>Sent</span>}
                               {isOwnMessage && message.deliveryState === "failed" && <span className="chat-message-failed">Failed</span>}
@@ -598,10 +1008,11 @@ export function MessagesPage() {
                             {message.deliveryState === "failed" && message.failureMessage && (
                               <div className="chat-message-failure">
                                 <span>{message.failureMessage}</span>
-                                <button type="button" onClick={() => retryMessage(selectedFriend.id, message)} disabled={!message.retryable}>Retry</button>
+                                <button type="button" onClick={() => retryMessage(selectedFriendId!, message)} disabled={!message.retryable}>Retry</button>
                               </div>
                             )}
                           </article>
+                          {!isOwnMessage && messageActions}
                         </li>
                       );
                     })}
@@ -609,8 +1020,44 @@ export function MessagesPage() {
                 )}
               </div>
               <form className="chat-composer" onSubmit={sendMessage}>
-                <label htmlFor="chat-message" className="sr-only">Message to {selectedFriend.displayName}</label>
-                <div className="chat-composer-row">
+                <label htmlFor="chat-message" className="sr-only">Message to {selectedConversationName}</label>
+                <input ref={cameraInputRef} className="chat-photo-input" type="file" accept={CHAT_PHOTO_MIME_TYPES.join(",")} capture="environment" onChange={selectPhoto} />
+                <input ref={imageInputRef} className="chat-photo-input" type="file" accept={CHAT_PHOTO_MIME_TYPES.join(",")} onChange={selectPhoto} />
+                {photoAttachment && photoPreviewUrl && (
+                  <div className="chat-composer-attachment">
+                    <img src={photoPreviewUrl} alt={`Preview of ${photoAttachment.name}`} />
+                    <button type="button" onClick={() => { setPhotoAttachment(null); setPhotoAttachmentError(null); }} disabled={photoUploading} aria-label="Remove attached image" title="Remove image">×</button>
+                    <span>{photoAttachment.name}</span>
+                  </div>
+                )}
+                {photoAttachmentError && <p className="chat-composer-error" role="alert">{photoAttachmentError}</p>}
+                <div className="chat-composer-input-line">
+                  <div className="chat-composer-tools" ref={attachmentMenuRef}>
+                    <button
+                      ref={attachmentToggleRef}
+                      className={`chat-composer-add${attachmentMenuOpen ? " chat-composer-add-open" : ""}`}
+                      type="button"
+                      onClick={() => setAttachmentMenuOpen((open) => !open)}
+                      disabled={photoUploading}
+                      aria-label={attachmentMenuOpen ? "Close attachment options" : "Add a photo or image"}
+                      aria-expanded={attachmentMenuOpen}
+                      aria-controls="chat-attachment-options"
+                      title={attachmentMenuOpen ? "Close attachment options" : "Add a photo or image"}
+                    >
+                      <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+                    </button>
+                    <div className="chat-attachment-options" id="chat-attachment-options" aria-label="Add to message" hidden={!attachmentMenuOpen}>
+                      <button type="button" onClick={() => { setAttachmentMenuOpen(false); cameraInputRef.current?.click(); }}>
+                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z" /><circle cx="12" cy="13" r="3.2" /></svg>
+                        <span>Take a photo</span>
+                      </button>
+                      <button type="button" onClick={() => { setAttachmentMenuOpen(false); imageInputRef.current?.click(); }}>
+                        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="4" width="17" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.2" /><path d="m5 17 5-5 3 3 2-2 4 4" /></svg>
+                        <span>Choose an image</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="chat-composer-row">
                   <textarea
                     ref={composerInputRef}
                     id="chat-message"
@@ -625,14 +1072,17 @@ export function MessagesPage() {
                     }}
                     maxLength={2_000}
                     rows={1}
-                    placeholder={`Write a message to ${selectedFriend.displayName}…`}
+                    placeholder={`Write a message to ${selectedConversationName}…`}
+                    disabled={photoUploading}
                   />
-                  {composerText.trim() && (
-                    <button className="chat-composer-send" type="submit" aria-label="Send message" title="Send message">
+                  {(composerText.trim() || photoAttachment) && (
+                    <button className="chat-composer-send" type="submit" aria-label={photoUploading ? "Sending image" : "Send message"} title={photoUploading ? "Sending image" : "Send message"} disabled={photoUploading}>
                       <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h13" /><path d="m13 6 6 6-6 6" /></svg>
                     </button>
                   )}
+                  </div>
                 </div>
+                {photoUploading && <p className="chat-composer-status" role="status">Sending image…</p>}
               </form>
             </>
           ) : (
@@ -643,6 +1093,49 @@ export function MessagesPage() {
             </div>
           )}
         </section>
+      {groupDialogOpen && <div className="group-chat-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+        if (event.currentTarget === event.target && !groupCreating) setGroupDialogOpen(false);
+      }}>
+        <section className="group-chat-dialog" role="dialog" aria-modal="true" aria-labelledby="group-chat-dialog-title">
+          <header>
+            <div><h2 id="group-chat-dialog-title">Create a group chat</h2><p>Choose at least two friends to start a shared conversation.</p></div>
+            <button type="button" aria-label="Close" onClick={() => setGroupDialogOpen(false)} disabled={groupCreating}>×</button>
+          </header>
+          <form onSubmit={(event) => void createGroupConversation(event)}>
+            <label className="group-chat-name-label" htmlFor="group-chat-name">Group name</label>
+            <input id="group-chat-name" value={groupName} onChange={(event) => setGroupName(event.target.value)} maxLength={48} required placeholder="For example, Weekend plans" />
+            <div className="group-chat-member-heading"><strong>Friends</strong><span>{groupMemberIds.length} selected</span></div>
+            {friends.length === 0 ? <p className="group-chat-no-friends">Add friends before creating a group chat. <Link to="/friends" onClick={() => setGroupDialogOpen(false)}>Find friends</Link></p> : (
+              <div className="group-chat-member-list">
+                {friends.map((friend) => <label className="group-chat-member" key={friend.id}>
+                  <ChatFriendAvatar user={friend} />
+                  <span>{friend.displayName}</span>
+                  <input
+                    type="checkbox"
+                    checked={groupMemberIds.includes(friend.id)}
+                    onChange={(event) => setGroupMemberIds((current) => event.target.checked
+                      ? [...current, friend.id]
+                      : current.filter((id) => id !== friend.id))}
+                  />
+                </label>)}
+                {friendsCursor && <button className="group-chat-load-friends" type="button" onClick={() => void loadMoreFriends()} disabled={friendsLoadingMore}>{friendsLoadingMore ? "Loading…" : "Load more friends"}</button>}
+              </div>
+            )}
+            {groupCreateError && <p className="group-chat-error" role="alert">{groupCreateError}</p>}
+            <footer>
+              <button className="button-secondary" type="button" onClick={() => setGroupDialogOpen(false)} disabled={groupCreating}>Cancel</button>
+              <button className="button-primary" type="submit" disabled={groupCreating || groupMemberIds.length < 2}>{groupCreating ? "Creating…" : "Create group"}</button>
+            </footer>
+          </form>
+        </section>
+      </div>}
+      <ReportDialog
+        open={(selectedFriend !== null || selectedGroup !== null) && reportingMessageId !== null}
+        targetType="message"
+        targetId={reportingMessageId ?? ""}
+        onClose={() => setReportingMessageId(null)}
+        onReported={() => setReportStatus("Thanks. Your report was sent to the moderators.")}
+      />
       <aside className="messages-info-panel" aria-label="Chat information">
         {selectedFriend ? (
           <>
@@ -653,6 +1146,21 @@ export function MessagesPage() {
               <Link className="messages-info-profile-link" to={`/profile/${encodeURIComponent(selectedFriend.id)}`}>View profile</Link>
             </div>
 
+          </>
+        ) : selectedGroup ? (
+          <>
+            <div className="messages-info-profile">
+              <GroupChatAvatar name={selectedGroup.name} />
+              <h2>{selectedGroup.name}</h2>
+              <p>{selectedGroup.participants.length} members</p>
+            </div>
+            <section className="messages-group-members" aria-label="Group members">
+              <h3>Members</h3>
+              {selectedGroup.participants.map((participant) => <Link to={`/profile/${encodeURIComponent(participant.id)}`} key={participant.id}>
+                <span className="chat-avatar">{participant.avatarUrl ? <img src={participant.avatarUrl} alt="" /> : participant.displayName.trim().charAt(0).toUpperCase()}</span>
+                <span>{participant.displayName} {participant.id === userId ? "(You)" : ""}</span>
+              </Link>)}
+            </section>
           </>
         ) : friendsLoading ? (
           <SkeletonRegion message="Loading chat information" className="skeleton-info-panel"><SkeletonBlock className="skeleton-avatar skeleton-profile-avatar" /><SkeletonBlock className="skeleton-line skeleton-w-65" /></SkeletonRegion>

@@ -92,7 +92,9 @@ export type NotificationType =
   | "post_body_mention"
   | "post_share"
   | "friend_request"
-  | "friend_accepted";
+  | "friend_accepted"
+  | "report_update"
+  | "content_moderated";
 
 export interface NotificationItem {
   id: string;
@@ -103,6 +105,9 @@ export interface NotificationItem {
   postId?: string;
   shareId?: string;
   friendRequestId?: string;
+  reportStatus?: "resolved" | "dismissed";
+  reportActionTaken?: boolean;
+  moderatedContentType?: "post" | "share" | "comment" | "message";
 }
 
 export interface NotificationsResponse {
@@ -228,6 +233,7 @@ export interface Comment {
   author: User;
   text: string;
   createdAt: string;
+  editedAt?: string;
   reactionCount: number;
   isReactedByViewer: boolean;
   replyCount: number;
@@ -260,22 +266,77 @@ export interface UpdateCommentResponse {
   comment: Comment;
 }
 
+/** Content categories users can send to the moderation queue. */
+export type ReportTargetType = "post" | "share" | "comment" | "message";
+export type ReportReason = "spam" | "harassment" | "hate" | "violence" | "sexual_content" | "scam" | "other";
+export type ReportStatus = "open" | "resolved" | "dismissed";
+
+export interface MyReport {
+  id: string;
+  targetType: ReportTargetType;
+  reason: ReportReason;
+  details: string;
+  targetExcerpt: string;
+  hasPhoto: boolean;
+  status: ReportStatus;
+  actionTaken: boolean;
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+export interface MyReportsResponse {
+  items: MyReport[];
+}
+
+export interface CreateReportRequest {
+  targetType: ReportTargetType;
+  targetId: string;
+  reason: ReportReason;
+  details?: string;
+}
+
+export interface CreateReportResponse {
+  reportId: string;
+}
+
 /** A stored one-to-one message returned in authorized conversation history. */
 export interface Message {
   id: string;
   senderId: UserId;
   recipientId: UserId;
+  /** Set for messages sent inside a group conversation. */
+  groupId?: string;
   text: string;
   createdAt: string;
+  /** Authenticated route for a private chat image, when this message has one. */
+  photoUrl?: string;
+  editedAt?: string;
   /** Included in history only when the current viewer authored this message. */
   clientId?: string;
 }
 
 export type MessageHistoryResponse = Page<Message>;
 
-export interface ChatUnreadConversation {
-  friendId: UserId;
+export type ChatUnreadConversation =
+  | { friendId: UserId; unreadCount: number }
+  | { groupId: string; unreadCount: number };
+
+export interface GroupConversation {
+  id: string;
+  name: string;
+  participants: User[];
+  createdAt: string;
   unreadCount: number;
+  latestMessage?: Message;
+}
+
+export interface GroupConversationsResponse {
+  items: GroupConversation[];
+}
+
+export interface CreateGroupConversationRequest {
+  name: string;
+  memberIds: UserId[];
 }
 
 export interface ChatUnreadResponse {
@@ -293,6 +354,12 @@ export interface MessageSendRequest {
   text: string;
 }
 
+export interface GroupMessageSendRequest {
+  groupId: string;
+  clientId: string;
+  text: string;
+}
+
 export interface MessageAckEvent {
   clientId: string;
   message: Message;
@@ -300,6 +367,17 @@ export interface MessageAckEvent {
 
 export interface MessageNewEvent {
   message: Message;
+}
+
+export interface MessageUpdatedEvent {
+  message: Message;
+}
+
+export interface MessageDeletedEvent {
+  messageId: string;
+  senderId: UserId;
+  recipientId: UserId;
+  groupId?: string;
 }
 
 export interface MessageErrorEvent {

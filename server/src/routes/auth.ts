@@ -289,6 +289,20 @@ export function createAuthRouter(
         throw new HttpError(403, "account_suspended", "This account is suspended.");
       }
 
+      if (user.deactivatedAt) {
+        await Promise.all([
+          database.collection(collectionNames.sessions).deleteMany({ userId: user._id }),
+          database.collection(collectionNames.socketTickets).deleteMany({ userId: user._id }),
+          database.collection(collectionNames.pushSubscriptions).deleteMany({ userId: user._id }),
+        ]);
+        await database.collection<UserDocument>(collectionNames.users).updateOne(
+          { _id: user._id },
+          { $unset: { deactivatedAt: "" }, $set: { updatedAt: now } },
+        );
+        delete user.deactivatedAt;
+        user.updatedAt = now;
+      }
+
       await Promise.all([
         releaseRateLimitAttempt(database, emailKey.id),
         releaseRateLimitAttempt(database, ipKey.id),

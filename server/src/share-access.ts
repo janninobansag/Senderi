@@ -12,8 +12,9 @@ export interface VisibleShareRecord {
 export async function canViewShare(
   database: Db,
   viewerId: ObjectId,
-  share: Pick<ShareDocument, "authorId" | "visibility">,
+  share: Pick<ShareDocument, "authorId" | "visibility"> & Partial<Pick<ShareDocument, "hiddenAt">>,
 ): Promise<boolean> {
+  if (share.hiddenAt) return false;
   if (viewerId.equals(share.authorId)) return true;
 
   switch (share.visibility) {

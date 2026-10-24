@@ -64,7 +64,7 @@ function FriendCard({ children, user }: { children: ReactNode; user: User }) {
 
 function FriendsProfileCard({ children, user }: { children: ReactNode; user: User }) {
   const [imageFailed, setImageFailed] = useState(false);
-  const imageUrl = user.coverUrl || user.avatarUrl;
+  const imageUrl = user.avatarUrl;
   const initial = user.displayName.trim().charAt(0).toUpperCase() || "?";
 
   return (

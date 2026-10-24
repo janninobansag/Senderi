@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, UpdateCommentRequest, UpdateCommentResponse, UpdatePostRequest, UpdateShareResponse, User, UserSearchResponse, Visibility } from "../../../shared";
+import type { Comment, CommentListResponse, CreateCommentRequest, CreateCommentResponse, CreatePostRequest, CreatePostResponse, CreateShareRequest, CreateShareResponse, LikeResponse, Post, PostListResponse, PostResponse, ReportTargetType, UpdateCommentRequest, UpdateCommentResponse, UpdatePostRequest, UpdateShareResponse, User, UserSearchResponse, Visibility } from "../../../shared";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch, apiSubmitPost } from "../api/client";
 import { EmptyState, RequestErrorState } from "./AsyncState";
 import { CommentsSkeleton, PostListSkeleton } from "./Skeletons";
 import { SupporterBadge } from "./SupporterBadge";
+import { ReportDialog } from "./ReportDialog";
 
 const MAX_POST_LENGTH = 5_000;
 
@@ -299,6 +300,7 @@ function CommentsPanel({
   const [editingCommentText, setEditingCommentText] = useState("");
   const [pendingCommentActionId, setPendingCommentActionId] = useState<string | null>(null);
   const [commentActionStatus, setCommentActionStatus] = useState<{ text: string; isError: boolean } | null>(null);
+  const [reportingCommentId, setReportingCommentId] = useState<string | null>(null);
   const commentMenuButtonRef = useRef<HTMLButtonElement>(null);
   const commentMenuPanelRef = useRef<HTMLDivElement>(null);
   const commentsPath = shareId
@@ -589,8 +591,9 @@ function CommentsPanel({
               }).format(createdAt)}>
                 {formatCommentAge(comment.createdAt)}
               </time>
+              {comment.editedAt && <span className="comment-edited-label">Edited</span>}
             </div>
-            {user?.id === comment.author.id && editingCommentId !== comment.id && (
+            {user && editingCommentId !== comment.id && (
               <div className="comment-options">
                 <button
                   ref={openCommentMenuId === comment.id ? commentMenuButtonRef : null}
@@ -616,20 +619,26 @@ function CommentsPanel({
                   aria-label="Comment options"
                   hidden={openCommentMenuId !== comment.id}
                 >
-                  <button type="button" role="menuitem" onClick={() => beginEditComment(comment)}>Edit comment</button>
-                  <button
-                    className="comment-options-delete"
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setOpenCommentMenuId(null);
-                      if (window.confirm("Delete your comment permanently? This cannot be undone.")) {
-                        void deleteComment(comment);
-                      }
-                    }}
-                  >
-                    Delete permanently
-                  </button>
+                  {user.id === comment.author.id ? <>
+                    <button type="button" role="menuitem" onClick={() => beginEditComment(comment)}>Edit comment</button>
+                    <button
+                      className="comment-options-delete"
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenCommentMenuId(null);
+                        if (window.confirm("Delete your comment permanently? This cannot be undone.")) {
+                          void deleteComment(comment);
+                        }
+                      }}
+                    >
+                      Delete permanently
+                    </button>
+                  </> : <button type="button" role="menuitem" onClick={() => {
+                    setOpenCommentMenuId(null);
+                    setCommentActionStatus(null);
+                    setReportingCommentId(comment.id);
+                  }}>Report comment</button>}
                 </div>
               </div>
             )}
@@ -847,6 +856,13 @@ function CommentsPanel({
             {submitError && <p className="form-error" role="alert">{submitError}</p>}
           </form>
         </section>
+      <ReportDialog
+        open={reportingCommentId !== null}
+        targetType="comment"
+        targetId={reportingCommentId ?? ""}
+        onClose={() => setReportingCommentId(null)}
+        onReported={() => setCommentActionStatus({ text: "Thanks. Your report was sent to the moderators.", isError: false })}
+      />
     </>
   );
 }
@@ -1594,6 +1610,7 @@ export function PostCard({
   const [detailIsOriginalPost, setDetailIsOriginalPost] = useState(false);
   const [commentsRefreshKey, setCommentsRefreshKey] = useState(0);
   const [updateMessage, setUpdateMessage] = useState<{ text: string; isError: boolean } | null>(null);
+  const [isReportDialogOpen, setIsReportDialogOpen] = useState(false);
   const [postLikeState, setPostLikeState] = useState({
     likeCount: post.likeCount,
     isLikedByViewer: post.isLikedByViewer,
@@ -1611,6 +1628,9 @@ export function PostCard({
   const isOwner = user?.id === post.author.id;
   const isShareOwner = Boolean(post.share && user?.id === post.share.author.id);
   const canManagePostOptions = post.share ? isShareOwner : isOwner;
+  const canReportPost = Boolean(user && !canManagePostOptions);
+  const reportTargetType: ReportTargetType = post.share ? "share" : "post";
+  const reportTargetId = post.share?.id ?? post.id;
   const canEditPost = isOwner && !post.share;
   const displayedAudience = post.share?.visibility ?? post.visibility;
   const initial = post.author.displayName.trim().charAt(0).toUpperCase() || "S";
@@ -1766,6 +1786,7 @@ export function PostCard({
 
   function renderPostOptions() {
     return (
+      <>
       <div className="post-options" ref={optionsMenuRef}>
         <button
           ref={optionsButtonRef}
@@ -1794,6 +1815,10 @@ export function PostCard({
             <span>Audience</span>
             <strong>{audienceLabel(displayedAudience)}</strong>
           </div>
+          {canReportPost && <button className="post-options-edit post-options-report" type="button" onClick={() => {
+            setIsMenuOpen(false);
+            setIsReportDialogOpen(true);
+          }}>Report {post.share ? "shared post" : "post"}</button>}
           {canManagePostOptions && (
             <>
               {canEditPost && (
@@ -1842,6 +1867,14 @@ export function PostCard({
           )}
         </div>
       </div>
+      <ReportDialog
+        open={isReportDialogOpen}
+        targetType={reportTargetType}
+        targetId={reportTargetId}
+        onClose={() => setIsReportDialogOpen(false)}
+        onReported={() => setUpdateMessage({ text: "Thanks. Your report was sent to the moderators.", isError: false })}
+      />
+      </>
     );
   }
 

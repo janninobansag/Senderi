@@ -66,5 +66,5 @@ export async function consumeSocketTicket(
   const user = await database.collection<UserDocument>(collectionNames.users).findOne({
     _id: ticketDocument.userId,
   });
-  return user && !user.suspendedAt ? ticketDocument : null;
+  return user && !user.suspendedAt && !user.deactivatedAt ? ticketDocument : null;
 }
