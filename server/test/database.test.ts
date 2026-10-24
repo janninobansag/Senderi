@@ -167,6 +167,33 @@ test("startup creates every declared database index", async () => {
   );
 });
 
+test("startup creates the reports collection when it does not exist yet", async () => {
+  const createdIndexes: Array<{ collection: string; keys: unknown; options: unknown }> = [];
+  let reportBackfillCalls = 0;
+  const database = {
+    collection: (collection: string) => ({
+      createIndex: async (keys: unknown, options: unknown) => {
+        createdIndexes.push({ collection, keys, options });
+        return "created";
+      },
+      listIndexes: () => ({ toArray: async () => {
+        if (collection === "reports") throw Object.assign(new Error("NamespaceNotFound"), { code: 26 });
+        return [];
+      } }),
+      dropIndex: async () => "dropped",
+      updateMany: async () => { reportBackfillCalls += 1; return { acknowledged: true, matchedCount: 0, modifiedCount: 0 }; },
+    }),
+  } as unknown as Db;
+
+  await ensureDatabaseIndexes(database);
+
+  assert.deepEqual(
+    createdIndexes,
+    databaseIndexes.map(({ collection, keys, options }) => ({ collection, keys, options })),
+  );
+  assert.equal(reportBackfillCalls, 0);
+});
+
 test("startup replaces the all-time report duplicate index with an open-report-only index", async () => {
   const droppedIndexes: string[] = [];
   const createdIndexes: Array<{ collection: string; keys: unknown; options: unknown }> = [];
