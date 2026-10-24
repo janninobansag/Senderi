@@ -239,6 +239,8 @@ export interface GroupConversationDocument {
   name: string;
   createdBy: ObjectId;
   participantIds: ObjectId[];
+  /** Optional for groups created before role management was added. */
+  adminIds?: ObjectId[];
   createdAt: Date;
   updatedAt: Date;
   readAtByUser?: Record<string, Date>;

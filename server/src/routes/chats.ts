@@ -27,6 +27,9 @@ const createGroupSchema = z.object({
   name: z.string().trim().min(1).max(48),
   memberIds: z.array(z.string().regex(/^[a-f\d]{24}$/i)).min(2).max(29),
 }).strict();
+const renameGroupSchema = z.object({ name: z.string().trim().min(1).max(48) }).strict();
+const addGroupMembersSchema = z.object({ memberIds: z.array(z.string().regex(/^[a-f\d]{24}$/i)).min(1).max(29) }).strict();
+const groupRoleSchema = z.object({ role: z.enum(["owner", "admin", "member"]) }).strict();
 interface MessageHistoryCursor {
   createdAt: Date;
   messageId: ObjectId;
@@ -48,7 +51,7 @@ const defaultDependencies: ChatsRouterDependencies = {
 };
 
 interface ChatRealtimeServer {
-  to(room: string): { emit(event: "message:new" | "message:updated" | "message:deleted" | "group:created", payload: unknown): unknown };
+  to(room: string): { emit(event: "message:new" | "message:updated" | "message:deleted" | "message:read" | "group:created" | "group:updated" | "group:removed", payload: unknown): unknown };
 }
 
 interface ChatPhotoRequest extends Request {
@@ -85,6 +88,50 @@ async function findGroupForMember(database: Db, groupId: ObjectId, userId: Objec
     .findOne({ _id: groupId, participantIds: userId });
   if (!group) throw new HttpError(404, "conversation_not_found", "Group conversation was not found.");
   return group;
+}
+
+function groupOwnerId(group: GroupConversationDocument): ObjectId {
+  return group.participantIds.find((id) => id.equals(group.createdBy)) ?? group.participantIds[0] ?? group.createdBy;
+}
+
+function groupMemberRole(group: GroupConversationDocument, userId: ObjectId): "owner" | "admin" | "member" {
+  if (groupOwnerId(group).equals(userId)) return "owner";
+  return group.adminIds?.some((id) => id.equals(userId)) ? "admin" : "member";
+}
+
+function requireGroupManager(group: GroupConversationDocument, userId: ObjectId): void {
+  const role = groupMemberRole(group, userId);
+  if (role !== "owner" && role !== "admin") {
+    throw new HttpError(403, "group_permission_required", "Only group owners and admins can do that.");
+  }
+}
+
+async function toGroupResponse(database: Db, group: GroupConversationDocument, viewerId: ObjectId, unreadCount = 0, latestMessage?: MessageDocument) {
+  const participants = await database.collection<UserDocument>(collectionNames.users)
+    .find({ _id: { $in: group.participantIds } }).toArray();
+  return {
+    id: group._id.toHexString(),
+    name: group.name,
+    participants: group.participantIds.flatMap((id) => {
+      const participant = participants.find((user) => user._id.equals(id));
+      return participant ? [{ ...toPublicUserResponse(participant), role: groupMemberRole(group, id) }] : [];
+    }),
+    createdAt: group.createdAt.toISOString(),
+    unreadCount,
+    ...(latestMessage ? { latestMessage: toMessageResponse(latestMessage, viewerId) } : {}),
+  };
+}
+
+function emitGroupRemoved(request: Request, participantId: ObjectId, groupId: ObjectId): void {
+  const realtimeServer = request.app.get("realtimeServer") as ChatRealtimeServer | undefined;
+  realtimeServer?.to(`user:${participantId.toHexString()}`).emit("group:removed", { groupId: groupId.toHexString() });
+}
+
+function emitGroupUpdated(request: Request, group: GroupConversationDocument, responseBody: unknown): void {
+  const realtimeServer = request.app.get("realtimeServer") as ChatRealtimeServer | undefined;
+  for (const participantId of group.participantIds) {
+    realtimeServer?.to(`user:${participantId.toHexString()}`).emit("group:updated", { group: responseBody });
+  }
 }
 
 async function canAccessMessage(database: Db, message: MessageDocument, userId: ObjectId): Promise<boolean> {
@@ -134,7 +181,8 @@ function decodeCursor(token: string, expectedFriendId: ObjectId): MessageHistory
   }
 }
 
-function toMessageResponse(message: MessageDocument, viewerId: ObjectId) {
+function toMessageResponse(message: MessageDocument, viewerId: ObjectId, groupIsRead?: boolean) {
+  const isRead = groupIsRead ?? (message.groupId ? Boolean(message.readAt) : Boolean(message.isRead));
   return {
     id: message._id.toHexString(),
     senderId: message.senderId.toHexString(),
@@ -144,7 +192,7 @@ function toMessageResponse(message: MessageDocument, viewerId: ObjectId) {
     createdAt: message.createdAt.toISOString(),
     ...(message.photoAssetId ? { photoUrl: `/api/chats/messages/${message._id.toHexString()}/photo` } : {}),
     ...(message.editedAt ? { editedAt: message.editedAt.toISOString() } : {}),
-    ...(message.senderId.equals(viewerId) ? { clientId: message.clientId } : {}),
+    ...(message.senderId.equals(viewerId) ? { clientId: message.clientId, ...(isRead ? { isRead: true } : {}) } : {}),
   };
 }
 
@@ -232,7 +280,7 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
         name: group.name,
         participants: group.participantIds.flatMap((participantId) => {
           const participant = usersById.get(participantId.toHexString());
-          return participant ? [toPublicUserResponse(participant)] : [];
+          return participant ? [{ ...toPublicUserResponse(participant), role: groupMemberRole(group, participantId) }] : [];
         }),
         createdAt: group.createdAt.toISOString(),
         unreadCount,
@@ -263,6 +311,7 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
       name: parsed.data.name,
       createdBy: creatorId,
       participantIds: [creatorId, ...memberIds],
+      adminIds: [],
       createdAt: dependencies.now(),
       updatedAt: dependencies.now(),
       readAtByUser: { [creatorId.toHexString()]: dependencies.now() },
@@ -275,7 +324,7 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
       name: group.name,
       participants: group.participantIds.flatMap((id) => {
         const participant = participants.find((user) => user._id.equals(id));
-        return participant ? [toPublicUserResponse(participant)] : [];
+        return participant ? [{ ...toPublicUserResponse(participant), role: groupMemberRole(group, id) }] : [];
       }),
       createdAt: group.createdAt.toISOString(),
       unreadCount: 0,
@@ -288,15 +337,188 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
     response.status(201).json({ group: groupResponse });
   });
 
+  router.patch("/groups/:groupId", requireClientOrigin(dependencies.getAllowedOrigins), authenticated, async (request, response) => {
+    const parsed = renameGroupSchema.safeParse(request.body);
+    if (!parsed.success) throw new HttpError(400, "validation_error", "Enter a group name up to 48 characters.");
+    const groupId = toGroupObjectId(String(request.params.groupId));
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const database = dependencies.getDatabase();
+    const group = await findGroupForMember(database, groupId, viewerId);
+    requireGroupManager(group, viewerId);
+    const updatedAt = dependencies.now();
+    const result = await database.collection<GroupConversationDocument>(collectionNames.groupConversations)
+      .updateOne({ _id: groupId, participantIds: viewerId }, { $set: { name: parsed.data.name, updatedAt } });
+    if (!result.matchedCount) throw new HttpError(409, "group_changed", "This group changed. Refresh and try again.");
+    group.name = parsed.data.name;
+    group.updatedAt = updatedAt;
+    const groupResponse = await toGroupResponse(database, group, viewerId);
+    emitGroupUpdated(request, group, groupResponse);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ group: groupResponse });
+  });
+
+  router.post("/groups/:groupId/members", requireClientOrigin(dependencies.getAllowedOrigins), authenticated, async (request, response) => {
+    const parsed = addGroupMembersSchema.safeParse(request.body);
+    if (!parsed.success) throw new HttpError(400, "validation_error", "Choose at least one friend to add.");
+    const groupId = toGroupObjectId(String(request.params.groupId));
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const database = dependencies.getDatabase();
+    const group = await findGroupForMember(database, groupId, viewerId);
+    requireGroupManager(group, viewerId);
+    const memberIds = parsed.data.memberIds.map((id) => new ObjectId(id));
+    if (new Set(memberIds.map((id) => id.toHexString())).size !== memberIds.length || memberIds.some((id) => id.equals(viewerId))) {
+      throw new HttpError(400, "validation_error", "Choose each friend once.");
+    }
+    if (group.participantIds.length + memberIds.length > 30) throw new HttpError(400, "group_full", "A group chat can have up to 30 members.");
+    for (const memberId of memberIds) {
+      if (group.participantIds.some((id) => id.equals(memberId))) throw new HttpError(409, "already_a_member", "That person is already in this group.");
+      if (!(await areFriends(database, viewerId, memberId))) throw new HttpError(400, "group_members_must_be_friends", "You can only add your friends to a group.");
+    }
+    const updatedAt = dependencies.now();
+    const result = await database.collection<GroupConversationDocument>(collectionNames.groupConversations).updateOne(
+      { _id: groupId, participantIds: viewerId },
+      { $addToSet: { participantIds: { $each: memberIds } }, $set: { updatedAt } },
+    );
+    if (!result.matchedCount) throw new HttpError(409, "group_changed", "This group changed. Refresh and try again.");
+    group.participantIds.push(...memberIds);
+    group.updatedAt = updatedAt;
+    const groupResponse = await toGroupResponse(database, group, viewerId);
+    emitGroupUpdated(request, group, groupResponse);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ group: groupResponse });
+  });
+
+  router.patch("/groups/:groupId/members/:memberId/role", requireClientOrigin(dependencies.getAllowedOrigins), authenticated, async (request, response) => {
+    const parsed = groupRoleSchema.safeParse(request.body);
+    if (!parsed.success) throw new HttpError(400, "validation_error", "Choose a valid group role.");
+    const groupId = toGroupObjectId(String(request.params.groupId));
+    const memberId = toFriendObjectId(String(request.params.memberId));
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const database = dependencies.getDatabase();
+    const group = await findGroupForMember(database, groupId, viewerId);
+    if (!groupOwnerId(group).equals(viewerId)) throw new HttpError(403, "group_owner_required", "Only the group owner can change roles.");
+    if (memberId.equals(viewerId) || !group.participantIds.some((id) => id.equals(memberId))) {
+      throw new HttpError(404, "group_member_not_found", "Choose another member of this group.");
+    }
+    const updatedAt = dependencies.now();
+    const groups = database.collection<GroupConversationDocument>(collectionNames.groupConversations);
+    if (parsed.data.role === "owner") {
+      const nextAdminIds = [...(group.adminIds ?? []).filter((id) => !id.equals(memberId)), viewerId];
+      const result = await groups.updateOne(
+        { _id: groupId, createdBy: group.createdBy, participantIds: memberId },
+        { $set: { createdBy: memberId, updatedAt, adminIds: nextAdminIds } },
+      );
+      if (!result.matchedCount) throw new HttpError(409, "group_changed", "This group changed. Refresh and try again.");
+      group.createdBy = memberId;
+      group.adminIds = [...(group.adminIds ?? []).filter((id) => !id.equals(memberId)), viewerId];
+    } else {
+      group.adminIds = parsed.data.role === "admin"
+        ? [...(group.adminIds ?? []).filter((id) => !id.equals(memberId)), memberId]
+        : (group.adminIds ?? []).filter((id) => !id.equals(memberId));
+      const result = await groups.updateOne(
+        { _id: groupId, createdBy: group.createdBy, participantIds: memberId },
+        { $set: { updatedAt, adminIds: group.adminIds } },
+      );
+      if (!result.matchedCount) throw new HttpError(409, "group_changed", "This group changed. Refresh and try again.");
+    }
+    group.updatedAt = updatedAt;
+    const groupResponse = await toGroupResponse(database, group, viewerId);
+    emitGroupUpdated(request, group, groupResponse);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ group: groupResponse });
+  });
+
+  router.delete("/groups/:groupId/members/me", requireClientOrigin(dependencies.getAllowedOrigins), authenticated, async (request, response) => {
+    const groupId = toGroupObjectId(String(request.params.groupId));
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const database = dependencies.getDatabase();
+    const group = await findGroupForMember(database, groupId, viewerId);
+    if (groupOwnerId(group).equals(viewerId)) throw new HttpError(409, "transfer_ownership_first", "Transfer ownership to another member before leaving the group.");
+    const updatedAt = dependencies.now();
+    const result = await database.collection<GroupConversationDocument>(collectionNames.groupConversations).updateOne(
+      { _id: groupId, participantIds: viewerId },
+      { $pull: { participantIds: viewerId, adminIds: viewerId }, $unset: { [`readAtByUser.${viewerId.toHexString()}`]: "" }, $set: { updatedAt } },
+    );
+    if (!result.matchedCount) throw new HttpError(409, "group_changed", "This group changed. Refresh and try again.");
+    group.participantIds = group.participantIds.filter((id) => !id.equals(viewerId));
+    group.adminIds = (group.adminIds ?? []).filter((id) => !id.equals(viewerId));
+    group.updatedAt = updatedAt;
+    const groupResponse = await toGroupResponse(database, group, group.participantIds[0] ?? group.createdBy);
+    emitGroupUpdated(request, group, groupResponse);
+    emitGroupRemoved(request, viewerId, groupId);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.status(204).end();
+  });
+
+  router.delete("/groups/:groupId/members/:memberId", requireClientOrigin(dependencies.getAllowedOrigins), authenticated, async (request, response) => {
+    const groupId = toGroupObjectId(String(request.params.groupId));
+    const memberId = toFriendObjectId(String(request.params.memberId));
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const database = dependencies.getDatabase();
+    const group = await findGroupForMember(database, groupId, viewerId);
+    requireGroupManager(group, viewerId);
+    if (memberId.equals(viewerId)) throw new HttpError(400, "use_leave_group", "Use Leave group to remove yourself.");
+    if (!group.participantIds.some((id) => id.equals(memberId))) throw new HttpError(404, "group_member_not_found", "That person is not in this group.");
+    if (groupOwnerId(group).equals(memberId)) throw new HttpError(409, "cannot_remove_group_owner", "The group owner cannot be removed.");
+    if (groupMemberRole(group, viewerId) === "admin" && groupMemberRole(group, memberId) !== "member") {
+      throw new HttpError(403, "group_permission_required", "Admins can remove members, while only the owner can remove another admin.");
+    }
+    const updatedAt = dependencies.now();
+    const result = await database.collection<GroupConversationDocument>(collectionNames.groupConversations).updateOne(
+      { _id: groupId, participantIds: { $all: [viewerId, memberId] } },
+      { $pull: { participantIds: memberId, adminIds: memberId }, $unset: { [`readAtByUser.${memberId.toHexString()}`]: "" }, $set: { updatedAt } },
+    );
+    if (!result.matchedCount) throw new HttpError(409, "group_changed", "This group changed. Refresh and try again.");
+    group.participantIds = group.participantIds.filter((id) => !id.equals(memberId));
+    group.adminIds = (group.adminIds ?? []).filter((id) => !id.equals(memberId));
+    group.updatedAt = updatedAt;
+    const groupResponse = await toGroupResponse(database, group, viewerId);
+    emitGroupUpdated(request, group, groupResponse);
+    emitGroupRemoved(request, memberId, groupId);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.status(204).end();
+  });
+
+  router.delete("/groups/:groupId", requireClientOrigin(dependencies.getAllowedOrigins), authenticated, async (request, response) => {
+    const groupId = toGroupObjectId(String(request.params.groupId));
+    const viewerId = getAuthenticatedSession(response).user._id;
+    const database = dependencies.getDatabase();
+    const group = await findGroupForMember(database, groupId, viewerId);
+    if (!groupOwnerId(group).equals(viewerId)) throw new HttpError(403, "group_owner_required", "Only the group owner can permanently delete this group.");
+    const messages = database.collection<MessageDocument>(collectionNames.messages);
+    const groupMessages = await messages.find({ groupId }).toArray();
+    try {
+      for (const message of groupMessages) {
+        if (message.photoAssetId) await dependencies.photoStorage.destroy(message.photoAssetId);
+      }
+    } catch {
+      throw new HttpError(502, "media_unavailable", "Group photos could not be permanently deleted. Please try again.");
+    }
+    await messages.deleteMany({ groupId });
+    const result = await database.collection<GroupConversationDocument>(collectionNames.groupConversations).deleteOne({ _id: groupId, createdBy: group.createdBy });
+    if (!result.deletedCount) throw new HttpError(409, "group_changed", "This group changed. Refresh and try again.");
+    for (const participantId of group.participantIds) emitGroupRemoved(request, participantId, groupId);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.status(204).end();
+  });
+
   router.patch("/groups/:groupId/read", requireClientOrigin(dependencies.getAllowedOrigins), authenticated, async (request, response) => {
     const groupId = toGroupObjectId(String(request.params.groupId));
     const viewerId = getAuthenticatedSession(response).user._id;
     const database = dependencies.getDatabase();
-    await findGroupForMember(database, groupId, viewerId);
+    const group = await findGroupForMember(database, groupId, viewerId);
+    const readAt = dependencies.now();
     await database.collection<GroupConversationDocument>(collectionNames.groupConversations).updateOne(
       { _id: groupId, participantIds: viewerId },
-      { $set: { [`readAtByUser.${viewerId.toHexString()}`]: dependencies.now() } },
+      { $set: { [`readAtByUser.${viewerId.toHexString()}`]: readAt } },
     );
+    const realtimeServer = request.app.get("realtimeServer") as ChatRealtimeServer | undefined;
+    for (const participantId of group.participantIds) {
+      realtimeServer?.to(`user:${participantId.toHexString()}`).emit("message:read", {
+        conversationId: `group:${groupId.toHexString()}`,
+        readAt: readAt.toISOString(),
+      });
+    }
     response.setHeader("Cache-Control", "private, no-store");
     response.status(204).end();
   });
@@ -307,7 +529,7 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
     const groupId = toGroupObjectId(String(request.params.groupId));
     const viewerId = getAuthenticatedSession(response).user._id;
     const database = dependencies.getDatabase();
-    await findGroupForMember(database, groupId, viewerId);
+    const group = await findGroupForMember(database, groupId, viewerId);
     const cursor = parsedQuery.data.cursor ? decodeCursor(parsedQuery.data.cursor, groupId) : undefined;
     const cursorFilter: Filter<MessageDocument> | undefined = cursor ? {
       $or: [
@@ -329,7 +551,10 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
     const lastMessage = pageMessages.at(-1);
     response.setHeader("Cache-Control", "private, no-store");
     response.json({
-      items: pageMessages.map((message) => toMessageResponse(message, viewerId)),
+      items: pageMessages.map((message) => toMessageResponse(message, viewerId, group.participantIds.some((participantId) => {
+        const readAt = group.readAtByUser?.[participantId.toHexString()];
+        return !participantId.equals(message.senderId) && Boolean(readAt && readAt.getTime() >= message.createdAt.getTime());
+      }))),
       nextCursor: hasMore && lastMessage ? encodeCursor(lastMessage, groupId) : null,
     });
   });
@@ -373,7 +598,7 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
       const message: MessageDocument = {
         _id: new ObjectId(), senderId, recipientId: senderId, groupId,
         clientId: parsed.data.clientId, text: parsed.data.text,
-        photoAssetId: uploaded.assetId, createdAt: dependencies.now(), isRead: true,
+        photoAssetId: uploaded.assetId, createdAt: dependencies.now(), isRead: false,
       };
       try {
         await messages.insertOne(message);
@@ -645,10 +870,25 @@ export function createChatsRouter(overrides: Partial<ChatsRouterDependencies> = 
         throw new HttpError(404, "conversation_not_found", "Conversation was not found.");
       }
 
-      await dependencies.getDatabase().collection<MessageDocument>(collectionNames.messages).updateMany(
-        { senderId: friendId, recipientId: viewerId, isRead: false, moderationHiddenAt: { $exists: false } },
-        { $set: { isRead: true, readAt: dependencies.now() } },
-      );
+      const messages = dependencies.getDatabase().collection<MessageDocument>(collectionNames.messages);
+      const unreadFilter = { senderId: friendId, recipientId: viewerId, isRead: false, moderationHiddenAt: { $exists: false } };
+      const unreadMessages = await messages.find(unreadFilter).toArray();
+      if (unreadMessages.length) {
+        const messageIds = unreadMessages.map((message) => message._id);
+        const readAt = dependencies.now();
+        const update = await messages.updateMany(
+          { _id: { $in: messageIds }, ...unreadFilter },
+          { $set: { isRead: true, readAt } },
+        );
+        if (update.modifiedCount > 0) {
+          const realtimeServer = request.app.get("realtimeServer") as ChatRealtimeServer | undefined;
+          realtimeServer?.to(`user:${friendId.toHexString()}`).emit("message:read", {
+            conversationId: viewerId.toHexString(),
+            readAt: readAt.toISOString(),
+            messageIds: messageIds.map((messageId) => messageId.toHexString()),
+          });
+        }
+      }
       response.setHeader("Cache-Control", "private, no-store");
       response.status(204).end();
     },

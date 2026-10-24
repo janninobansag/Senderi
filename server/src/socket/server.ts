@@ -7,6 +7,7 @@ import type {
   MessageErrorEvent,
   GroupMessageSendRequest,
   MessageNewEvent,
+  MessageReadEvent,
   MessageSendRequest,
   MessageUpdatedEvent,
 } from "./contracts";
@@ -28,6 +29,7 @@ interface ServerToClientEvents {
   "message:new": (payload: MessageNewEvent) => void;
   "message:updated": (payload: MessageUpdatedEvent) => void;
   "message:deleted": (payload: MessageDeletedEvent) => void;
+  "message:read": (payload: MessageReadEvent) => void;
   "message:error": (payload: MessageErrorEvent) => void;
 }
 
@@ -78,7 +80,8 @@ function userRoom(userId: ObjectId): string {
   return `user:${userId.toHexString()}`;
 }
 
-function toMessageResponse(message: MessageDocument): MessageAckEvent["message"] {
+function toMessageResponse(message: MessageDocument, viewerId: ObjectId): MessageAckEvent["message"] {
+  const isRead = message.groupId ? Boolean(message.readAt) : Boolean(message.isRead);
   return {
     id: message._id.toHexString(),
     senderId: message.senderId.toHexString(),
@@ -88,6 +91,7 @@ function toMessageResponse(message: MessageDocument): MessageAckEvent["message"]
     createdAt: message.createdAt.toISOString(),
     ...(message.photoAssetId ? { photoUrl: `/api/chats/messages/${message._id.toHexString()}/photo` } : {}),
     ...(message.editedAt ? { editedAt: message.editedAt.toISOString() } : {}),
+    ...(message.senderId.equals(viewerId) && isRead ? { isRead: true } : {}),
   };
 }
 
@@ -159,7 +163,7 @@ async function sendGroupMessage(
         emitError(socket, "client_id_conflict", "This client ID was already used for a different message.", validatedClientId);
         return;
       }
-      socket.emit("message:ack", { clientId: validatedClientId, message: toMessageResponse(existing) });
+      socket.emit("message:ack", { clientId: validatedClientId, message: toMessageResponse(existing, senderId) });
       return;
     }
     const messageDocument: MessageDocument = {
@@ -170,7 +174,7 @@ async function sendGroupMessage(
       clientId: validatedClientId,
       text,
       createdAt: now,
-      isRead: true,
+      isRead: false,
     };
     let storedMessage: MessageDocument;
     let wasInserted = false;
@@ -187,12 +191,14 @@ async function sendGroupMessage(
       }
       storedMessage = duplicate;
     }
-    const message = toMessageResponse(storedMessage);
-    socket.emit("message:ack", { clientId: validatedClientId, message });
+    const senderMessage = toMessageResponse(storedMessage, senderId);
+    socket.emit("message:ack", { clientId: validatedClientId, message: senderMessage });
     if (!wasInserted) return;
     await groups.updateOne({ _id: groupId }, { $set: { updatedAt: now } });
     for (const participantId of group.participantIds) {
-      if (!participantId.equals(senderId)) io.to(userRoom(participantId)).emit("message:new", { message });
+      if (!participantId.equals(senderId)) {
+        io.to(userRoom(participantId)).emit("message:new", { message: toMessageResponse(storedMessage, participantId) });
+      }
     }
     const sender = await database.collection<UserDocument>(collectionNames.users).findOne({ _id: senderId }).catch(() => null);
     const senderName = sender?.displayName.trim() || "Someone";
@@ -252,7 +258,7 @@ async function sendMessage(
         emitError(socket, "client_id_conflict", "This client ID was already used for a different message.", validatedClientId);
         return;
       }
-      const ack: MessageAckEvent = { clientId: validatedClientId, message: toMessageResponse(existing) };
+      const ack: MessageAckEvent = { clientId: validatedClientId, message: toMessageResponse(existing, senderId) };
       socket.emit("message:ack", ack);
       return;
     }
@@ -284,12 +290,12 @@ async function sendMessage(
       storedMessage = duplicate;
     }
 
-    const message = toMessageResponse(storedMessage);
-    const ack: MessageAckEvent = { clientId: validatedClientId, message };
+    const senderMessage = toMessageResponse(storedMessage, senderId);
+    const ack: MessageAckEvent = { clientId: validatedClientId, message: senderMessage };
     socket.emit("message:ack", ack);
 
     if (wasInserted) {
-      const event: MessageNewEvent = { message };
+      const event: MessageNewEvent = { message: toMessageResponse(storedMessage, recipientId) };
       io.to(userRoom(recipientId)).emit("message:new", event);
       const sender = await database.collection<UserDocument>(collectionNames.users)
         .findOne({ _id: senderId })

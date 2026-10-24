@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { io, type Socket } from "socket.io-client";
+import { io } from "socket.io-client";
 import { Link, useSearchParams } from "react-router-dom";
 import { SupporterBadge } from "../components/SupporterBadge";
 import { ReportDialog } from "../components/ReportDialog";
@@ -9,14 +9,9 @@ import type {
   FriendListResponse,
   GroupConversation,
   GroupConversationsResponse,
+  GroupMemberRole,
   Message,
-  MessageAckEvent,
-  MessageDeletedEvent,
-  MessageErrorEvent,
   MessageHistoryResponse,
-  MessageNewEvent,
-  MessageSendRequest,
-  MessageUpdatedEvent,
   SocketTicketResponse,
   User,
 } from "../../../shared";
@@ -24,6 +19,9 @@ import { useAuth } from "../auth/AuthContext";
 import { ApiError, apiFetch } from "../api/client";
 import { notifyChatUnreadChanged } from "../chat/unread-events";
 import { lastActiveLabel, useFriendPresence } from "../chat/use-friend-presence";
+import { ChatFriendAvatar, GroupChatAvatar } from "../chat/chat-avatars";
+import { MessageMeta } from "../chat/message-meta";
+import type { ChatSocket } from "../chat/socket-events";
 import { EmptyState, RequestErrorState } from "../components/AsyncState";
 import { ChatListSkeleton, MessageBubblesSkeleton, SkeletonBlock, SkeletonRegion } from "../components/Skeletons";
 import {
@@ -37,21 +35,6 @@ import {
   type ChatMessage,
 } from "../chat/message-state";
 
-interface ClientToServerEvents {
-  "message:send": (payload: MessageSendRequest) => void;
-  "group-message:send": (payload: { groupId: string; clientId: string; text: string }) => void;
-}
-
-interface ServerToClientEvents {
-  "group:created": (payload: { group: GroupConversation }) => void;
-  "message:ack": (payload: MessageAckEvent) => void;
-  "message:new": (payload: MessageNewEvent) => void;
-  "message:updated": (payload: MessageUpdatedEvent) => void;
-  "message:deleted": (payload: MessageDeletedEvent) => void;
-  "message:error": (payload: MessageErrorEvent) => void;
-}
-
-type ChatSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 type ConnectionState = "connecting" | "connected" | "reconnecting";
 
 const HISTORY_PAGE_SIZE = 30;
@@ -80,36 +63,6 @@ function asAcknowledged(message: Message, clientId?: string): ChatMessage {
   };
 }
 
-function ChatFriendAvatar({ user }: { user: User }) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const initial = user.displayName.trim().charAt(0).toUpperCase() || "?";
-  return (
-    <span className="chat-avatar" aria-hidden="true">
-      {user.avatarUrl && !imageFailed
-        ? <img src={user.avatarUrl} alt="" onError={() => setImageFailed(true)} />
-        : initial}
-    </span>
-  );
-}
-
-function GroupChatAvatar({ name }: { name: string }) {
-  return (
-    <span className="chat-avatar group-chat-avatar" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="9" cy="8" r="3" /><path d="M3.5 19v-1a5.5 5.5 0 0 1 11 0v1" /><path d="M16 5.5a3 3 0 0 1 0 5.8M17 14a5 5 0 0 1 3.5 4.8V19" />
-      </svg>
-      <span className="sr-only">{name}</span>
-    </span>
-  );
-}
-
-function messageTime(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? ""
-    : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
-}
-
 export function MessagesPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -128,6 +81,16 @@ export function MessagesPage() {
   const [groupMemberIds, setGroupMemberIds] = useState<string[]>([]);
   const [groupCreateError, setGroupCreateError] = useState<string | null>(null);
   const [groupCreating, setGroupCreating] = useState(false);
+  const [groupActionsOpen, setGroupActionsOpen] = useState(false);
+  const [mobileGroupMembersOpen, setMobileGroupMembersOpen] = useState(false);
+  const [groupActionDialog, setGroupActionDialog] = useState<"rename" | "add" | "remove" | null>(null);
+  const [groupActionName, setGroupActionName] = useState("");
+  const [groupActionMemberIds, setGroupActionMemberIds] = useState<string[]>([]);
+  const [groupActionBusy, setGroupActionBusy] = useState(false);
+  const [groupRoleBusyId, setGroupRoleBusyId] = useState<string | null>(null);
+  const [groupMemberRemovingId, setGroupMemberRemovingId] = useState<string | null>(null);
+  const [groupActionError, setGroupActionError] = useState<string | null>(null);
+  const [groupActionStatus, setGroupActionStatus] = useState<string | null>(null);
   const [conversationSearch, setConversationSearch] = useState("");
   const [chatFilter, setChatFilter] = useState<"all" | "unread">("all");
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
@@ -370,6 +333,9 @@ export function MessagesPage() {
       setOpenMessageMenuId(null);
       setEditingMessageId(null);
       setMessageActionError(null);
+      setGroupActionsOpen(false);
+      setGroupActionError(null);
+      setGroupActionStatus(null);
     }
     if (!selectedFriendId) return;
 
@@ -443,6 +409,17 @@ export function MessagesPage() {
     socket.on("group:created", (event) => {
       setGroups((current) => [event.group, ...current.filter((group) => group.id !== event.group.id)]);
     });
+    socket.on("group:updated", (event) => {
+      setGroups((current) => [event.group, ...current.filter((group) => group.id !== event.group.id)]);
+    });
+    socket.on("group:removed", (event) => {
+      setGroups((current) => current.filter((group) => group.id !== event.groupId));
+      if (selectedFriendIdRef.current === `group:${event.groupId}`) {
+        setSelectedFriendId(null);
+        setMobileConversationOpen(false);
+        setSearchParams({}, { replace: true });
+      }
+    });
     socket.on("message:new", (event) => {
       const isGroupMessage = Boolean(event.message.groupId);
       const friendId = isGroupMessage
@@ -468,6 +445,15 @@ export function MessagesPage() {
           setUnreadCounts((current) => ({ ...current, [friendId]: (current[friendId] ?? 0) + 1 }));
         }
       }
+    });
+    socket.on("message:read", (event) => {
+      const readMessageIds = new Set(event.messageIds ?? []);
+      const readAt = Date.parse(event.readAt);
+      updateConversation(event.conversationId, (current) => current.map((message) =>
+        message.senderId === currentUserId && (readMessageIds.has(message.id) || (!event.messageIds && Date.parse(message.createdAt) <= readAt))
+          ? { ...message, isRead: true }
+          : message,
+      ));
     });
     socket.on("message:updated", (event) => {
       const friendId = event.message.groupId
@@ -505,7 +491,7 @@ export function MessagesPage() {
       socket.disconnect();
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [clearSendTimer, markConversationRead, refreshConversation, retryPendingMessages, updateConversation, userId]);
+  }, [clearSendTimer, markConversationRead, refreshConversation, retryPendingMessages, setSearchParams, updateConversation, userId]);
 
   async function loadMoreFriends(): Promise<void> {
     if (!friendsCursor || friendsLoadingMore) return;
@@ -583,6 +569,111 @@ export function MessagesPage() {
       setGroupCreateError(errorMessage(error, "Could not create this group chat."));
     } finally {
       setGroupCreating(false);
+    }
+  }
+
+  function openGroupActionDialog(kind: "rename" | "add" | "remove"): void {
+    if (!selectedGroup) return;
+    setGroupActionError(null);
+    setGroupActionStatus(null);
+    setGroupActionsOpen(false);
+    setGroupActionName(selectedGroup.name);
+    setGroupActionMemberIds([]);
+    setGroupActionDialog(kind);
+  }
+
+  async function submitGroupAction(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (!selectedGroup || !groupActionDialog || groupActionDialog === "remove" || groupActionBusy) return;
+    if (groupActionDialog === "add" && groupActionMemberIds.length === 0) {
+      setGroupActionError("Choose at least one friend to add.");
+      return;
+    }
+    setGroupActionBusy(true);
+    setGroupActionError(null);
+    try {
+      const response = groupActionDialog === "rename"
+        ? await apiFetch<{ group: GroupConversation }>(`/api/chats/groups/${encodeURIComponent(selectedGroup.id)}`, { method: "PATCH", body: { name: groupActionName.trim() } })
+        : await apiFetch<{ group: GroupConversation }>(`/api/chats/groups/${encodeURIComponent(selectedGroup.id)}/members`, { method: "POST", body: { memberIds: groupActionMemberIds } });
+      setGroups((current) => [response.group, ...current.filter((group) => group.id !== response.group.id)]);
+      setGroupActionDialog(null);
+      setGroupActionStatus(groupActionDialog === "rename" ? "Group name updated." : "Member added to the group.");
+    } catch (error) {
+      setGroupActionError(errorMessage(error, groupActionDialog === "rename" ? "Could not rename this group." : "Could not add the selected friends."));
+    } finally {
+      setGroupActionBusy(false);
+    }
+  }
+
+  async function changeGroupRole(memberId: string, role: GroupMemberRole): Promise<void> {
+    if (!selectedGroup || groupRoleBusyId) return;
+    setGroupRoleBusyId(memberId);
+    setGroupActionError(null);
+    setGroupActionStatus(null);
+    try {
+      const response = await apiFetch<{ group: GroupConversation }>(`/api/chats/groups/${encodeURIComponent(selectedGroup.id)}/members/${encodeURIComponent(memberId)}/role`, { method: "PATCH", body: { role } });
+      setGroups((current) => [response.group, ...current.filter((group) => group.id !== response.group.id)]);
+      setGroupActionStatus(role === "owner" ? "Group ownership transferred." : "Member role updated.");
+    } catch (error) {
+      setGroupActionError(errorMessage(error, "Could not update this member's role."));
+    } finally {
+      setGroupRoleBusyId(null);
+    }
+  }
+
+  async function removeGroupMember(memberId: string, displayName: string): Promise<void> {
+    if (!selectedGroup || groupMemberRemovingId) return;
+    if (!window.confirm(`Remove ${displayName} from ${selectedGroup.name}? They will lose access to this group's messages.`)) return;
+    setGroupMemberRemovingId(memberId);
+    setGroupActionError(null);
+    setGroupActionStatus(null);
+    try {
+      await apiFetch<void>(`/api/chats/groups/${encodeURIComponent(selectedGroup.id)}/members/${encodeURIComponent(memberId)}`, { method: "DELETE" });
+      setGroups((current) => current.map((group) => group.id === selectedGroup.id
+        ? { ...group, participants: group.participants.filter((participant) => participant.id !== memberId) }
+        : group));
+      setGroupActionStatus(`${displayName} was removed from the group.`);
+      if (groupActionDialog === "remove") setGroupActionDialog(null);
+    } catch (error) {
+      setGroupActionError(errorMessage(error, `Could not remove ${displayName} from this group.`));
+    } finally {
+      setGroupMemberRemovingId(null);
+    }
+  }
+
+  async function leaveGroup(): Promise<void> {
+    if (!selectedGroup || groupActionBusy) return;
+    if (selectedGroupRole === "owner") {
+      setGroupActionError("Transfer ownership using a member's role menu before leaving.");
+      return;
+    }
+    if (!window.confirm(`Leave ${selectedGroup.name}? You will no longer see its messages unless you are added again.`)) return;
+    setGroupActionBusy(true);
+    setGroupActionError(null);
+    try {
+      await apiFetch<void>(`/api/chats/groups/${encodeURIComponent(selectedGroup.id)}/members/me`, { method: "DELETE" });
+      setGroups((current) => current.filter((group) => group.id !== selectedGroup.id));
+      closeConversation();
+    } catch (error) {
+      setGroupActionError(errorMessage(error, "Could not leave this group."));
+    } finally {
+      setGroupActionBusy(false);
+    }
+  }
+
+  async function permanentlyDeleteGroup(): Promise<void> {
+    if (!selectedGroup || groupActionBusy) return;
+    if (!window.confirm(`Permanently delete ${selectedGroup.name} and all of its messages? This cannot be undone.`)) return;
+    setGroupActionBusy(true);
+    setGroupActionError(null);
+    try {
+      await apiFetch<void>(`/api/chats/groups/${encodeURIComponent(selectedGroup.id)}`, { method: "DELETE" });
+      setGroups((current) => current.filter((group) => group.id !== selectedGroup.id));
+      closeConversation();
+    } catch (error) {
+      setGroupActionError(errorMessage(error, "Could not permanently delete this group."));
+    } finally {
+      setGroupActionBusy(false);
     }
   }
 
@@ -701,6 +792,7 @@ export function MessagesPage() {
   }
 
   function openConversation(friendId: string): void {
+    setMobileGroupMembersOpen(false);
     setSelectedFriendId(friendId);
     setMobileConversationOpen(true);
     setSearchParams({ friend: friendId }, { replace: true });
@@ -708,12 +800,14 @@ export function MessagesPage() {
 
   function openGroupConversation(groupId: string): void {
     const key = `group:${groupId}`;
+    setMobileGroupMembersOpen(false);
     setSelectedFriendId(key);
     setMobileConversationOpen(true);
     setSearchParams({ group: groupId }, { replace: true });
   }
 
   function closeConversation(): void {
+    setMobileGroupMembersOpen(false);
     setSelectedFriendId(null);
     setMobileConversationOpen(false);
     setSearchParams({}, { replace: true });
@@ -722,6 +816,11 @@ export function MessagesPage() {
   const selectedFriend = friends.find((friend) => friend.id === selectedFriendId) ?? null;
   const selectedGroupId = selectedFriendId?.startsWith("group:") ? selectedFriendId.slice("group:".length) : null;
   const selectedGroup = selectedGroupId ? groups.find((group) => group.id === selectedGroupId) ?? null : null;
+  const selectedGroupRole = selectedGroup?.participants.find((participant) => participant.id === userId)?.role ?? "member";
+  const removableGroupParticipants = selectedGroup?.participants.filter((participant) =>
+    participant.id !== userId && participant.role !== "owner" &&
+    (selectedGroupRole === "owner" || (selectedGroupRole === "admin" && participant.role === "member")),
+  ) ?? [];
   const selectedConversationName = selectedFriend?.displayName ?? selectedGroup?.name ?? "Group chat";
   const { presenceById, now: presenceNow } = useFriendPresence(friends.map((friend) => friend.id));
   const selectedPresence = selectedFriend ? presenceById[selectedFriend.id] : undefined;
@@ -911,17 +1010,37 @@ export function MessagesPage() {
                   </button>
                   <div className="friend-person">
                     {selectedFriend
-                      ? <span className="chat-presence-avatar"><ChatFriendAvatar user={selectedFriend} />{selectedPresence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
-                      : <GroupChatAvatar name={selectedConversationName} />}
-                    <div className="friend-person-copy">
-                      <h2 className="friend-person-name">{selectedFriend
-                        ? <><Link className="messages-conversation-name-link" to={`/profile/${encodeURIComponent(selectedFriend.id)}`}>{selectedFriend.displayName}</Link> <SupporterBadge user={selectedFriend} /></>
-                        : selectedConversationName}</h2>
-                      {(connectionError || (selectedFriend && (selectedPresence?.isOnline || selectedLastActive)) || selectedGroup) && <p>{connectionError ? "Connection interrupted" : selectedGroup ? `${selectedGroup.participants.length} members` : selectedPresence?.isOnline ? "Online" : `Active ${selectedLastActive}`}</p>}
-                    </div>
+                      ? <>
+                        <span className="chat-presence-avatar"><ChatFriendAvatar user={selectedFriend} />{selectedPresence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
+                        <div className="friend-person-copy">
+                          <h2 className="friend-person-name"><Link className="messages-conversation-name-link" to={`/profile/${encodeURIComponent(selectedFriend.id)}`}>{selectedFriend.displayName}</Link> <SupporterBadge user={selectedFriend} /></h2>
+                          {(connectionError || selectedPresence?.isOnline || selectedLastActive) && <p>{connectionError ? "Connection interrupted" : selectedPresence?.isOnline ? "Online" : `Active ${selectedLastActive}`}</p>}
+                        </div>
+                      </>
+                      : <button className="messages-mobile-group-details" type="button" aria-label={`View members of ${selectedGroup?.name ?? "group chat"}`} aria-haspopup="dialog" onClick={() => setMobileGroupMembersOpen(true)}>
+                        <GroupChatAvatar name={selectedConversationName} />
+                        <span className="friend-person-copy">
+                          <span className="friend-person-name">{selectedConversationName}</span>
+                          <span className="messages-mobile-group-member-hint">{selectedGroup?.participants.length ?? 0} members <span>· View</span></span>
+                        </span>
+                      </button>}
                   </div>
                 </div>
                 <div className="messages-chat-actions">
+                  {selectedGroup && <div className="messages-mobile-group-menu">
+                    <button className="messages-group-menu-button" type="button" aria-label="Group options" aria-haspopup="menu" aria-expanded={groupActionsOpen} onClick={() => { setGroupActionsOpen((open) => !open); setGroupActionError(null); }}>
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>
+                    </button>
+                    {groupActionsOpen && <div className="messages-group-actions-menu" role="menu">
+                      {(selectedGroupRole === "owner" || selectedGroupRole === "admin") && <>
+                        <button type="button" role="menuitem" onClick={() => openGroupActionDialog("add")}>Add members</button>
+                        <button type="button" role="menuitem" onClick={() => openGroupActionDialog("rename")}>Edit group name</button>
+                        {removableGroupParticipants.length > 0 && <button type="button" role="menuitem" onClick={() => openGroupActionDialog("remove")}>Remove member</button>}
+                      </>}
+                      <button type="button" role="menuitem" onClick={() => { setGroupActionsOpen(false); void leaveGroup(); }}>Leave group</button>
+                      {selectedGroupRole === "owner" && <button className="messages-group-danger-action" type="button" role="menuitem" onClick={() => { setGroupActionsOpen(false); void permanentlyDeleteGroup(); }}>Permanently delete group</button>}
+                    </div>}
+                  </div>}
                   <span className={`chat-connection chat-connection-${connectionState}`} role="status"><span className="chat-connection-dot" aria-hidden="true" />{connectionState === "connected" ? "Connected" : connectionState === "connecting" ? "Connecting…" : "Reconnecting…"}</span>
                 </div>
               </header>
@@ -936,6 +1055,7 @@ export function MessagesPage() {
                   <ol className="chat-message-list" aria-label="Messages">
                     {selectedMessages.map((message) => {
                       const isOwnMessage = message.senderId === user?.id;
+                      const messageSender = selectedGroup?.participants.find((participant) => participant.id === message.senderId) ?? selectedFriend;
                       const messageActions = message.deliveryState === "acknowledged" && !message.id.startsWith("local:") ? (
                         <div
                           className={`chat-message-actions${isOwnMessage ? " chat-message-actions-own" : ""}`}
@@ -978,6 +1098,9 @@ export function MessagesPage() {
                       return (
                         <li key={message.id} className={`chat-message-row ${isOwnMessage ? "chat-message-row-own" : ""}`}>
                           {isOwnMessage && messageActions}
+                          {!isOwnMessage && messageSender && <span className="chat-message-sender-avatar" role="img" aria-label={`${messageSender.displayName}'s profile picture`} title={messageSender.displayName}>
+                            <ChatFriendAvatar user={messageSender} />
+                          </span>}
                           <article className={`chat-message-bubble ${isOwnMessage ? "chat-message-bubble-own" : ""}`}>
                             {message.photoUrl && <img className="chat-message-photo" src={message.photoUrl} alt="Photo attachment" loading="lazy" />}
                             {editingMessageId === message.id ? (
@@ -998,13 +1121,7 @@ export function MessagesPage() {
                               </div>
                             ) : message.text ? <p>{message.text}</p> : null}
                             {messageActionError?.messageId === message.id && <p className="chat-message-action-error" role="alert">{messageActionError.text}</p>}
-                            <div className="chat-message-meta">
-                              <time dateTime={message.createdAt}>{messageTime(message.createdAt)}</time>
-                              {message.editedAt && <span>Edited</span>}
-                              {isOwnMessage && message.deliveryState === "pending" && <span>{connectionState === "connected" ? "Sending…" : "Queued"}</span>}
-                              {isOwnMessage && message.deliveryState === "acknowledged" && <span>Sent</span>}
-                              {isOwnMessage && message.deliveryState === "failed" && <span className="chat-message-failed">Failed</span>}
-                            </div>
+                            <MessageMeta message={message} isOwnMessage={isOwnMessage} isConnected={connectionState === "connected"} />
                             {message.deliveryState === "failed" && message.failureMessage && (
                               <div className="chat-message-failure">
                                 <span>{message.failureMessage}</span>
@@ -1093,6 +1210,77 @@ export function MessagesPage() {
             </div>
           )}
         </section>
+      {groupActionDialog && selectedGroup && <div className="group-chat-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+        if (event.currentTarget === event.target && !groupActionBusy) setGroupActionDialog(null);
+      }}>
+        <section className="group-chat-dialog" role="dialog" aria-modal="true" aria-labelledby="group-manage-dialog-title">
+          <header>
+            <div>
+              <h2 id="group-manage-dialog-title">{groupActionDialog === "rename" ? "Edit group name" : groupActionDialog === "add" ? "Add members" : "Remove member"}</h2>
+              <p>{groupActionDialog === "rename" ? "Choose a name everyone in this group can recognize." : groupActionDialog === "add" ? "Choose friends to add to this group chat." : "Choose a member to remove from this group chat."}</p>
+            </div>
+            <button type="button" aria-label="Close" onClick={() => setGroupActionDialog(null)} disabled={groupActionBusy}>X</button>
+          </header>
+          <form onSubmit={(event) => void submitGroupAction(event)}>
+            {groupActionDialog === "rename" ? <>
+              <label className="group-chat-name-label" htmlFor="group-manage-name">Group name</label>
+              <input id="group-manage-name" value={groupActionName} onChange={(event) => setGroupActionName(event.target.value)} maxLength={48} required />
+            </> : groupActionDialog === "add" ? <>
+              <div className="group-chat-member-heading"><strong>Friends</strong><span>{groupActionMemberIds.length} selected</span></div>
+              <div className="group-chat-member-list">
+                {friends.filter((friend) => !selectedGroup.participants.some((participant) => participant.id === friend.id)).map((friend) => <label className="group-chat-member" key={friend.id}>
+                  <ChatFriendAvatar user={friend} />
+                  <span>{friend.displayName}</span>
+                  <input type="checkbox" checked={groupActionMemberIds.includes(friend.id)} onChange={(event) => setGroupActionMemberIds((current) => event.target.checked ? [...current, friend.id] : current.filter((id) => id !== friend.id))} />
+                </label>)}
+                {friendsCursor && <button className="group-chat-load-friends" type="button" onClick={() => void loadMoreFriends()} disabled={friendsLoadingMore}>{friendsLoadingMore ? "Loading..." : "Load more friends"}</button>}
+                {friends.every((friend) => selectedGroup.participants.some((participant) => participant.id === friend.id)) && !friendsCursor && <p className="group-chat-no-friends">All your loaded friends are already in this group.</p>}
+              </div>
+            </> : <>
+              <div className="group-chat-member-heading"><strong>Group members</strong><span>{removableGroupParticipants.length} available</span></div>
+              <div className="group-chat-remove-list">
+                {removableGroupParticipants.map((participant) => <div className="group-chat-remove-row" key={participant.id}>
+                  <ChatFriendAvatar user={participant} />
+                  <span>{participant.displayName}</span>
+                  <span className={`messages-group-role messages-group-role-${participant.role}`}>{participant.role}</span>
+                  <button className="messages-group-remove-member" type="button" disabled={Boolean(groupMemberRemovingId)} onClick={() => void removeGroupMember(participant.id, participant.displayName)}>{groupMemberRemovingId === participant.id ? "Removing..." : "Remove"}</button>
+                </div>)}
+                {removableGroupParticipants.length === 0 && <p className="group-chat-no-friends">There are no members you can remove.</p>}
+              </div>
+            </>}
+            {groupActionError && <p className="group-chat-error" role="alert">{groupActionError}</p>}
+            <footer>
+              <button className="button-secondary" type="button" onClick={() => setGroupActionDialog(null)} disabled={groupActionBusy || Boolean(groupMemberRemovingId)}>Close</button>
+              {groupActionDialog !== "remove" && <button className="button-primary" type="submit" disabled={groupActionBusy || (groupActionDialog === "rename" ? !groupActionName.trim() : groupActionMemberIds.length === 0)}>{groupActionBusy ? "Saving..." : groupActionDialog === "rename" ? "Save name" : "Add members"}</button>}
+            </footer>
+          </form>
+        </section>
+      </div>}
+      {mobileGroupMembersOpen && selectedGroup && <div className="group-chat-dialog-backdrop messages-mobile-members-backdrop" role="presentation" onMouseDown={(event) => {
+        if (event.currentTarget === event.target) setMobileGroupMembersOpen(false);
+      }}>
+        <section className="group-chat-dialog messages-mobile-members-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-group-members-title">
+          <header>
+            <div>
+              <h2 id="mobile-group-members-title">{selectedGroup.name}</h2>
+              <p>{selectedGroup.participants.length} members</p>
+            </div>
+            <button type="button" aria-label="Close" onClick={() => setMobileGroupMembersOpen(false)}>×</button>
+          </header>
+          <div className="messages-mobile-member-list" aria-label="Group members">
+            {selectedGroup.participants.map((participant) => <div className="messages-group-member-row" key={participant.id}>
+              <Link to={`/profile/${encodeURIComponent(participant.id)}`} onClick={() => setMobileGroupMembersOpen(false)}>
+                <span className="chat-avatar">{participant.avatarUrl ? <img src={participant.avatarUrl} alt="" /> : participant.displayName.trim().charAt(0).toUpperCase()}</span>
+                <span className="messages-group-member-name">
+                  <span className="messages-group-member-display-name">{participant.displayName} {participant.id === userId ? "(You)" : ""}</span>
+                  <SupporterBadge user={participant} />
+                </span>
+              </Link>
+              <span className={`messages-group-role messages-group-role-${participant.role}`}>{participant.role}</span>
+            </div>)}
+          </div>
+        </section>
+      </div>}
       {groupDialogOpen && <div className="group-chat-dialog-backdrop" role="presentation" onMouseDown={(event) => {
         if (event.currentTarget === event.target && !groupCreating) setGroupDialogOpen(false);
       }}>
@@ -1155,11 +1343,36 @@ export function MessagesPage() {
               <p>{selectedGroup.participants.length} members</p>
             </div>
             <section className="messages-group-members" aria-label="Group members">
-              <h3>Members</h3>
-              {selectedGroup.participants.map((participant) => <Link to={`/profile/${encodeURIComponent(participant.id)}`} key={participant.id}>
-                <span className="chat-avatar">{participant.avatarUrl ? <img src={participant.avatarUrl} alt="" /> : participant.displayName.trim().charAt(0).toUpperCase()}</span>
-                <span>{participant.displayName} {participant.id === userId ? "(You)" : ""}</span>
-              </Link>)}
+              <div className="messages-group-members-heading">
+                <h3>Members</h3>
+                <button className="messages-group-menu-button" type="button" aria-label="Group options" aria-expanded={groupActionsOpen} onClick={() => { setGroupActionsOpen((open) => !open); setGroupActionError(null); }}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></svg>
+                </button>
+                {groupActionsOpen && <div className="messages-group-actions-menu" role="menu">
+                  {(selectedGroupRole === "owner" || selectedGroupRole === "admin") && <>
+                    <button type="button" role="menuitem" onClick={() => openGroupActionDialog("add")}>Add members</button>
+                    <button type="button" role="menuitem" onClick={() => openGroupActionDialog("rename")}>Edit group name</button>
+                    {removableGroupParticipants.length > 0 && <button type="button" role="menuitem" onClick={() => openGroupActionDialog("remove")}>Remove member</button>}
+                  </>}
+                  <button type="button" role="menuitem" onClick={() => { setGroupActionsOpen(false); void leaveGroup(); }}>Leave group</button>
+                  {selectedGroupRole === "owner" && <button className="messages-group-danger-action" type="button" role="menuitem" onClick={() => { setGroupActionsOpen(false); void permanentlyDeleteGroup(); }}>Permanently delete group</button>}
+                </div>}
+              </div>
+              {selectedGroup.participants.map((participant) => <div className="messages-group-member-row" key={participant.id}>
+                <Link to={`/profile/${encodeURIComponent(participant.id)}`}>
+                  <span className="chat-avatar">{participant.avatarUrl ? <img src={participant.avatarUrl} alt="" /> : participant.displayName.trim().charAt(0).toUpperCase()}</span>
+                  <span className="messages-group-member-name">
+                    <span className="messages-group-member-display-name">{participant.displayName} {participant.id === userId ? "(You)" : ""}</span>
+                    <SupporterBadge user={participant} />
+                  </span>
+                </Link>
+                {selectedGroupRole === "owner" && participant.id !== userId ? <select aria-label={`Role for ${participant.displayName}`} value={participant.role} disabled={Boolean(groupRoleBusyId)} onChange={(event) => void changeGroupRole(participant.id, event.target.value as GroupMemberRole)}>
+                  <option value="member">Member</option><option value="admin">Admin</option><option value="owner">Transfer owner</option>
+                </select> : <span className={`messages-group-role messages-group-role-${participant.role}`}>{participant.role}</span>}
+              </div>)}
+              {groupActionError && !groupActionDialog && <p className="group-chat-error" role="alert">{groupActionError}</p>}
+              {groupActionStatus && <p className="messages-group-status" role="status">{groupActionStatus}</p>}
+              {selectedGroupRole === "owner" && <p className="messages-group-owner-hint">Transfer ownership before leaving the group.</p>}
             </section>
           </>
         ) : friendsLoading ? (

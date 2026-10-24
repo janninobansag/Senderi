@@ -32,6 +32,9 @@ type MongoFilter = Record<string, unknown>;
 
 function matchesObjectId(actual: ObjectId, expected: unknown): boolean {
   if (expected instanceof ObjectId) return actual.equals(expected);
+  if (typeof expected === "object" && expected !== null && "$in" in expected) {
+    return (expected.$in as ObjectId[]).some((id) => actual.equals(id));
+  }
   if (typeof expected === "object" && expected !== null && "$lt" in expected) {
     return actual.toHexString() < (expected.$lt as ObjectId).toHexString();
   }
@@ -275,6 +278,10 @@ test("friend conversation history is stably paged newest-first and non-friends a
     ],
   };
   const app = createTestApp(data);
+  const readEvents: Array<{ room: string; event: string; payload: Record<string, unknown> }> = [];
+  app.set("realtimeServer", {
+    to: (room: string) => ({ emit: (event: string, payload: Record<string, unknown>) => { readEvents.push({ room, event, payload }); } }),
+  });
   const aliceId = alice._id.toHexString();
   const bobId = bob._id.toHexString();
   const aliceCookie = `${SESSION_COOKIE_NAME}=alice-session`;
@@ -342,6 +349,15 @@ test("friend conversation history is stably paged newest-first and non-friends a
   assert.equal(markRead.status, 204);
   assert.equal(data.messages.filter((message) => message.senderId.equals(bob._id) && message.recipientId.equals(alice._id) && message.isRead).length, 2);
   assert.equal(legacyMessage.isRead, undefined, "unread tracking leaves pre-feature history alone");
+  assert.equal(readEvents.length, 1);
+  assert.equal(readEvents[0]?.room, `user:${bobId}`);
+  assert.equal(readEvents[0]?.event, "message:read");
+  assert.equal((readEvents[0]?.payload.messageIds as string[]).length, 2);
+  const senderHistory = await request(app)
+    .get(`/api/chats/${aliceId}/messages`)
+    .set("Cookie", bobCookie);
+  assert.equal(senderHistory.status, 200);
+  assert.equal(senderHistory.body.items.filter((message: { isRead?: boolean }) => message.isRead).length, 2);
 
   const unreadAfterOpening = await request(app)
     .get("/api/chats/unread")

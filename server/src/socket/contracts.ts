@@ -8,6 +8,7 @@ export interface SocketMessage {
   createdAt: string;
   photoUrl?: string;
   editedAt?: string;
+  isRead?: boolean;
 }
 
 export interface MessageUpdatedEvent {
@@ -19,6 +20,13 @@ export interface MessageDeletedEvent {
   senderId: string;
   recipientId: string;
   groupId?: string;
+}
+
+export interface MessageReadEvent {
+  conversationId: string;
+  readAt: string;
+  /** Direct chats can provide exact unread message IDs; group chats use readAt. */
+  messageIds?: string[];
 }
 
 export interface MessageSendRequest {
