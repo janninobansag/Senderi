@@ -2708,8 +2708,16 @@ test("comment authors can edit and permanently delete only their own visible com
   assert.equal(updated.body.comment.author.id, ids.outsider);
   assert.equal(updated.body.comment.reactionCount, 1);
   assert.equal(updated.body.comment.isReactedByViewer, true);
+  assert.equal(typeof updated.body.comment.editedAt, "string");
   assert.equal(updated.headers["cache-control"], "private, no-store");
   assert.equal(comment.text, "Updated comment");
+  assert.equal(comment.editedAt?.toISOString(), updated.body.comment.editedAt);
+
+  const refreshedComments = await request(app)
+    .get(`/api/posts/${ids.public}/comments`)
+    .set("Cookie", cookie(tokens.outsider))
+    .expect(200);
+  assert.equal(refreshedComments.body.items.find((item: { id: string }) => item.id === comment._id.toHexString())?.editedAt, updated.body.comment.editedAt);
 
   await request(app)
     .delete(commentPath)

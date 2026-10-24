@@ -15,11 +15,15 @@ export const collectionNames = {
   notifications: "notifications",
   pushSubscriptions: "pushSubscriptions",
   messages: "messages",
+  groupConversations: "groupConversations",
   passwordResets: "passwordResets",
   socketTickets: "socketTickets",
   rateLimits: "rateLimits",
   adminAudit: "adminAudit",
+  reports: "reports",
 } as const;
+
+export const REPORT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 /** Store a trimmed, lowercase email and an Argon2id password hash. */
 export interface UserDocument {
@@ -40,6 +44,8 @@ export interface UserDocument {
   supporterBadge?: boolean;
   verifiedBadge?: boolean;
   suspendedAt?: Date;
+  /** Set when the owner temporarily disables sign-in. Logging in clears this field. */
+  deactivatedAt?: Date;
 }
 
 /** Store the lexicographically ordered ObjectIds as userIdLow/userIdHigh. */
@@ -106,6 +112,7 @@ export interface CommentDocument {
   authorId: ObjectId;
   text: string;
   createdAt: Date;
+  editedAt?: Date;
   hiddenAt?: Date;
   hiddenBy?: ObjectId;
   hiddenReason?: string;
@@ -128,6 +135,30 @@ export interface AdminAuditDocument {
   createdAt: Date;
 }
 
+export type ReportTargetType = "post" | "share" | "comment" | "message";
+export type ReportReason = "spam" | "harassment" | "hate" | "violence" | "sexual_content" | "scam" | "other";
+export type ReportStatus = "open" | "resolved" | "dismissed";
+
+/** A report keeps a small content snapshot so moderators have context if the item changes. */
+export interface ReportDocument {
+  _id: ObjectId;
+  reporterId: ObjectId;
+  targetType: ReportTargetType;
+  targetId: ObjectId;
+  targetOwnerId: ObjectId;
+  reason: ReportReason;
+  details?: string;
+  targetExcerpt: string;
+  hasPhoto: boolean;
+  createdAt: Date;
+  status: ReportStatus;
+  reviewedAt?: Date;
+  reviewedBy?: ObjectId;
+  reviewReason?: string;
+  actionTaken?: boolean;
+  purgeAt?: Date;
+}
+
 /** A share points to a source post and has its own author and audience. */
 export interface ShareDocument {
   _id: ObjectId;
@@ -138,6 +169,9 @@ export interface ShareDocument {
   /** Optional text the author added when sharing the source post. */
   caption?: string;
   visibility: PostVisibility;
+  hiddenAt?: Date;
+  hiddenBy?: ObjectId;
+  hiddenReason?: string;
   createdAt: Date;
 }
 
@@ -149,7 +183,9 @@ export type NotificationType =
   | "post_body_mention"
   | "post_share"
   | "friend_request"
-  | "friend_accepted";
+  | "friend_accepted"
+  | "report_update"
+  | "content_moderated";
 
 export interface NotificationDocument {
   _id: ObjectId;
@@ -159,6 +195,9 @@ export interface NotificationDocument {
   postId?: ObjectId;
   shareId?: ObjectId;
   friendRequestId?: ObjectId;
+  reportStatus?: ReportStatus;
+  reportActionTaken?: boolean;
+  moderatedContentType?: ReportTargetType;
   createdAt: Date;
   readAt?: Date;
 }
@@ -180,12 +219,29 @@ export interface MessageDocument {
   _id: ObjectId;
   senderId: ObjectId;
   recipientId: ObjectId;
+  groupId?: ObjectId;
   clientId: string;
   text: string;
+  /** Private Cloudinary asset ID; clients only receive an authenticated photo route. */
+  photoAssetId?: string;
+  editedAt?: Date;
+  moderationHiddenAt?: Date;
+  moderationHiddenBy?: ObjectId;
+  moderationHiddenReason?: string;
   createdAt: Date;
   /** Explicitly false only for newly delivered messages awaiting the recipient. */
   isRead?: boolean;
   readAt?: Date;
+}
+
+export interface GroupConversationDocument {
+  _id: ObjectId;
+  name: string;
+  createdBy: ObjectId;
+  participantIds: ObjectId[];
+  createdAt: Date;
+  updatedAt: Date;
+  readAtByUser?: Record<string, Date>;
 }
 
 /** TTL-managed documents use BSON Date values in expiresAt. */

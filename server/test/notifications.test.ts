@@ -64,6 +64,15 @@ function createApp() {
   ];
   notifications[0]!.type = "post_comment";
   notifications[0]!.shareId = new ObjectId("000000000000000000000012");
+  const reviewedReportNotification = makeNotification(ownerId, actorId, new Date("2026-10-20T00:00:00.000Z"), true);
+  reviewedReportNotification.type = "report_update";
+  reviewedReportNotification.reportStatus = "resolved";
+  reviewedReportNotification.reportActionTaken = true;
+  notifications.push(reviewedReportNotification);
+  const moderatedContentNotification = makeNotification(ownerId, actorId, new Date("2026-10-19T00:00:00.000Z"), true);
+  moderatedContentNotification.type = "content_moderated";
+  moderatedContentNotification.moderatedContentType = "message";
+  notifications.push(moderatedContentNotification);
   const pushSubscriptions: PushSubscriptionDocument[] = [{
     _id: new ObjectId(),
     userId: otherId,
@@ -216,11 +225,16 @@ test("notifications list only the viewer's newest activity and mark read safely"
   const response = await request(app).get("/api/notifications").set("Cookie", cookie).expect(200);
   assert.equal(response.headers["cache-control"], "private, no-store");
   assert.equal(response.body.unreadCount, 1);
-  assert.equal(response.body.items.length, 2);
+  assert.equal(response.body.items.length, 4);
   assert.equal(response.body.items[0].actor.displayName, "Actor");
   assert.equal(response.body.items[0].type, "post_comment");
   assert.equal(response.body.items[0].shareId, "000000000000000000000012");
   assert.equal(response.body.items[0].isRead, false);
+  const reportUpdate = response.body.items.find((item: { type: string }) => item.type === "report_update");
+  assert.equal(reportUpdate.reportStatus, "resolved");
+  assert.equal(reportUpdate.reportActionTaken, true);
+  const contentModerated = response.body.items.find((item: { type: string }) => item.type === "content_moderated");
+  assert.equal(contentModerated.moderatedContentType, "message");
   assert.equal("email" in response.body.items[0].actor, false);
   assert.equal("passwordHash" in response.body.items[0].actor, false);
   assert.equal("postText" in response.body.items[0], false);

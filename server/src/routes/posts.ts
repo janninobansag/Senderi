@@ -158,6 +158,7 @@ interface CommentResponseItem {
   author: ReturnType<typeof toPublicUserResponse>;
   text: string;
   createdAt: string;
+  editedAt?: string;
   reactionCount: number;
   isReactedByViewer: boolean;
   replyCount: number;
@@ -407,6 +408,7 @@ function toCommentResponse(
     author: toPublicUserResponse(author, cloudName),
     text: comment.text,
     createdAt: comment.createdAt.toISOString(),
+    ...(comment.editedAt ? { editedAt: comment.editedAt.toISOString() } : {}),
     reactionCount,
     isReactedByViewer,
     replyCount,
@@ -1285,7 +1287,8 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       const comments = database.collection<CommentDocument>(collectionNames.comments);
       const comment = await comments.findOne(filter);
       if (!comment) throw new HttpError(404, "not_found", "Comment was not found.");
-      const updated = await comments.updateOne(filter, { $set: { text: parsed.data.text } });
+      const editedAt = new Date();
+      const updated = await comments.updateOne(filter, { $set: { text: parsed.data.text, editedAt } });
       if (updated.matchedCount !== 1) throw new HttpError(404, "not_found", "Comment was not found.");
 
       const [reactionSummary, replyCount] = await Promise.all([
@@ -1297,7 +1300,7 @@ export function createPostsRouter(overrides: Partial<PostsRouterDependencies> = 
       response.setHeader("Cache-Control", "private, no-store");
       response.json({
         comment: toCommentResponse(
-          { ...comment, text: parsed.data.text },
+          { ...comment, text: parsed.data.text, editedAt },
           session.user,
           dependencies.getCloudinaryCloudName(),
           reactionSummary.reactionCount,

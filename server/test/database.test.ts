@@ -23,11 +23,16 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       ["likes", { userId: 1, postId: 1 }],
       ["shareLikes", { userId: 1, shareId: 1 }],
       ["commentReactions", { commentId: 1, userId: 1 }],
+      ["reports", { reporterId: 1, targetType: 1, targetId: 1 }],
       ["pushSubscriptions", { endpoint: 1 }],
       ["messages", { senderId: 1, clientId: 1 }],
       ["passwordResets", { userId: 1 }],
       ["socketTickets", { ticketHash: 1 }],
     ],
+  );
+  assert.deepEqual(
+    databaseIndexes.find((index) => index.options.name === "reports_reporter_target_unique")?.options.partialFilterExpression,
+    { status: "open" },
   );
 
   assert.deepEqual(
@@ -71,6 +76,14 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
     },
   );
   assert.deepEqual(
+    databaseIndexes.find((index) => index.options.name === "reports_status_newest_first"),
+    {
+      collection: "reports",
+      keys: { status: 1, createdAt: -1, _id: -1 },
+      options: { name: "reports_status_newest_first" },
+    },
+  );
+  assert.deepEqual(
     databaseIndexes.find((index) => index.options.name === "push_subscriptions_user"),
     {
       collection: "pushSubscriptions",
@@ -106,6 +119,7 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
       [{ senderId: 1, clientId: 1 }, "messages_sender_client_unique"],
       [{ senderId: 1, recipientId: 1, createdAt: -1, _id: -1 }, "messages_conversation_newest_first"],
       [{ recipientId: 1, isRead: 1, senderId: 1 }, "messages_recipient_is_read_by_sender"],
+      [{ groupId: 1, createdAt: -1, _id: -1 }, "messages_group_newest_first"],
     ],
   );
   assert.deepEqual(
@@ -122,6 +136,7 @@ test("database indexes cover documented uniqueness and expiry rules", () => {
   assert.deepEqual(
     ttlIndexes.map(({ collection, keys, options }) => [collection, keys, options.expireAfterSeconds]),
     [
+      ["reports", { purgeAt: 1 }, 0],
       ["sessions", { expiresAt: 1 }, 0],
       ["passwordResets", { expiresAt: 1 }, 0],
       ["socketTickets", { expiresAt: 1 }, 0],
@@ -138,6 +153,9 @@ test("startup creates every declared database index", async () => {
         createdIndexes.push({ collection, keys, options });
         return "created";
       },
+      listIndexes: () => ({ toArray: async () => [] }),
+      dropIndex: async () => "dropped",
+      updateMany: async () => ({ acknowledged: true, matchedCount: 0, modifiedCount: 0 }),
     }),
   } as unknown as Db;
 
@@ -146,5 +164,34 @@ test("startup creates every declared database index", async () => {
   assert.deepEqual(
     createdIndexes,
     databaseIndexes.map(({ collection, keys, options }) => ({ collection, keys, options })),
+  );
+});
+
+test("startup replaces the all-time report duplicate index with an open-report-only index", async () => {
+  const droppedIndexes: string[] = [];
+  const createdIndexes: Array<{ collection: string; keys: unknown; options: unknown }> = [];
+  const reportBackfills: Array<{ filter: unknown; update: unknown }> = [];
+  const database = {
+    collection: (collection: string) => ({
+      createIndex: async (keys: unknown, options: unknown) => {
+        createdIndexes.push({ collection, keys, options });
+        return "created";
+      },
+      listIndexes: () => ({ toArray: async () => collection === "reports" ? [{ name: "reports_reporter_target_unique", unique: true }] : [] }),
+      dropIndex: async (name: string) => { droppedIndexes.push(name); return "dropped"; },
+      updateMany: async (filter: unknown, update: unknown) => { reportBackfills.push({ filter, update }); return { acknowledged: true, matchedCount: 0, modifiedCount: 0 }; },
+    }),
+  } as unknown as Db;
+
+  await ensureDatabaseIndexes(database);
+
+  assert.deepEqual(droppedIndexes, ["reports_reporter_target_unique"]);
+  assert.deepEqual(reportBackfills, [{
+    filter: { purgeAt: { $exists: false } },
+    update: [{ $set: { purgeAt: { $add: [{ $ifNull: ["$reviewedAt", "$createdAt"] }, 604_800_000] } } }],
+  }]);
+  assert.deepEqual(
+    createdIndexes.find((index) => (index.options as { name?: string }).name === "reports_reporter_target_unique")?.options,
+    { name: "reports_reporter_target_unique", unique: true, partialFilterExpression: { status: "open" } },
   );
 });

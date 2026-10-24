@@ -1,5 +1,5 @@
 import type { Db, Document, IndexSpecification } from "mongodb";
-import { collectionNames } from "./documents";
+import { collectionNames, REPORT_RETENTION_MS, type ReportDocument } from "./documents";
 
 interface DatabaseIndexDefinition {
   collection: string;
@@ -136,6 +136,25 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "admin_audit_newest_first" },
   },
   {
+    collection: collectionNames.reports,
+    keys: { reporterId: 1, targetType: 1, targetId: 1 },
+    options: {
+      name: "reports_reporter_target_unique",
+      unique: true,
+      partialFilterExpression: { status: "open" },
+    },
+  },
+  {
+    collection: collectionNames.reports,
+    keys: { status: 1, createdAt: -1, _id: -1 },
+    options: { name: "reports_status_newest_first" },
+  },
+  {
+    collection: collectionNames.reports,
+    keys: { purgeAt: 1 },
+    options: { name: "reports_purge_at_ttl", expireAfterSeconds: 0 },
+  },
+  {
     collection: collectionNames.shares,
     keys: { authorId: 1, createdAt: -1, _id: -1 },
     options: { name: "shares_author_newest_first" },
@@ -181,6 +200,16 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
     options: { name: "messages_recipient_is_read_by_sender" },
   },
   {
+    collection: collectionNames.messages,
+    keys: { groupId: 1, createdAt: -1, _id: -1 },
+    options: { name: "messages_group_newest_first", partialFilterExpression: { groupId: { $exists: true } } },
+  },
+  {
+    collection: collectionNames.groupConversations,
+    keys: { participantIds: 1, updatedAt: -1 },
+    options: { name: "group_conversations_participants_updated" },
+  },
+  {
     collection: collectionNames.sessions,
     keys: { expiresAt: 1 },
     options: { name: "sessions_expires_at_ttl", expireAfterSeconds: 0 },
@@ -213,6 +242,18 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
 ];
 
 export async function ensureDatabaseIndexes(database: Db): Promise<void> {
+  const reports = database.collection<ReportDocument>(collectionNames.reports);
+  const existingReportIndexes = await reports.listIndexes().toArray();
+  const previousAllTimeUniqueIndex = existingReportIndexes.find((index) =>
+    index.name === "reports_reporter_target_unique" && index.unique === true &&
+    !(index.partialFilterExpression && "status" in index.partialFilterExpression && index.partialFilterExpression.status === "open"),
+  );
+  if (previousAllTimeUniqueIndex) await reports.dropIndex(previousAllTimeUniqueIndex.name);
+  await reports.updateMany(
+    { purgeAt: { $exists: false } },
+    [{ $set: { purgeAt: { $add: [{ $ifNull: ["$reviewedAt", "$createdAt"] }, REPORT_RETENTION_MS] } } }],
+  );
+
   for (const index of databaseIndexes) {
     await database.collection(index.collection).createIndex(index.keys, index.options);
   }

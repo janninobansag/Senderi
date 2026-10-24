@@ -22,19 +22,19 @@ export interface DownloadedPostPhoto {
 }
 
 export interface PostPhotoStorage {
-  upload(buffer: Buffer, publicId: string): Promise<UploadedPostPhoto>;
+  upload(buffer: Buffer, publicId: string, folder?: string): Promise<UploadedPostPhoto>;
   destroy(assetId: string): Promise<void>;
   download(assetId: string): Promise<DownloadedPostPhoto>;
 }
 
 export async function optimizePostPhoto(file: { buffer: Buffer; size: number }): Promise<Buffer> {
   if (file.size > POST_PHOTO_MAX_BYTES) {
-    throw new HttpError(413, "file_too_large", "Post photos must be 5 MB or smaller.");
+    throw new HttpError(413, "file_too_large", "Images must be 5 MB or smaller.");
   }
 
   const detected = await fileTypeFromBuffer(file.buffer);
   if (!detected || !POST_PHOTO_MIME_TYPES.includes(detected.mime as (typeof POST_PHOTO_MIME_TYPES)[number])) {
-    throw new HttpError(400, "invalid_file_type", "Post photos must be JPEG, PNG, or WebP files.");
+    throw new HttpError(400, "invalid_file_type", "Images must be JPEG, PNG, or WebP files.");
   }
 
   try {
@@ -57,7 +57,7 @@ export async function optimizePostPhoto(file: { buffer: Buffer; size: number }):
     // Avoid increasing storage for already-small or highly compressed images.
     return optimized.length < file.buffer.length ? optimized : file.buffer;
   } catch {
-    throw new HttpError(400, "invalid_file_type", "Post photos must be valid JPEG, PNG, or WebP images.");
+    throw new HttpError(400, "invalid_file_type", "Images must be valid JPEG, PNG, or WebP files.");
   }
 }
 
@@ -67,20 +67,20 @@ function getConfiguredCloudinary() {
   const apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
 
   if (!cloudName || !apiKey || !apiSecret) {
-    throw new Error("Cloudinary credentials are required for post photo storage.");
+    throw new Error("Cloudinary credentials are required for private image storage.");
   }
 
   cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret });
   return cloudinary;
 }
 
-function uploadAuthenticatedImage(buffer: Buffer, publicId: string): Promise<UploadedPostPhoto> {
+function uploadAuthenticatedImage(buffer: Buffer, publicId: string, folder = "senderi/posts"): Promise<UploadedPostPhoto> {
   const configured = getConfiguredCloudinary();
 
   return new Promise((resolve, reject) => {
     const stream = configured.uploader.upload_stream(
       {
-        folder: "senderi/posts",
+        folder,
         public_id: publicId,
         resource_type: "image",
         type: "authenticated",

@@ -58,11 +58,12 @@ function createMemoryDatabase(): MemoryDatabase {
       },
       updateOne: async (
         { _id }: { _id: ObjectId },
-        { $set }: { $set: Partial<UserDocument> },
+        { $set, $unset }: { $set?: Partial<UserDocument>; $unset?: Partial<Record<keyof UserDocument, string>> },
       ) => {
         const user = users.find((storedUser) => storedUser._id.equals(_id));
         if (!user) return { acknowledged: true, matchedCount: 0, modifiedCount: 0 };
-        Object.assign(user, $set);
+        if ($set) Object.assign(user, $set);
+        for (const key of Object.keys($unset ?? {}) as Array<keyof UserDocument>) delete user[key];
         return { acknowledged: true, matchedCount: 1, modifiedCount: 1 };
       },
     },
@@ -78,10 +79,10 @@ function createMemoryDatabase(): MemoryDatabase {
         if (index >= 0) sessions.splice(index, 1);
         return { acknowledged: true, deletedCount: index >= 0 ? 1 : 0 };
       },
-      deleteMany: async ({ userId }: { userId: ObjectId }) => {
+      deleteMany: async ({ userId, _id }: { userId: ObjectId; _id?: { $ne: ObjectId } }) => {
         const initialLength = sessions.length;
         for (let index = sessions.length - 1; index >= 0; index -= 1) {
-          if (sessions[index]!.userId.equals(userId)) sessions.splice(index, 1);
+          if (sessions[index]!.userId.equals(userId) && (!_id || !sessions[index]!._id.equals(_id.$ne))) sessions.splice(index, 1);
         }
         return { acknowledged: true, deletedCount: initialLength - sessions.length };
       },
@@ -155,6 +156,12 @@ function createMemoryDatabase(): MemoryDatabase {
         return { acknowledged: true, matchedCount: 0, modifiedCount: 0, upsertedCount: 1 };
       },
       findOne: async ({ _id }: { _id: string }) => rateLimits.find((counter) => counter._id === _id) ?? null,
+    },
+    socketTickets: {
+      deleteMany: async () => ({ acknowledged: true, deletedCount: 0 }),
+    },
+    pushSubscriptions: {
+      deleteMany: async () => ({ acknowledged: true, deletedCount: 0 }),
     },
   };
 
@@ -363,6 +370,31 @@ test("login verifies a password and the session survives a separate request", as
   assert.equal(currentUser.body.user.email, "member@example.com");
   assert.equal(currentUser.body.user.displayName, "Member Example");
   assert.equal("passwordHash" in currentUser.body.user, false);
+});
+
+test("signing in reactivates a deactivated account and revokes its old sessions", async () => {
+  const database = createMemoryDatabase();
+  const user = await addUser(database);
+  user.deactivatedAt = new Date("2026-10-23T00:00:00.000Z");
+  database.sessions.push({
+    _id: new ObjectId(),
+    userId: user._id,
+    tokenHash: hashSessionToken("old-deactivated-session"),
+    createdAt: new Date("2026-10-23T00:00:00.000Z"),
+    expiresAt: new Date("2026-10-30T00:00:00.000Z"),
+  });
+  const app = createTestApp(database);
+  const agent = request.agent(app);
+
+  const login = await agent.post("/api/auth/login")
+    .set("Origin", "http://localhost:5173")
+    .send({ email: user.email, password: "correct horse battery staple" });
+
+  assert.equal(login.status, 200);
+  assert.equal(user.deactivatedAt, undefined);
+  assert.equal(database.sessions.length, 1);
+  assert.equal(database.sessions[0]!.tokenHash, hashSessionToken("test-session-token"));
+  assert.equal((await agent.get("/api/auth/me")).status, 200);
 });
 
 test("suspended accounts cannot sign in or continue an existing session", async () => {

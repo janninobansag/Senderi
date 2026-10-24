@@ -3,13 +3,16 @@ import { ObjectId, type Db } from "mongodb";
 import { Server as SocketServer, type Socket } from "socket.io";
 import type {
   MessageAckEvent,
+  MessageDeletedEvent,
   MessageErrorEvent,
+  GroupMessageSendRequest,
   MessageNewEvent,
   MessageSendRequest,
+  MessageUpdatedEvent,
 } from "./contracts";
 import { consumeSocketTicket } from "../auth/socket-ticket";
 import { getDatabase as getConnectedDatabase } from "../db/client";
-import { collectionNames, type MessageDocument, type SessionDocument, type UserDocument } from "../db/documents";
+import { collectionNames, type GroupConversationDocument, type MessageDocument, type SessionDocument, type UserDocument } from "../db/documents";
 import { areFriends } from "../friends/are-friends";
 import { sendPushToUser } from "../notifications/push";
 import { addPresenceConnection, removePresenceConnection } from "./presence";
@@ -17,11 +20,14 @@ import { z } from "zod";
 
 interface ClientToServerEvents {
   "message:send": (payload: MessageSendRequest) => void;
+  "group-message:send": (payload: GroupMessageSendRequest) => void;
 }
 
 interface ServerToClientEvents {
   "message:ack": (payload: MessageAckEvent) => void;
   "message:new": (payload: MessageNewEvent) => void;
+  "message:updated": (payload: MessageUpdatedEvent) => void;
+  "message:deleted": (payload: MessageDeletedEvent) => void;
   "message:error": (payload: MessageErrorEvent) => void;
 }
 
@@ -52,6 +58,11 @@ const messageSendSchema = z.object({
   clientId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
   text: z.string().trim().min(1).max(2_000),
 }).strict();
+const groupMessageSendSchema = z.object({
+  groupId: z.string().regex(/^[a-f\d]{24}$/i),
+  clientId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
+  text: z.string().trim().min(1).max(2_000),
+}).strict();
 
 const defaultDependencies: SocketServerDependencies = {
   getDatabase: getConnectedDatabase,
@@ -72,8 +83,11 @@ function toMessageResponse(message: MessageDocument): MessageAckEvent["message"]
     id: message._id.toHexString(),
     senderId: message.senderId.toHexString(),
     recipientId: message.recipientId.toHexString(),
+    ...(message.groupId ? { groupId: message.groupId.toHexString() } : {}),
     text: message.text,
     createdAt: message.createdAt.toISOString(),
+    ...(message.photoAssetId ? { photoUrl: `/api/chats/messages/${message._id.toHexString()}/photo` } : {}),
+    ...(message.editedAt ? { editedAt: message.editedAt.toISOString() } : {}),
   };
 }
 
@@ -101,7 +115,98 @@ function matchesExistingMessage(
   recipientId: ObjectId,
   text: string,
 ): boolean {
-  return message.recipientId.equals(recipientId) && message.text === text;
+  return !message.groupId && message.recipientId.equals(recipientId) && message.text === text;
+}
+
+async function sendGroupMessage(
+  socket: SenderSocket,
+  io: RealtimeServer,
+  dependencies: SocketServerDependencies,
+  payload: unknown,
+): Promise<void> {
+  const clientId = extractClientId(payload);
+  const parsed = groupMessageSendSchema.safeParse(payload);
+  if (!parsed.success) {
+    emitError(socket, "invalid_message", "Message payload is invalid.", clientId);
+    return;
+  }
+  const { groupId: groupIdValue, clientId: validatedClientId, text } = parsed.data;
+  const groupId = new ObjectId(groupIdValue);
+  const senderId = socket.data.userId;
+  try {
+    const database = dependencies.getDatabase();
+    const now = dependencies.now();
+    const activeSession = await database.collection<SessionDocument>(collectionNames.sessions).findOne({
+      _id: socket.data.sessionId,
+      userId: senderId,
+      expiresAt: { $gt: now },
+    });
+    if (!activeSession) {
+      emitError(socket, "unauthorized", "Authentication is required.", validatedClientId);
+      socket.disconnect(true);
+      return;
+    }
+    const groups = database.collection<GroupConversationDocument>(collectionNames.groupConversations);
+    const group = await groups.findOne({ _id: groupId, participantIds: senderId });
+    if (!group) {
+      emitError(socket, "not_in_group", "You are no longer a member of this group.", validatedClientId);
+      return;
+    }
+    const messages = database.collection<MessageDocument>(collectionNames.messages);
+    const existing = await messages.findOne({ senderId, clientId: validatedClientId });
+    if (existing) {
+      if (!existing.groupId?.equals(groupId) || existing.text !== text) {
+        emitError(socket, "client_id_conflict", "This client ID was already used for a different message.", validatedClientId);
+        return;
+      }
+      socket.emit("message:ack", { clientId: validatedClientId, message: toMessageResponse(existing) });
+      return;
+    }
+    const messageDocument: MessageDocument = {
+      _id: new ObjectId(),
+      senderId,
+      recipientId: senderId,
+      groupId,
+      clientId: validatedClientId,
+      text,
+      createdAt: now,
+      isRead: true,
+    };
+    let storedMessage: MessageDocument;
+    let wasInserted = false;
+    try {
+      await messages.insertOne(messageDocument);
+      storedMessage = messageDocument;
+      wasInserted = true;
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+      const duplicate = await messages.findOne({ senderId, clientId: validatedClientId });
+      if (!duplicate?.groupId?.equals(groupId) || duplicate.text !== text) {
+        emitError(socket, "client_id_conflict", "This client ID was already used for a different message.", validatedClientId);
+        return;
+      }
+      storedMessage = duplicate;
+    }
+    const message = toMessageResponse(storedMessage);
+    socket.emit("message:ack", { clientId: validatedClientId, message });
+    if (!wasInserted) return;
+    await groups.updateOne({ _id: groupId }, { $set: { updatedAt: now } });
+    for (const participantId of group.participantIds) {
+      if (!participantId.equals(senderId)) io.to(userRoom(participantId)).emit("message:new", { message });
+    }
+    const sender = await database.collection<UserDocument>(collectionNames.users).findOne({ _id: senderId }).catch(() => null);
+    const senderName = sender?.displayName.trim() || "Someone";
+    for (const participantId of group.participantIds.filter((id) => !id.equals(senderId))) {
+      void (dependencies.sendPush ?? sendPushToUser)(database, participantId, {
+        title: `New message in ${group.name}`,
+        body: `From: ${senderName}`,
+        url: `/messages?group=${groupId.toHexString()}`,
+        tag: `group-message-${groupId.toHexString()}`,
+      });
+    }
+  } catch {
+    emitError(socket, "message_failed", "Message could not be sent. Please retry.", validatedClientId);
+  }
 }
 
 async function sendMessage(
@@ -259,6 +364,9 @@ export function createSocketServer(
     });
     socket.on("message:send", (payload) => {
       void sendMessage(socket, io, dependencies, payload);
+    });
+    socket.on("group-message:send", (payload) => {
+      void sendGroupMessage(socket, io, dependencies, payload);
     });
   });
 

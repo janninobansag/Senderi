@@ -7,6 +7,7 @@ import request from "supertest";
 import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
 import type {
   FriendshipDocument,
+  GroupConversationDocument,
   MessageDocument,
   SessionDocument,
   SocketTicketDocument,
@@ -20,7 +21,8 @@ import { orderedUserPair } from "../src/friends/are-friends";
 import { createAuthRouter } from "../src/routes/auth";
 import { createChatsRouter } from "../src/routes/chats";
 import type { PushNotificationPayload } from "../src/notifications/push";
-import type { MessageAckEvent, MessageErrorEvent, MessageNewEvent, MessageSendRequest } from "../src/socket/contracts";
+import type { GroupMessageSendRequest, MessageAckEvent, MessageErrorEvent, MessageNewEvent, MessageSendRequest } from "../src/socket/contracts";
+import { collectionNames } from "../src/db/documents";
 import { createSocketServer, disconnectUserSockets } from "../src/socket/server";
 import { isUserOnline } from "../src/socket/presence";
 
@@ -33,6 +35,7 @@ interface SocketTestData {
   sessions: SessionDocument[];
   socketTickets: SocketTicketDocument[];
   friendships: FriendshipDocument[];
+  groupConversations: GroupConversationDocument[];
   messages: MessageDocument[];
 }
 
@@ -46,6 +49,7 @@ interface ServerEvents {
 
 interface ClientEvents {
   "message:send": (payload: MessageSendRequest) => void;
+  "group-message:send": (payload: GroupMessageSendRequest) => void;
 }
 
 type TestClient = ClientSocket<ServerEvents, ClientEvents>;
@@ -135,6 +139,19 @@ function createDatabase(data: SocketTestData): Db {
             ) ?? null,
         };
       }
+      if (name === collectionNames.groupConversations) {
+        return {
+          findOne: async (filter: { _id: ObjectId; participantIds: ObjectId }) => data.groupConversations.find((group) =>
+            group._id.equals(filter._id) && group.participantIds.some((id) => id.equals(filter.participantIds)),
+          ) ?? null,
+          updateOne: async (filter: { _id: ObjectId }, update: { $set: { updatedAt: Date } }) => {
+            const group = data.groupConversations.find((item) => item._id.equals(filter._id));
+            if (!group) return { matchedCount: 0 };
+            group.updatedAt = update.$set.updatedAt;
+            return { matchedCount: 1 };
+          },
+        };
+      }
       if (name === "messages") {
         return {
           findOne: async (filter: { senderId: ObjectId; clientId: string }) =>
@@ -175,6 +192,15 @@ async function createFixture(): Promise<SocketFixture> {
     sessions: [sessionFor(alice, "alice-session"), sessionFor(bob, "bob-session")],
     socketTickets: [],
     friendships: [friendshipFor(alice, bob)],
+    groupConversations: [{
+      _id: new ObjectId("000000000000000000000010"),
+      name: "Test group",
+      createdBy: alice._id,
+      participantIds: [alice._id, bob._id],
+      createdAt: FIXED_NOW,
+      updatedAt: FIXED_NOW,
+      readAtByUser: {},
+    }],
     messages: [],
   };
   const database = createDatabase(data);
@@ -499,6 +525,39 @@ test("message sends persist once before ack and new events, including duplicate 
     assert.equal(invalidError.code, "invalid_message");
     assert.equal(invalidError.clientId, "blank-text");
     assert.equal(fixture.data.messages.length, 1);
+  } finally {
+    closeClients(...[alice, bob].filter((socket): socket is TestClient => socket !== undefined));
+    await fixture.close();
+  }
+});
+
+test("group messages are persisted and delivered to every other group member", async () => {
+  const fixture = await createFixture();
+  let alice: TestClient | undefined;
+  let bob: TestClient | undefined;
+  try {
+    const [aliceTicket, bobTicket] = await Promise.all([
+      issueTicket(fixture, "alice-session"),
+      issueTicket(fixture, "bob-session"),
+    ]);
+    alice = openClient(fixture, aliceTicket.body.ticket as string);
+    bob = openClient(fixture, bobTicket.body.ticket as string);
+    await Promise.all([waitForConnect(alice), waitForConnect(bob)]);
+
+    const groupId = fixture.data.groupConversations[0]!._id.toHexString();
+    const payload: GroupMessageSendRequest = { groupId, clientId: "group-message-0001", text: "Hello, group!" };
+    const acknowledgement = waitForAck(alice);
+    const delivery = waitForNewMessage(bob);
+    alice.emit("group-message:send", payload);
+    const [ack, received] = await Promise.all([acknowledgement, delivery]);
+
+    assert.equal(fixture.data.messages.length, 1);
+    assert.equal(fixture.data.messages[0]?.groupId?.toHexString(), groupId);
+    assert.equal(ack.message.groupId, groupId);
+    assert.equal(received.message.groupId, groupId);
+    assert.equal(received.message.text, "Hello, group!");
+    assert.equal(fixture.pushNotifications.length, 1);
+    assert.equal(fixture.pushNotifications[0]?.recipientId.toHexString(), fixture.data.users[1]?._id.toHexString());
   } finally {
     closeClients(...[alice, bob].filter((socket): socket is TestClient => socket !== undefined));
     await fixture.close();

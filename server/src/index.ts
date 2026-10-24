@@ -31,6 +31,7 @@ async function startServer(): Promise<void> {
 
   const server = createServer(app);
   const socketServer = createSocketServer(server);
+  app.set("realtimeServer", socketServer);
   server.listen(port, "0.0.0.0");
   try {
     await once(server, "listening");
