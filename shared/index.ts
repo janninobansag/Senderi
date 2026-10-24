@@ -311,6 +311,8 @@ export interface Message {
   /** Authenticated route for a private chat image, when this message has one. */
   photoUrl?: string;
   editedAt?: string;
+  /** Present on messages authored by the viewer after a recipient reads them. */
+  isRead?: boolean;
   /** Included in history only when the current viewer authored this message. */
   clientId?: string;
 }
@@ -321,10 +323,16 @@ export type ChatUnreadConversation =
   | { friendId: UserId; unreadCount: number }
   | { groupId: string; unreadCount: number };
 
+export type GroupMemberRole = "owner" | "admin" | "member";
+
+export interface GroupParticipant extends User {
+  role: GroupMemberRole;
+}
+
 export interface GroupConversation {
   id: string;
   name: string;
-  participants: User[];
+  participants: GroupParticipant[];
   createdAt: string;
   unreadCount: number;
   latestMessage?: Message;
@@ -378,6 +386,14 @@ export interface MessageDeletedEvent {
   senderId: UserId;
   recipientId: UserId;
   groupId?: string;
+}
+
+/** Delivered to message authors when the recipient opens a conversation. */
+export interface MessageReadEvent {
+  conversationId: string;
+  readAt: string;
+  /** Direct chats can provide exact unread message IDs; group chats use readAt. */
+  messageIds?: string[];
 }
 
 export interface MessageErrorEvent {

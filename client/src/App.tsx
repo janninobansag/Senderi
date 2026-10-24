@@ -865,7 +865,6 @@ function HeaderActions() {
           <div id={messagesPanelId} className="header-messages-panel" role="dialog" aria-label="Messages" hidden={!isMessagesOpen}>
             <div className="header-messages-heading">
               <h2>Chats</h2>
-              <Link className="header-messages-compose" to="/friends" aria-label="Find someone to message" title="New message" onClick={() => setIsMessagesOpen(false)}>＋</Link>
             </div>
             <label className="header-messages-search">
               <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 5 5" /></svg>
