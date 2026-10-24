@@ -241,18 +241,32 @@ export const databaseIndexes: readonly DatabaseIndexDefinition[] = [
   },
 ];
 
+function isNamespaceNotFound(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 26;
+}
+
 export async function ensureDatabaseIndexes(database: Db): Promise<void> {
   const reports = database.collection<ReportDocument>(collectionNames.reports);
-  const existingReportIndexes = await reports.listIndexes().toArray();
+  let reportCollectionExists = true;
+  let existingReportIndexes;
+  try {
+    existingReportIndexes = await reports.listIndexes().toArray();
+  } catch (error) {
+    if (!isNamespaceNotFound(error)) throw error;
+    reportCollectionExists = false;
+    existingReportIndexes = [];
+  }
   const previousAllTimeUniqueIndex = existingReportIndexes.find((index) =>
     index.name === "reports_reporter_target_unique" && index.unique === true &&
     !(index.partialFilterExpression && "status" in index.partialFilterExpression && index.partialFilterExpression.status === "open"),
   );
   if (previousAllTimeUniqueIndex) await reports.dropIndex(previousAllTimeUniqueIndex.name);
-  await reports.updateMany(
-    { purgeAt: { $exists: false } },
-    [{ $set: { purgeAt: { $add: [{ $ifNull: ["$reviewedAt", "$createdAt"] }, REPORT_RETENTION_MS] } } }],
-  );
+  if (reportCollectionExists) {
+    await reports.updateMany(
+      { purgeAt: { $exists: false } },
+      [{ $set: { purgeAt: { $add: [{ $ifNull: ["$reviewedAt", "$createdAt"] }, REPORT_RETENTION_MS] } } }],
+    );
+  }
 
   for (const index of databaseIndexes) {
     await database.collection(index.collection).createIndex(index.keys, index.options);
