@@ -174,6 +174,7 @@ button { cursor: pointer; }
 .post-composer-input:focus { background: transparent; }
 .post-composer-expanded .post-composer-inline { align-items: flex-start; }
 .post-composer-expanded .post-composer-avatar, .post-composer-expanded .post-composer-actions { margin-top: 2px; }
+.post-composer-expanded .post-composer-actions { position: relative; z-index: 42; }
 .post-composer-expanded .post-composer-input { min-height: 82px; padding: 10px 12px; border-radius: 0; }
 .post-composer-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; }
 .post-composer-actions .post-composer-options-trigger { height: 36px; width: 36px; border: 0; background: transparent; }
@@ -1129,6 +1130,7 @@ button { cursor: pointer; }
 .header-message-requests small, .messages-page-requests small { overflow: hidden; color: var(--color-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .header-message-requests > span:last-child, .messages-page-requests > span:last-child { color: var(--color-muted); font-size: 23px; }
 .header-messages-list { min-height: 80px; flex: 1; overflow-y: auto; padding: 3px 7px 8px; }
+.header-messages-section-label { margin: 6px 10px 3px; color: var(--color-muted); font-size: 10px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
 .header-message-row { display: flex; width: 100%; min-width: 0; align-items: center; gap: 11px; border: 0; border-radius: 13px; background: transparent; padding: 9px 8px; color: var(--color-ink); text-align: left; }
 .header-message-row:hover, .header-message-row:focus-visible { background: var(--color-canvas); }
 .header-message-avatar { display: grid; height: 52px; width: 52px; flex: 0 0 52px; place-items: center; overflow: hidden; border-radius: 50%; background: var(--color-accent-soft); color: var(--color-accent-dark); font-size: 17px; font-weight: 800; }
@@ -1452,6 +1454,10 @@ button { cursor: pointer; }
 .verified-account-badge img { display: block; width: 100%; height: 100%; object-fit: contain; }
 
 .app-shell { display: flex; min-height: 100vh; min-height: 100dvh; flex-direction: column; }
+.app-shell-messages { height: 100dvh; overflow: hidden; }
+.app-shell-messages .app-site-header { flex: 0 0 72px; }
+.app-shell-messages .app-route-content { min-height: 0; flex: 1 1 auto; overflow: hidden; }
+.app-shell-messages .messages-shell { height: 100%; min-height: 0; }
 .app-route-content { flex: 1 0 auto; }
 .site-footer { flex: 0 0 auto; border-top: 1px solid var(--color-line); background: var(--color-surface); }
 .site-footer-inner { display: flex; width: min(100%, 1200px); min-height: 48px; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; margin-inline: auto; padding: 11px 16px; }
@@ -1460,6 +1466,7 @@ button { cursor: pointer; }
 .site-footer-links a { color: var(--color-muted); font-size: 11px; font-weight: 500; text-decoration: none; }
 .site-footer-links a:hover { color: var(--color-accent-dark); text-decoration: underline; text-underline-offset: 3px; }
 .site-footer a:focus-visible { border-radius: 3px; outline: 2px solid var(--color-accent); outline-offset: 3px; }
+
 .information-page-wrap { width: min(100%, 880px); margin-inline: auto; padding: 36px 20px 56px; }
 .information-page { padding: clamp(20px, 4vw, 42px); }
 .information-page h1 { margin: 12px 0 8px; color: var(--color-ink); font-family: var(--font-display); font-size: clamp(26px, 4vw, 38px); font-weight: 700; letter-spacing: -.04em; }
