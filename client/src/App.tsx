@@ -2,8 +2,9 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type R
 import { createPortal } from "react-dom";
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
-import type { ChatUnreadResponse, FriendListResponse, Message, MessageHistoryResponse, NotificationItem, NotificationsResponse, Post, PostListResponse, SocketTicketResponse, User, UserSearchResponse } from "../../shared";
+import type { ChatUnreadResponse, FriendListResponse, GroupConversation, GroupConversationsResponse, Message, MessageHistoryResponse, NotificationItem, NotificationsResponse, Post, PostListResponse, SocketTicketResponse, User, UserSearchResponse } from "../../shared";
 import { apiFetch } from "./api/client";
+import { GroupChatAvatar } from "./chat/chat-avatars";
 import { CHAT_UNREAD_CHANGED_EVENT, notifyChatUnreadChanged } from "./chat/unread-events";
 import { lastActiveLabel, useFriendPresence } from "./chat/use-friend-presence";
 import { CompactRowsSkeleton, SessionSkeleton, SkeletonBlock, SkeletonRegion } from "./components/Skeletons";
@@ -116,7 +117,7 @@ export default function App() {
   ));
 
   return (
-    <div className={`app-shell min-h-screen bg-canvas text-ink${user ? " app-shell-authenticated" : ""}${showSidebarFooter ? " app-shell-sidebar-footer" : ""}`}>
+    <div className={`app-shell min-h-screen bg-canvas text-ink${user ? " app-shell-authenticated" : ""}${showSidebarFooter ? " app-shell-sidebar-footer" : ""}${location.pathname === "/messages" ? " app-shell-messages" : ""}`}>
       <header className="app-site-header relative z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-xl">
         <div className="app-header-inner flex h-[72px] w-full items-center justify-between px-5 sm:px-8">
           <div className="header-brand-group">
@@ -159,7 +160,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
-      <SiteFooter placement="global" />
+      {location.pathname !== "/messages" && <SiteFooter placement="global" />}
     </div>
   );
 }
@@ -417,6 +418,7 @@ function HeaderActions() {
   const [messageSearch, setMessageSearch] = useState("");
   const [messageFilter, setMessageFilter] = useState<"all" | "unread">("all");
   const [messageFriends, setMessageFriends] = useState<User[]>([]);
+  const [messageGroups, setMessageGroups] = useState<GroupConversation[]>([]);
   const [messagePreviews, setMessagePreviews] = useState<Record<string, Message | null>>({});
   const [messageUnreadCounts, setMessageUnreadCounts] = useState<Record<string, number>>({});
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -638,10 +640,17 @@ function HeaderActions() {
     if (!isMessagesOpen || !currentUserId) return;
     let active = true;
     setMessagesLoading(true);
-    void apiFetch<FriendListResponse>("/api/friends?limit=12").then(async (result) => {
+    void Promise.all([
+      apiFetch<FriendListResponse>("/api/friends?limit=12").catch(() => null),
+      apiFetch<GroupConversationsResponse>("/api/chats/groups").catch(() => null),
+    ]).then(async ([friendResult, groupResult]) => {
       if (!active) return;
-      setMessageFriends(result.items);
-      const summaries = await Promise.all(result.items.map(async (friend) => {
+      const friends = friendResult?.items ?? [];
+      setMessageFriends(friends);
+      setMessageGroups((groupResult?.items ?? []).sort((left, right) =>
+        (right.latestMessage?.createdAt ?? right.createdAt).localeCompare(left.latestMessage?.createdAt ?? left.createdAt),
+      ));
+      const summaries = await Promise.all(friends.map(async (friend) => {
         try {
           const history = await apiFetch<MessageHistoryResponse>(`/api/chats/${encodeURIComponent(friend.id)}/messages?limit=1`);
           return [friend.id, history.items[0] ?? null] as const;
@@ -652,12 +661,10 @@ function HeaderActions() {
       if (active) {
         const previews = Object.fromEntries(summaries);
         setMessagePreviews(previews);
-        setMessageFriends([...result.items].sort((left, right) =>
+        setMessageFriends([...friends].sort((left, right) =>
           (previews[right.id]?.createdAt ?? "").localeCompare(previews[left.id]?.createdAt ?? ""),
         ));
       }
-    }).catch(() => {
-      if (active) setMessageFriends([]);
     }).finally(() => {
       if (active) setMessagesLoading(false);
     });
@@ -828,6 +835,14 @@ function HeaderActions() {
     return text.toLocaleLowerCase().includes(messageSearch.trim().toLocaleLowerCase()) &&
       (messageFilter === "all" || (messageUnreadCounts[friend.id] ?? 0) > 0);
   });
+  const filteredMessageGroups = messageGroups.filter((group) => {
+    const preview = group.latestMessage;
+    const searchableText = `${group.name} ${group.participants.map((participant) => participant.displayName).join(" ")} ${preview?.text ?? ""}`;
+    return searchableText.toLocaleLowerCase().includes(messageSearch.trim().toLocaleLowerCase()) &&
+      (messageFilter === "all" || (messageUnreadCounts[`group:${group.id}`] ?? group.unreadCount) > 0);
+  });
+  const hasFilteredMessages = filteredMessageFriends.length > 0 || filteredMessageGroups.length > 0;
+  const hasAnyMessages = messageFriends.length > 0 || messageGroups.length > 0;
   const { presenceById, now: presenceNow } = useFriendPresence(messageFriends.map((friend) => friend.id), isMessagesOpen);
   const unreadMessageCount = Object.values(messageUnreadCounts).reduce((total, count) => total + count, 0);
 
@@ -877,20 +892,46 @@ function HeaderActions() {
             </div>
             <div className="header-messages-list" aria-live="polite">
               {messagesLoading ? <CompactRowsSkeleton message="Loading chats" count={4} /> : null}
-              {!messagesLoading && filteredMessageFriends.length === 0 && <p className="header-messages-empty">{messageFilter === "unread" ? "No unread messages." : messageFriends.length === 0 ? "Your chats will appear here." : "No chats match your search."}</p>}
-              {!messagesLoading && filteredMessageFriends.map((friend) => {
-                const preview = messagePreviews[friend.id];
-                const presence = presenceById[friend.id];
-                const lastActive = lastActiveLabel(presence, presenceNow);
-                return (
-                  <button className="header-message-row" key={friend.id} type="button" onClick={() => { setIsMessagesOpen(false); navigate(`/messages?friend=${encodeURIComponent(friend.id)}`); }}>
-                    <span className="chat-presence-avatar"><span className="header-message-avatar">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" /> : friend.displayName.trim().charAt(0).toUpperCase()}</span>{presence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
-                    <span className="header-message-copy"><strong>{friend.displayName} <SupporterBadge user={friend} /></strong><span>{preview ? `${preview.senderId === currentUserId ? "You: " : ""}${preview.text}` : "Start a conversation"}</span></span>
-                    {lastActive && <time className="chat-presence-time" dateTime={presence?.lastActiveAt} title="Last active">{lastActive}</time>}
-                    {(messageUnreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${messageUnreadCounts[friend.id]} unread messages`} />}
-                  </button>
-                );
-              })}
+              {!messagesLoading && !hasFilteredMessages && <p className="header-messages-empty">{messageFilter === "unread" ? "No unread messages." : !hasAnyMessages ? "Your chats will appear here." : "No chats match your search."}</p>}
+              {!messagesLoading && filteredMessageGroups.length > 0 && (
+                <section className="header-messages-section" aria-label="Group chats">
+                  <p className="header-messages-section-label">Chats</p>
+                  {filteredMessageGroups.map((group) => {
+                    const preview = group.latestMessage;
+                    const unreadCount = messageUnreadCounts[`group:${group.id}`] ?? group.unreadCount;
+                    const senderName = preview?.senderId === currentUserId
+                      ? "You"
+                      : group.participants.find((participant) => participant.id === preview?.senderId)?.displayName ?? "Member";
+                    const previewText = preview
+                      ? `${senderName}: ${preview.text || (preview.photoUrl ? "Photo" : "Message")}`
+                      : `${group.participants.length} members`;
+                    return (
+                      <button className="header-message-row" key={group.id} type="button" onClick={() => { setIsMessagesOpen(false); navigate(`/messages?group=${encodeURIComponent(group.id)}`); }}>
+                        <GroupChatAvatar name={group.name} />
+                        <span className="header-message-copy"><strong>{group.name}</strong><span>{previewText}</span></span>
+                        {unreadCount > 0 && <span className="chat-unread-dot" role="img" aria-label={`${unreadCount} unread messages`} />}
+                      </button>
+                    );
+                  })}
+                </section>
+              )}
+              {!messagesLoading && filteredMessageFriends.length > 0 && (
+                <section className="header-messages-section" aria-label="Friend chats">
+                  {filteredMessageFriends.map((friend) => {
+                    const preview = messagePreviews[friend.id];
+                    const presence = presenceById[friend.id];
+                    const lastActive = lastActiveLabel(presence, presenceNow);
+                    return (
+                      <button className="header-message-row" key={friend.id} type="button" onClick={() => { setIsMessagesOpen(false); navigate(`/messages?friend=${encodeURIComponent(friend.id)}`); }}>
+                        <span className="chat-presence-avatar"><span className="header-message-avatar">{friend.avatarUrl ? <img src={friend.avatarUrl} alt="" /> : friend.displayName.trim().charAt(0).toUpperCase()}</span>{presence?.isOnline && <span className="chat-online-dot" role="img" aria-label="Online" />}</span>
+                        <span className="header-message-copy"><strong>{friend.displayName} <SupporterBadge user={friend} /></strong><span>{preview ? `${preview.senderId === currentUserId ? "You: " : ""}${preview.text || (preview.photoUrl ? "Photo" : "Message")}` : "Start a conversation"}</span></span>
+                        {lastActive && <time className="chat-presence-time" dateTime={presence?.lastActiveAt} title="Last active">{lastActive}</time>}
+                        {(messageUnreadCounts[friend.id] ?? 0) > 0 && <span className="chat-unread-dot" role="img" aria-label={`${messageUnreadCounts[friend.id]} unread messages`} />}
+                      </button>
+                    );
+                  })}
+                </section>
+              )}
             </div>
             <button className="header-messages-see-all" type="button" onClick={() => { setIsMessagesOpen(false); navigate("/messages"); }}>See all in Messages</button>
           </div>

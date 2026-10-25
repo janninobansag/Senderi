@@ -115,6 +115,10 @@ export function MessagesPage() {
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
+  const requestedGroupId = searchParams.get("group");
+  const requestedFriendId = searchParams.get("friend");
+  const requestedConversationId = requestedGroupId ? `group:${requestedGroupId}` : requestedFriendId;
+
   const conversationsRef = useRef<Record<string, ChatMessage[]>>({});
   const initialFriendIdRef = useRef<string | null>(searchParams.get("friend"));
   const selectedFriendIdRef = useRef<string | null>(null);
@@ -131,6 +135,13 @@ export function MessagesPage() {
   const messageMenuButtonRef = useRef<HTMLButtonElement>(null);
   const messageEditInputRef = useRef<HTMLTextAreaElement>(null);
   const shouldStickToBottomRef = useRef(true);
+
+  useEffect(() => {
+    initialFriendIdRef.current = requestedFriendId;
+    setSelectedFriendId(requestedConversationId);
+    setMobileConversationOpen(Boolean(requestedConversationId));
+    setMobileGroupMembersOpen(false);
+  }, [requestedConversationId]);
 
   const updateConversation = useCallback((friendId: string, update: (messages: ChatMessage[]) => ChatMessage[]) => {
     const nextConversation = update(conversationsRef.current[friendId] ?? []);
